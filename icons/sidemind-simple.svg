@@ -1,0 +1,25 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background rounded rectangle -->
+  <rect width="128" height="128" rx="24" fill="#ff6b35"/>
+
+  <!-- Simple brain/mind symbol -->
+  <g transform="translate(64, 64)">
+    <!-- Left half circle -->
+    <path d="M -20,0 C -20,-25 0,-25 0,0 C 0,25 -20,25 -20,0 Z" fill="#ffffff"/>
+
+    <!-- Right half circle -->
+    <path d="M 20,0 C 20,-25 0,-25 0,0 C 0,25 20,25 20,0 Z" fill="#ffffff"/>
+
+    <!-- Center dividing line (suggests "side" panel) -->
+    <line x1="0" y1="-20" x2="0" y2="20" stroke="#ff6b35" stroke-width="4"/>
+
+    <!-- Neural dots -->
+    <circle cx="-8" cy="-8" r="3" fill="#ff6b35"/>
+    <circle cx="8" cy="-8" r="3" fill="#ff6b35"/>
+    <circle cx="-8" cy="8" r="3" fill="#ff6b35"/>
+    <circle cx="8" cy="8" r="3" fill="#ff6b35"/>
+  </g>
+
+  <!-- Side panel indicator -->
+  <rect x="95" y="30" width="4" height="68" rx="2" fill="#ffffff" opacity="0.8"/>
+</svg>

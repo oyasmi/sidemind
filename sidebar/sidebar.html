@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SideMind</title>
+  <link rel="stylesheet" href="sidebar.css">
+  <link rel="stylesheet" href="../assets/css/fontawesome.min.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="header-content">
+          <h1 class="app-title">SideMind</h1>
+          <div class="status-indicator"></div>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <select id="modelSelector" class="model-selector">
+          <option value="">Select Model...</option>
+        </select>
+        <select id="systemPromptSelector" class="system-prompt-selector">
+          <option value="default">Default</option>
+        </select>
+      </div>
+
+      <div class="header-right">
+        <button id="chatHistoryBtn" class="icon-btn" aria-label="Chat History">
+          <i class="fas fa-clock"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Chat Messages Area -->
+    <main class="chat-container">
+      <div id="messagesList" class="messages-list">
+        <!-- Messages will be dynamically added here -->
+      </div>
+
+      <!-- Welcome message when no messages -->
+      <div id="welcomeMessage" class="welcome-message">
+        <h2>Welcome to SideMind</h2>
+        <p>Select a model and start chatting with AI assistants in your sidebar.</p>
+      </div>
+    </main>
+
+    <!-- Input Area -->
+    <footer class="input-container">
+      <div class="input-wrapper">
+        <button id="newChatBtn" class="icon-btn new-chat-btn" aria-label="New Chat">
+          <i class="fas fa-plus"></i>
+        </button>
+
+        <div class="input-field-wrapper">
+          <textarea
+            id="messageInput"
+            class="message-input"
+            placeholder="Type your message..."
+            rows="1"
+            maxlength="4000"
+          ></textarea>
+        </div>
+
+        <button id="sendBtn" class="icon-btn send-btn" aria-label="Send Message" disabled>
+          <i class="fas fa-paper-plane"></i>
+        </button>
+
+        <button id="optionsBtn" class="icon-btn options-btn" aria-label="Options">
+          <i class="fas fa-cog"></i>
+        </button>
+      </div>
+    </footer>
+
+    <!-- Chat History Dropdown -->
+    <div id="chatHistoryDropdown" class="chat-history-dropdown hidden">
+      <div class="dropdown-overlay"></div>
+      <div class="dropdown-panel">
+        <div class="dropdown-header">
+          <h3>Chat History</h3>
+          <button class="close-btn" aria-label="Close">
+            <i class="fas fa-chevron-down"></i>
+          </button>
+        </div>
+        <div class="dropdown-content">
+          <div id="chatHistoryList" class="chat-history-list">
+            <!-- Chat history items will be added here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  
+  <script src="marked.min.js"></script>
+  <script src="sidebar.js"></script>
+</body>
+</html>

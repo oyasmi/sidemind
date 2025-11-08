@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SideMind Options</title>
+  <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="../assets/css/fontawesome.min.css">
+</head>
+<body>
+  <div class="options-container">
+    <header class="options-header">
+      <h1>SideMind Configuration</h1>
+    </header>
+
+    <main class="options-main">
+      <!-- Service Providers Section -->
+      <section class="section">
+        <h2>Service Providers</h2>
+        <div id="providersList" class="providers-list">
+          <!-- Providers will be added here -->
+        </div>
+        <button id="addProviderBtn" class="btn btn-secondary">
+          <i class="fas fa-plus btn-icon"></i>
+          Add Provider
+        </button>
+      </section>
+
+      <!-- LLM Parameters Section -->
+      <section class="section">
+        <h2>LLM Parameters</h2>
+        <div class="parameter-group">
+          <label for="temperatureSlider">Temperature: <span id="temperatureValue">0.7</span></label>
+          <input type="range" id="temperatureSlider" min="0" max="2" step="0.1" value="0.7" class="slider">
+          <small class="parameter-description">Controls randomness in responses. Higher values make output more creative and random.</small>
+        </div>
+
+        <div class="parameter-group">
+          <label for="maxTokensInput">Max Tokens</label>
+          <input type="number" id="maxTokensInput" min="100" max="8000" value="2000" class="number-input">
+          <small class="parameter-description">Maximum number of tokens in the response.</small>
+        </div>
+      </section>
+
+      <!-- System Prompts Section -->
+      <section class="section">
+        <h2>System Prompts</h2>
+        <div id="promptsList" class="prompts-list">
+          <!-- Prompts will be added here -->
+        </div>
+        <button id="addPromptBtn" class="btn btn-secondary">
+          <i class="fas fa-plus btn-icon"></i>
+          Add Prompt
+        </button>
+      </section>
+    </main>
+
+    <footer class="options-footer">
+      <div class="actions">
+        <button id="exportBtn" class="btn btn-secondary">Export Config</button>
+        <button id="importBtn" class="btn btn-secondary">Import Config</button>
+        <input type="file" id="importFile" accept=".json" style="display: none;">
+      </div>
+      <button id="saveBtn" class="btn btn-primary">Save Configuration</button>
+    </footer>
+  </div>
+
+  <!-- Modals -->
+  <div id="providerModal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3 id="providerModalTitle">Add Service Provider</h3>
+        <button class="modal-close-btn" aria-label="Close">
+          <i class="fas fa-chevron-down"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="providerForm">
+          <div class="form-group">
+            <label for="providerName">Provider Name</label>
+            <input type="text" id="providerName" required>
+          </div>
+          <div class="form-group">
+            <label for="providerBaseUrl">Base URL</label>
+            <input type="url" id="providerBaseUrl" placeholder="https://api.example.com/v1" required>
+          </div>
+          <div class="form-group">
+            <label for="providerApiKey">API Key</label>
+            <input type="password" id="providerApiKey" required>
+          </div>
+          <div class="form-group">
+            <label>Models</label>
+            <div id="modelsList" class="models-list">
+              <div class="model-item">
+                <input type="text" placeholder="Model Name" class="model-name" required>
+                <input type="text" placeholder="Model ID" class="model-id" required>
+                <button type="button" class="btn-remove-model">×</button>
+              </div>
+            </div>
+            <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button id="providerCancelBtn" class="btn btn-secondary">Cancel</button>
+        <button id="providerSaveBtn" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="promptModal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3 id="promptModalTitle">Add System Prompt</h3>
+        <button class="modal-close-btn" aria-label="Close">
+          <i class="fas fa-chevron-down"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="promptForm">
+          <div class="form-group">
+            <label for="promptName">Prompt Name</label>
+            <input type="text" id="promptName" required>
+          </div>
+          <div class="form-group">
+            <label for="promptContent">Content</label>
+            <textarea id="promptContent" rows="6" placeholder="Enter the system prompt content..." required></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button id="promptCancelBtn" class="btn btn-secondary">Cancel</button>
+        <button id="promptSaveBtn" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  
+  <script src="options.js"></script>
+</body>
+</html>

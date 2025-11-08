@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Send icon (paper plane) -->
+  <g id="send">
+    <line x1="22" y1="2" x2="11" y2="13"></line>
+    <polygon points="22,2 15,22 11,13 2,9 22,2"></polygon>
+  </g>
+
+  <!-- Plus icon (new chat) -->
+  <g id="plus">
+    <line x1="12" y1="5" x2="12" y2="19"></line>
+    <line x1="5" y1="12" x2="19" y2="12"></line>
+  </g>
+
+  <!-- Settings icon (gear) -->
+  <g id="settings">
+    <circle cx="12" cy="12" r="3"></circle>
+    <path d="M12 1v6m0 6v6m4.22-13.22l4.24 4.24M1.54 9.54l4.24 4.24M12 23v-6m0-6V5m-4.22 13.22l-4.24-4.24M22.46 14.46l-4.24-4.24"></path>
+  </g>
+
+  <!-- Clock icon (history) -->
+  <g id="clock">
+    <circle cx="12" cy="12" r="10"></circle>
+    <polyline points="12,6 12,12 16,14"></polyline>
+  </g>
+
+  <!-- Chevron down icon -->
+  <g id="chevron-down">
+    <polyline points="6,9 12,15 18,9"></polyline>
+  </g>
+
+  <!-- Chevron right icon (collapsed reasoning) -->
+  <g id="chevron-right">
+    <polyline points="9,18 15,12 9,6"></polyline>
+  </g>
+</svg>
