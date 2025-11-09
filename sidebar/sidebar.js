@@ -23,7 +23,8 @@ const state = {
     ]
   },
   isStreaming: false,
-  currentStreamingMessage: null
+  currentStreamingMessage: null,
+  userScrolledUp: false
 };
 
 // DOM Elements
@@ -116,6 +117,9 @@ function setupEventListeners() {
 
   // Auto-resize textarea
   elements.messageInput.addEventListener('input', autoResizeTextarea);
+
+  // Scroll behavior monitoring
+  elements.messagesList.addEventListener('scroll', handleScroll);
 
   // Listen for configuration changes from options page
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -597,7 +601,7 @@ function hideWelcomeMessage() {
 }
 
 function scrollToBottom() {
-  if (elements.messagesList) {
+  if (elements.messagesList && !state.userScrolledUp) {
     elements.messagesList.scrollTop = elements.messagesList.scrollHeight;
   }
 }
@@ -700,11 +704,30 @@ function handleInputKeydown(event) {
   }
 }
 
+function handleScroll() {
+  if (!elements.messagesList) return;
+
+  const { scrollTop, scrollHeight, clientHeight } = elements.messagesList;
+  const threshold = 50; // pixels from bottom to consider "at bottom"
+
+  // Check if user is scrolled up (not at bottom)
+  const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+  state.userScrolledUp = distanceFromBottom > threshold;
+
+  // If user scrolls back to bottom, reset the flag
+  if (distanceFromBottom <= threshold && state.userScrolledUp) {
+    state.userScrolledUp = false;
+  }
+}
+
 async function handleSendMessage() {
   const message = elements.messageInput.value.trim();
   if (!message || elements.sendBtn.disabled) {
     return;
   }
+
+  // Reset scroll state when user sends a new message
+  state.userScrolledUp = false;
 
   // Add user message
   addMessage('user', message);
@@ -849,6 +872,9 @@ async function sendMessageToAPI(_userMessage) {
     showError('No service provider configured. Please configure a provider in the options.');
     return;
   }
+
+  // Reset scroll state when starting API response
+  state.userScrolledUp = false;
 
   state.isStreaming = true;
   updateInputState();
