@@ -8,7 +8,8 @@ let config = {
   selectedModel: null,
   selectedSystemPrompt: 'default',
   temperature: 0.7,
-  max_tokens: 2000,
+  max_completion_tokens: '',
+  stream: true,
   systemPrompts: [
     {
       id: 'default',
@@ -39,7 +40,8 @@ const elements = {
   // Parameters
   temperatureSlider: null,
   temperatureValue: null,
-  maxTokensInput: null,
+  maxCompletionTokensInput: null,
+  streamSelector: null,
 
   // Modals
   providerModal: null,
@@ -93,7 +95,8 @@ function cacheElements() {
   // Parameters
   elements.temperatureSlider = document.getElementById('temperatureSlider');
   elements.temperatureValue = document.getElementById('temperatureValue');
-  elements.maxTokensInput = document.getElementById('maxTokensInput');
+  elements.maxCompletionTokensInput = document.getElementById('maxCompletionTokensInput');
+  elements.streamSelector = document.getElementById('streamSelector');
 
   // Appearance
   elements.fontSizeSelector = document.getElementById('fontSizeSelector');
@@ -143,7 +146,8 @@ function setupEventListeners() {
     clearTimeout(temperatureTimeout);
     temperatureTimeout = setTimeout(() => saveConfig(), 500);
   });
-  elements.maxTokensInput.addEventListener('change', updateMaxTokens);
+  elements.maxCompletionTokensInput.addEventListener('change', updateMaxCompletionTokens);
+  elements.streamSelector.addEventListener('change', updateStream);
 
   // Appearance controls
   elements.fontSizeSelector.addEventListener('change', updateFontSize);
@@ -369,7 +373,8 @@ function createPromptElement(prompt) {
 function renderParameters() {
   elements.temperatureSlider.value = config.temperature;
   elements.temperatureValue.textContent = config.temperature;
-  elements.maxTokensInput.value = config.max_tokens;
+  elements.maxCompletionTokensInput.value = config.max_completion_tokens;
+  elements.streamSelector.value = config.stream.toString();
 
   // Load font settings
   elements.fontSizeSelector.value = config.fontSize || '14px';
@@ -594,12 +599,18 @@ function updateTemperatureDisplay() {
   elements.temperatureValue.textContent = config.temperature;
 }
 
-async function updateMaxTokens() {
-  const value = parseInt(elements.maxTokensInput.value);
-  if (value >= 100 && value <= 8000) {
-    config.max_tokens = value;
+async function updateMaxCompletionTokens() {
+  const value = elements.maxCompletionTokensInput.value.trim();
+  // Allow empty string (null) or valid positive integer
+  if (value === '' || (!isNaN(value) && parseInt(value) > 0)) {
+    config.max_completion_tokens = value;
     await saveConfig();
   }
+}
+
+async function updateStream() {
+  config.stream = elements.streamSelector.value === 'true';
+  await saveConfig();
 }
 
 async function updateFontSize() {
@@ -671,7 +682,8 @@ function validateConfig(config) {
     Array.isArray(config.providers) &&
     Array.isArray(config.systemPrompts) &&
     typeof config.temperature === 'number' &&
-    typeof config.max_tokens === 'number'
+    (typeof config.max_completion_tokens === 'string') && // Can be empty string
+    typeof config.stream === 'boolean'
   );
 }
 

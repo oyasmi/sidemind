@@ -32,13 +32,22 @@
         <div class="parameter-group">
           <label for="temperatureSlider">Temperature: <span id="temperatureValue">0.7</span></label>
           <input type="range" id="temperatureSlider" min="0" max="2" step="0.1" value="0.7" class="slider">
-          <small class="parameter-description">Controls randomness in responses. Higher values make output more creative and random.</small>
+          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic.</small>
         </div>
 
         <div class="parameter-group">
-          <label for="maxTokensInput">Max Tokens</label>
-          <input type="number" id="maxTokensInput" min="100" max="8000" value="2000" class="number-input">
-          <small class="parameter-description">Maximum number of tokens in the response.</small>
+          <label for="maxCompletionTokensInput">Max Completion Tokens</label>
+          <input type="text" id="maxCompletionTokensInput" placeholder="Leave empty to use model default" class="text-input">
+          <small class="parameter-description">Upper bound for the number of tokens that can be generated, including visible output and reasoning tokens. Leave empty to use model default.</small>
+        </div>
+
+        <div class="parameter-group">
+          <label for="streamSelector">Stream Response</label>
+          <select id="streamSelector" class="select-input">
+            <option value="true" selected>Enabled (Streaming)</option>
+            <option value="false">Disabled (Complete Response)</option>
+          </select>
+          <small class="parameter-description">If enabled, the model response will be streamed as it's generated using server-sent events.</small>
         </div>
       </section>
 

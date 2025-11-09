@@ -11,7 +11,8 @@ const state = {
     selectedModel: null,
     selectedSystemPrompt: 'default',
     temperature: 0.7,
-    max_tokens: 2000,
+    max_completion_tokens: '',
+    stream: true,
     systemPrompts: [
       {
         id: 'default',
@@ -625,6 +626,28 @@ function getCurrentProvider() {
   return state.config.providers.find(p => p.id === state.config.selectedProvider);
 }
 
+function buildRequestBody(messages) {
+  const body = {
+    model: state.config.selectedModel,
+    messages: messages
+  };
+
+  // Add temperature only if not null or empty
+  if (state.config.temperature !== null && state.config.temperature !== '') {
+    body.temperature = state.config.temperature;
+  }
+
+  // Add max_completion_tokens only if not empty
+  if (state.config.max_completion_tokens && state.config.max_completion_tokens.trim() !== '') {
+    body.max_completion_tokens = parseInt(state.config.max_completion_tokens);
+  }
+
+  // Always add stream parameter (defaults to true if not set)
+  body.stream = state.config.stream !== false; // Default to true
+
+  return body;
+}
+
 async function streamResponseFromAPI(provider, assistantMessage) {
   const messages = buildMessageHistory();
   const assistantMessageId = assistantMessage.id;
@@ -633,19 +656,16 @@ async function streamResponseFromAPI(provider, assistantMessage) {
   const cleanedBaseUrl = provider.baseUrl.replace(/\/$/, '');
   const URL = `${cleanedBaseUrl}/chat/completions`;
 
+  const requestBody = buildRequestBody(messages);
+  const isStream = requestBody.stream;
+
   const response = await fetch(URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${provider.apiKey}`
     },
-    body: JSON.stringify({
-      model: state.config.selectedModel,
-      messages: messages,
-      temperature: state.config.temperature,
-      max_tokens: state.config.max_tokens,
-      stream: true
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
@@ -653,12 +673,14 @@ async function streamResponseFromAPI(provider, assistantMessage) {
     throw new Error(`API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let partialLine = '';
+  // Handle streaming response
+  if (isStream) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let partialLine = '';
 
-  // Define regex pattern for thinking tags (like in open-os.js)
-  const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
+    // Define regex pattern for thinking tags (like in open-os.js)
+    const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -708,7 +730,47 @@ async function streamResponseFromAPI(provider, assistantMessage) {
         }
       }
     }
+  } else {
+    // Handle non-streaming response
+    try {
+      const responseData = await response.json();
+      const choice = responseData.choices?.[0];
+
+      if (choice?.message) {
+        const message = choice.message;
+
+        // Handle reasoning content (new format)
+        if (message.reasoning_content) {
+          assistantMessage.reasoning = message.reasoning_content;
+        }
+
+        // Handle content
+        if (message.content) {
+          // Check for old format  tags and process them correctly
+          const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
+          const thinkMatches = [...message.content.matchAll(thinkRegex)];
+
+          if (thinkMatches.length > 0) {
+            // Extract reasoning from  tags
+            thinkMatches.forEach(match => {
+              assistantMessage.reasoning += match[1];
+            });
+            // Remove  tags from content
+            assistantMessage.content = message.content.replace(thinkRegex, '');
+          } else {
+            assistantMessage.content = message.content;
+          }
+        }
+
+        // Update UI to show the complete message
+        updateMessageDisplay(assistantMessageId);
+      }
+    } catch (parseError) {
+      console.error('Error parsing non-streaming response:', parseError);
+      throw new Error('Failed to parse API response');
+    }
   }
+}
 
 function buildMessageHistory() {
   const session = state.sessions[state.currentSessionId];
