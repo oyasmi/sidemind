@@ -624,3 +624,15 @@ body {
 .modal:not(.hidden) {
   animation: fadeIn 0.2s ease;
 }
+
+/* Copyright */
+.copyright {
+  text-align: center;
+  padding: 20px 24px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  border-top: 1px solid var(--border-secondary);
+  background-color: var(--bg-tertiary);
+  margin-top: auto;
+}
