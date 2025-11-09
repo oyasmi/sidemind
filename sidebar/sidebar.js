@@ -344,6 +344,10 @@ function createMessageElement(message) {
     avatar.innerHTML = '<i class="fas fa-robot"></i>';
   }
 
+  // Create message wrapper to contain bubble and actions
+  const messageWrapper = document.createElement('div');
+  messageWrapper.className = 'message-wrapper';
+
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
@@ -360,18 +364,64 @@ function createMessageElement(message) {
   // Add content after reasoning
   bubble.appendChild(content);
 
-  // Assemble message with avatar and bubble
+  // Create message actions bar
+  const actionsBar = createMessageActions(message);
+
+  // Assemble message wrapper with bubble and actions
+  messageWrapper.appendChild(bubble);
+  messageWrapper.appendChild(actionsBar);
+
+  // Assemble message with avatar and wrapper
   if (message.role === 'user') {
-    // User: bubble first, then avatar
-    messageDiv.appendChild(bubble);
+    // User: wrapper first, then avatar
+    messageDiv.appendChild(messageWrapper);
     messageDiv.appendChild(avatar);
   } else {
-    // Assistant: avatar first, then bubble
+    // Assistant: avatar first, then wrapper
     messageDiv.appendChild(avatar);
-    messageDiv.appendChild(bubble);
+    messageDiv.appendChild(messageWrapper);
   }
 
   return messageDiv;
+}
+
+function createMessageActions(message) {
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'message-actions';
+
+  // Create copy button
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.setAttribute('aria-label', 'Copy message');
+  copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+
+  // Add copy functionality
+  copyBtn.addEventListener('click', async () => {
+    await copyMessageContent(message, copyBtn);
+  });
+
+  // Create regenerate button
+  const regenerateBtn = document.createElement('button');
+  regenerateBtn.className = 'regenerate-btn';
+  regenerateBtn.setAttribute('aria-label', 'Regenerate response');
+  regenerateBtn.innerHTML = '<i class="fas fa-redo"></i>';
+
+  // Add regenerate functionality
+  regenerateBtn.addEventListener('click', async () => {
+    await regenerateFromMessage(message, regenerateBtn);
+  });
+
+  // Create time display
+  const timeDisplay = document.createElement('span');
+  timeDisplay.className = 'time-display';
+  timeDisplay.textContent = formatMessageTime(message.timestamp);
+
+  // Assemble actions bar
+  actionsBar.appendChild(copyBtn);
+  actionsBar.appendChild(regenerateBtn);
+  actionsBar.appendChild(timeDisplay);
+
+  return actionsBar;
 }
 
 function createReasoningSection(reasoning) {
@@ -404,6 +454,117 @@ function createReasoningSection(reasoning) {
   section.appendChild(content);
 
   return section;
+}
+
+// Copy Message Content
+async function copyMessageContent(message, copyBtn) {
+  try {
+    // For assistant messages, copy the original markdown content
+    // For user messages, copy the raw content
+    let textToCopy = message.content;
+
+    // If it's an assistant message with reasoning, include reasoning
+    if (message.role === 'assistant' && message.reasoning && message.reasoning.trim()) {
+      textToCopy = `🤔 Thinking:\n${message.reasoning}\n\n${message.content}`;
+    }
+
+    await navigator.clipboard.writeText(textToCopy);
+
+    // Show copied state
+    copyBtn.classList.add('copied');
+    copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+
+    // Reset after 2 seconds
+    setTimeout(() => {
+      copyBtn.classList.remove('copied');
+      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+    }, 2000);
+
+  } catch (error) {
+    console.error('Failed to copy message:', error);
+    // Show error state briefly
+    copyBtn.innerHTML = '<i class="fas fa-exclamation"></i>';
+    setTimeout(() => {
+      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+    }, 1000);
+  }
+}
+
+// Regenerate Response from Message
+async function regenerateFromMessage(message, regenerateBtn) {
+  if (state.isStreaming) {
+    console.log('Cannot regenerate while streaming');
+    return;
+  }
+
+  const session = state.sessions[state.currentSessionId];
+  if (!session) return;
+
+  // Show regenerating state
+  regenerateBtn.classList.add('regenerating');
+  regenerateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+  try {
+    // Find message index
+    const messageIndex = session.messages.findIndex(m => m.id === message.id);
+    if (messageIndex === -1) {
+      console.error('Message not found');
+      return;
+    }
+
+    // Remove messages based on role
+    let messagesToKeep;
+    if (message.role === 'user') {
+      // For user messages, keep messages up to and including this message
+      messagesToKeep = session.messages.slice(0, messageIndex + 1);
+    } else {
+      // For assistant messages, keep messages before this message
+      messagesToKeep = session.messages.slice(0, messageIndex);
+    }
+
+    // Update session messages
+    session.messages = messagesToKeep;
+    session.timestamp = new Date().toISOString();
+
+    // Save to storage and render
+    saveToStorage();
+    renderMessages();
+
+    // If it's a user message, send API request
+    if (message.role === 'user') {
+      await sendMessageToAPI(message.content);
+    } else {
+      // If it's an assistant message, find the last user message and resend
+      const lastUserMessage = session.messages
+        .slice()
+        .reverse()
+        .find(m => m.role === 'user');
+
+      if (lastUserMessage) {
+        await sendMessageToAPI(lastUserMessage.content);
+      } else {
+        console.error('No user message found to regenerate');
+      }
+    }
+
+  } catch (error) {
+    console.error('Error regenerating response:', error);
+    showError('Failed to regenerate response. Please try again.');
+  } finally {
+    // Reset button state
+    regenerateBtn.classList.remove('regenerating');
+    regenerateBtn.innerHTML = '<i class="fas fa-redo"></i>';
+  }
+}
+
+// Format Message Time
+function formatMessageTime(timestamp) {
+  if (!timestamp) return '';
+
+  const date = new Date(timestamp);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
 }
 
 // Markdown Rendering
