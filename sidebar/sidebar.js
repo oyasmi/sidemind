@@ -222,7 +222,8 @@ function createNewSession() {
     messages: [],
     title: 'New Chat',
     timestamp: new Date().toISOString(),
-    modelUsed: state.config.selectedModel
+    modelUsed: state.config.selectedModel,
+    systemPromptId: state.config.selectedSystemPrompt
   };
   state.currentSessionId = sessionId;
 
@@ -243,6 +244,42 @@ function switchSession(sessionId) {
 
     console.log('Switched to session:', sessionId);
   }
+}
+
+function deleteSession(sessionId) {
+  if (!state.sessions[sessionId]) {
+    return;
+  }
+
+  // Delete the session directly without confirmation
+  delete state.sessions[sessionId];
+
+  // If deleted session was the current session, create a new one
+  if (state.currentSessionId === sessionId) {
+    const remainingSessions = Object.keys(state.sessions);
+    if (remainingSessions.length > 0) {
+      // Switch to the most recent session
+      const recentSessionId = remainingSessions.sort((a, b) => {
+        return new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp);
+      })[0];
+      state.currentSessionId = recentSessionId;
+    } else {
+      // No sessions left, create a new one
+      createNewSession();
+    }
+  }
+
+  // Save and update UI
+  saveToStorage();
+  renderMessages();
+  updateInputState();
+
+  // Refresh chat history if it's open
+  if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
+    renderChatHistory();
+  }
+
+  console.log('Deleted session:', sessionId);
 }
 
 // Message Management
@@ -266,6 +303,8 @@ function addMessage(role, content, reasoning = null) {
   }
 
   session.timestamp = new Date().toISOString();
+  session.modelUsed = state.config.selectedModel;
+  session.systemPromptId = state.config.selectedSystemPrompt;
 
   renderMessages();
   saveToStorage();
@@ -557,6 +596,10 @@ function renderChatHistory() {
       item.style.backgroundColor = 'var(--accent-light)';
     }
 
+    // Create content container
+    const content = document.createElement('div');
+    content.className = 'chat-history-content';
+
     const title = document.createElement('div');
     title.className = 'chat-history-title';
     title.textContent = session.title;
@@ -564,14 +607,71 @@ function renderChatHistory() {
     const meta = document.createElement('div');
     meta.className = 'chat-history-meta';
 
+    // Format date as mm-dd HH:MM
     const date = new Date(session.timestamp);
-    const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const modelStr = session.modelUsed || 'Unknown';
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const dateStr = `${month}-${day} ${hours}:${minutes}`;
 
-    meta.innerHTML = `<span>${dateStr}</span><span>${modelStr}</span>`;
+    // Get provider, model, and system prompt info
+    let metaInfo = [];
 
-    item.appendChild(title);
-    item.appendChild(meta);
+    if (session.modelUsed) {
+      // Find the provider for this model
+      let providerName = 'Unknown';
+      for (const provider of state.config.providers) {
+        const model = provider.models.find(m => m.id === session.modelUsed);
+        if (model) {
+          providerName = provider.name;
+          metaInfo.push(providerName);
+          break;
+        }
+      }
+
+      // Find the model name
+      let modelName = session.modelUsed;
+      for (const provider of state.config.providers) {
+        const model = provider.models.find(m => m.id === session.modelUsed);
+        if (model) {
+          modelName = model.name;
+          break;
+        }
+      }
+      metaInfo.push(modelName);
+    }
+
+    // Handle system prompt - try to get it from session or current config
+    let systemPromptId = session.systemPromptId || state.config.selectedSystemPrompt;
+
+    if (systemPromptId) {
+      const systemPrompt = state.config.systemPrompts.find(p => p.id === systemPromptId);
+      if (systemPrompt) {
+        metaInfo.push(systemPrompt.name);
+      }
+    }
+
+    const metaStr = metaInfo.length > 0 ? metaInfo.join(' • ') : 'Unknown';
+
+    meta.innerHTML = `<span>${dateStr}</span><span>${metaStr}</span>`;
+
+    content.appendChild(title);
+    content.appendChild(meta);
+
+    // Create delete button
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'delete-chat-btn';
+    deleteBtn.setAttribute('aria-label', 'Delete chat');
+    deleteBtn.innerHTML = '<i class="fas fa-times"></i>';
+
+    deleteBtn.addEventListener('click', (event) => {
+      event.stopPropagation(); // Prevent switching to the session
+      deleteSession(sessionId);
+    });
+
+    item.appendChild(content);
+    item.appendChild(deleteBtn);
 
     item.addEventListener('click', () => {
       switchSession(sessionId);
