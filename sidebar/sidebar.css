@@ -625,13 +625,13 @@ button:disabled {
 }
 
 .reasoning-content {
-  padding: 12px;
   font-size: var(--main-font-size);
   line-height: 1.5;
   color: var(--text-secondary);
   background-color: var(--bg-tertiary);
   max-height: 0;
   overflow: hidden;
+  padding: 0 12px;
   transition: max-height 0.3s ease, padding 0.3s ease;
 }
 
@@ -647,7 +647,7 @@ button:disabled {
   padding: 20px;
   display: flex;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   box-shadow: var(--shadow-xl);
   width: 100%;
   flex-shrink: 0;
@@ -656,7 +656,7 @@ button:disabled {
 .input-wrapper {
   display: flex;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
   width: 100%;
   flex: 1;
 }
@@ -711,6 +711,7 @@ button:disabled {
   height: 44px;
   flex-shrink: 0;
   box-sizing: border-box;
+  align-self: flex-end;
 }
 
 .new-chat-btn {
