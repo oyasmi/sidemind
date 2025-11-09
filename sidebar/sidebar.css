@@ -647,7 +647,7 @@ button:disabled {
   padding: 20px;
   display: flex;
   gap: 12px;
-  align-items: flex-end;
+  align-items: center;
   box-shadow: var(--shadow-xl);
   width: 100%;
   flex-shrink: 0;
@@ -656,7 +656,7 @@ button:disabled {
 .input-wrapper {
   display: flex;
   gap: 12px;
-  align-items: flex-end;
+  align-items: center;
   width: 100%;
   flex: 1;
 }
@@ -668,8 +668,9 @@ button:disabled {
 
 .message-input {
   width: 100%;
+  height: 44px;
   min-height: 44px;
-  max-height: 120px;
+  max-height: 480px;
   padding: 12px 16px;
   border: 2px solid var(--border-primary);
   border-radius: var(--radius-pill);
@@ -684,6 +685,7 @@ button:disabled {
   outline: none;
   -ms-overflow-style: none;
   scrollbar-width: none;
+  box-sizing: border-box;
 }
 
 .message-input::-webkit-scrollbar {
@@ -707,6 +709,8 @@ button:disabled {
   border: none;
   width: 44px;
   height: 44px;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .new-chat-btn {
@@ -724,8 +728,8 @@ button:disabled {
 .send-btn {
   background: var(--gradient-primary);
   color: white;
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
 }
 
 .send-btn:hover:not(:disabled) {
