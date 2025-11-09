@@ -53,6 +53,33 @@
           Add Prompt
         </button>
       </section>
+
+      <!-- Appearance Section -->
+      <section class="section">
+        <h2>Appearance</h2>
+        <div class="parameter-group">
+          <label for="fontSizeSelector">Font Size</label>
+          <select id="fontSizeSelector" class="select-input">
+            <option value="13px">Small</option>
+            <option value="14px" selected>Default</option>
+            <option value="15px">Large</option>
+            <option value="16px">Extra Large</option>
+          </select>
+          <small class="parameter-description">Controls the base font size in the sidebar.</small>
+        </div>
+
+        <div class="parameter-group">
+          <label for="fontFamilySelector">Font Family</label>
+          <select id="fontFamilySelector" class="select-input">
+            <option value='system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'>System Default</option>
+            <option value='Georgia, "Times New Roman", Times, serif'>Serif</option>
+            <option value='"Courier New", Courier, monospace'>Monospace</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input type="text" id="customFontFamilyInput" class="text-input hidden" placeholder="Enter custom font family (e.g., 'Arial', 'Times New Roman')">
+          <small class="parameter-description">Controls the font family used in the sidebar.</small>
+        </div>
+      </section>
     </main>
 
     <footer class="options-footer">

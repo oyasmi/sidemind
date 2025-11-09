@@ -124,6 +124,7 @@ function setupEventListeners() {
       updateModelSelector();
       updateSystemPromptSelector();
       updateInputState();
+      applyFontSettings(); // Apply font settings after config update
       console.log('Updated configuration from sync storage:', state.config);
     }
   });
@@ -163,6 +164,7 @@ async function loadFromStorage() {
     if (result.config) {
       state.config = { ...state.config, ...result.config };
       console.log('Loaded config from sync storage:', state.config);
+      applyFontSettings(); // Apply font settings after loading config
     }
 
     // Sessions and current session ID remain in local storage
@@ -411,6 +413,15 @@ function updateInputState() {
   const canSend = hasConfig && hasMessage && !state.isStreaming;
 
   elements.sendBtn.disabled = !canSend;
+}
+
+function applyFontSettings() {
+  if (state.config.fontSize) {
+    document.documentElement.style.setProperty('--main-font-size', state.config.fontSize);
+  }
+  if (state.config.fontFamily) {
+    document.documentElement.style.setProperty('--main-font-family', state.config.fontFamily);
+  }
 }
 
 // UI Update Functions

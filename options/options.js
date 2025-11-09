@@ -95,6 +95,11 @@ function cacheElements() {
   elements.temperatureValue = document.getElementById('temperatureValue');
   elements.maxTokensInput = document.getElementById('maxTokensInput');
 
+  // Appearance
+  elements.fontSizeSelector = document.getElementById('fontSizeSelector');
+  elements.fontFamilySelector = document.getElementById('fontFamilySelector');
+  elements.customFontFamilyInput = document.getElementById('customFontFamilyInput');
+
   // Modals
   elements.providerModal = document.getElementById('providerModal');
   elements.promptModal = document.getElementById('promptModal');
@@ -139,6 +144,14 @@ function setupEventListeners() {
     temperatureTimeout = setTimeout(() => saveConfig(), 500);
   });
   elements.maxTokensInput.addEventListener('change', updateMaxTokens);
+
+  // Appearance controls
+  elements.fontSizeSelector.addEventListener('change', updateFontSize);
+  elements.fontFamilySelector.addEventListener('change', () => {
+    toggleCustomFontInputVisibility();
+    updateFontFamily();
+  });
+  elements.customFontFamilyInput.addEventListener('input', updateFontFamily);
 
   // Model management
   elements.addModelBtn.addEventListener('click', addModelField);
@@ -357,6 +370,21 @@ function renderParameters() {
   elements.temperatureSlider.value = config.temperature;
   elements.temperatureValue.textContent = config.temperature;
   elements.maxTokensInput.value = config.max_tokens;
+
+  // Load font settings
+  elements.fontSizeSelector.value = config.fontSize || '14px';
+
+  const predefinedFontFamilies = Array.from(elements.fontFamilySelector.options).map(option => option.value);
+  if (config.fontFamily && !predefinedFontFamilies.includes(config.fontFamily)) {
+    // It's a custom font family
+    elements.fontFamilySelector.value = 'custom';
+    elements.customFontFamilyInput.value = config.fontFamily;
+    elements.customFontFamilyInput.classList.remove('hidden');
+  } else {
+    // It's a predefined font family or not set
+    elements.fontFamilySelector.value = config.fontFamily || 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+    elements.customFontFamilyInput.classList.add('hidden');
+  }
 }
 
 // Provider Management
@@ -572,6 +600,28 @@ async function updateMaxTokens() {
     config.max_tokens = value;
     await saveConfig();
   }
+}
+
+async function updateFontSize() {
+  config.fontSize = elements.fontSizeSelector.value;
+  await saveConfig();
+}
+
+function toggleCustomFontInputVisibility() {
+  if (elements.fontFamilySelector.value === 'custom') {
+    elements.customFontFamilyInput.classList.remove('hidden');
+  } else {
+    elements.customFontFamilyInput.classList.add('hidden');
+  }
+}
+
+async function updateFontFamily() {
+  let selectedFontFamily = elements.fontFamilySelector.value;
+  if (selectedFontFamily === 'custom') {
+    selectedFontFamily = elements.customFontFamilyInput.value.trim();
+  }
+  config.fontFamily = selectedFontFamily || 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'; // Fallback to default if custom is empty
+  await saveConfig();
 }
 
 // Import/Export
