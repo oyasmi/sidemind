@@ -12,6 +12,8 @@
   --accent: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   --accent-hover: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
   --accent-light: #eff6ff;
+  --focus-color: #667eea;
+  --focus-bg: rgba(102, 126, 234, 0.1);
   --success: #10b981;
   --success-hover: #059669;
   --danger: #ef4444;
@@ -29,6 +31,62 @@
   --gradient-bg: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
 }
 
+/* Manual theme classes */
+:root.light-theme {
+  /* Light theme - same as default */
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f9fafb;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+  --border-primary: #e0e0e0;
+  --border-secondary: #f0f0f0;
+  --accent: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --accent-hover: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+  --accent-light: #eff6ff;
+  --focus-color: #667eea;
+  --focus-bg: rgba(102, 126, 234, 0.1);
+  --success: #10b981;
+  --success-hover: #059669;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --gradient-primary: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --gradient-secondary: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  --gradient-bg: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+}
+
+:root.dark-theme {
+  /* Dark theme */
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #2a2a2a;
+  --bg-tertiary: #252525;
+  --text-primary: #e8e8e8;
+  --text-secondary: #a0a0a0;
+  --text-tertiary: #707070;
+  --border-primary: #404040;
+  --border-secondary: #333333;
+  --accent: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  --accent-hover: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  --accent-light: #1e3a8a;
+  --focus-color: #60a5fa;
+  --focus-bg: rgba(96, 165, 250, 0.1);
+  --success: #34d399;
+  --success-hover: #10b981;
+  --danger: #f87171;
+  --danger-hover: #ef4444;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
+  --gradient-primary: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
+  --gradient-secondary: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  --gradient-bg: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+}
+
+/* System preference fallback - only used when theme is not explicitly set */
 @media (prefers-color-scheme: dark) {
   :root {
     /* Dark theme */
@@ -43,6 +101,8 @@
     --accent: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
     --accent-hover: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
     --accent-light: #1e3a8a;
+    --focus-color: #60a5fa;
+    --focus-bg: rgba(96, 165, 250, 0.1);
     --success: #34d399;
     --success-hover: #10b981;
     --danger: #f87171;
@@ -288,9 +348,9 @@ body {
 }
 
 .number-input:focus {
-  border-color: #667eea;
+  border-color: var(--focus-color);
   background: white;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
 .select-input,
@@ -309,9 +369,9 @@ body {
 
 .select-input:focus,
 .text-input:focus {
-  border-color: #667eea;
+  border-color: var(--focus-color);
   background: white;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
 .select-input {
@@ -542,9 +602,9 @@ body {
 
 .form-group input:focus,
 .form-group textarea:focus {
-  border-color: #667eea;
+  border-color: var(--focus-color);
   background: white;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
 .form-group textarea {

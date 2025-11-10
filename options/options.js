@@ -74,6 +74,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   cacheElements();
   setupEventListeners();
   await loadConfig();
+  applyTheme(); // Apply theme after loading config
   renderUI();
 
   console.log('Options page initialized');
@@ -641,8 +642,27 @@ async function updateFontFamily() {
   await saveConfig();
 }
 
+function applyTheme() {
+  const theme = config.theme || 'light';
+  const html = document.documentElement;
+
+  // Remove existing theme classes
+  html.classList.remove('light-theme', 'dark-theme');
+
+  // Apply the selected theme
+  if (theme === 'light') {
+    html.classList.add('light-theme');
+  } else if (theme === 'dark') {
+    html.classList.add('dark-theme');
+  }
+  // If 'system', don't add any class - let the system preference media query handle it
+
+  console.log(`Applied theme: ${theme}`);
+}
+
 async function updateTheme() {
   config.theme = elements.themeSelector.value;
+  applyTheme();
   await saveConfig();
 }
 
