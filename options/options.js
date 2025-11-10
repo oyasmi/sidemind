@@ -17,7 +17,8 @@ let config = {
       content: 'You are a helpful assistant.',
       isDefault: true
     }
-  ]
+  ],
+  theme: 'light'
 };
 
 let editingProviderId = null;
@@ -102,6 +103,7 @@ function cacheElements() {
   elements.fontSizeSelector = document.getElementById('fontSizeSelector');
   elements.fontFamilySelector = document.getElementById('fontFamilySelector');
   elements.customFontFamilyInput = document.getElementById('customFontFamilyInput');
+  elements.themeSelector = document.getElementById('themeSelector');
 
   // Modals
   elements.providerModal = document.getElementById('providerModal');
@@ -156,6 +158,7 @@ function setupEventListeners() {
     updateFontFamily();
   });
   elements.customFontFamilyInput.addEventListener('input', updateFontFamily);
+  elements.themeSelector.addEventListener('change', updateTheme);
 
   // Model management
   elements.addModelBtn.addEventListener('click', addModelField);
@@ -390,6 +393,9 @@ function renderParameters() {
     elements.fontFamilySelector.value = config.fontFamily || 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
     elements.customFontFamilyInput.classList.add('hidden');
   }
+
+  // Load theme setting
+  elements.themeSelector.value = config.theme || 'light';
 }
 
 // Provider Management
@@ -635,6 +641,11 @@ async function updateFontFamily() {
   await saveConfig();
 }
 
+async function updateTheme() {
+  config.theme = elements.themeSelector.value;
+  await saveConfig();
+}
+
 // Import/Export
 function exportConfig() {
   const configBlob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
@@ -683,7 +694,8 @@ function validateConfig(config) {
     Array.isArray(config.systemPrompts) &&
     typeof config.temperature === 'number' &&
     (typeof config.max_completion_tokens === 'string') && // Can be empty string
-    typeof config.stream === 'boolean'
+    typeof config.stream === 'boolean' &&
+    (!config.theme || ['light', 'dark', 'system'].includes(config.theme))
   );
 }
 

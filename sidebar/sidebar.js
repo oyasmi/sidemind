@@ -130,6 +130,7 @@ function setupEventListeners() {
       updateSystemPromptSelector();
       updateInputState();
       applyFontSettings(); // Apply font settings after config update
+      applyTheme(); // Apply theme after config update
       console.log('Updated configuration from sync storage:', state.config);
     }
   });
@@ -170,6 +171,7 @@ async function loadFromStorage() {
       state.config = { ...state.config, ...result.config };
       console.log('Loaded config from sync storage:', state.config);
       applyFontSettings(); // Apply font settings after loading config
+      applyTheme(); // Apply theme after loading config
     }
 
     // Sessions and current session ID remain in local storage
@@ -627,6 +629,24 @@ function applyFontSettings() {
   if (state.config.fontFamily) {
     document.documentElement.style.setProperty('--main-font-family', state.config.fontFamily);
   }
+}
+
+function applyTheme() {
+  const theme = state.config.theme || 'light';
+  const html = document.documentElement;
+
+  // Remove existing theme classes
+  html.classList.remove('light-theme', 'dark-theme');
+
+  // Apply the selected theme
+  if (theme === 'light') {
+    html.classList.add('light-theme');
+  } else if (theme === 'dark') {
+    html.classList.add('dark-theme');
+  }
+  // If 'system', don't add any class - let the system preference media query handle it
+
+  console.log(`Applied theme: ${theme}`);
 }
 
 // UI Update Functions
