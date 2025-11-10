@@ -966,7 +966,7 @@ async function streamResponseFromAPI(provider, assistantMessage) {
     const decoder = new TextDecoder();
     let partialLine = '';
 
-    // Define regex pattern for thinking tags (like in open-os.js)
+    // Define regex pattern for thinking tags
     const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
 
   while (true) {
@@ -977,10 +977,11 @@ async function streamResponseFromAPI(provider, assistantMessage) {
     const lines = (partialLine + textChunk).split('\n');
     partialLine = lines.pop();
 
-    for (const line of lines) {
-      if (line.trim() === '' || !line.startsWith('data: ')) continue;
+    for (const rawline of lines) {
+      const line = rawline.trim();
+      if (line.trim() === '' || !line.startsWith('data:')) continue;
 
-      const data = line.slice(6);
+      const data = line.slice(5).trim();
       if (data === '[DONE]') continue;
 
       try {
