@@ -986,9 +986,6 @@ async function streamResponseFromAPI(provider, assistantMessage) {
     const decoder = new TextDecoder();
     let partialLine = '';
 
-    // Define regex pattern for thinking tags
-    const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1015,20 +1012,9 @@ async function streamResponseFromAPI(provider, assistantMessage) {
             assistantMessage.reasoning += delta.reasoning_content;
           }
 
-          // Handle content
+          // Handle content (skip think tag processing during streaming)
           if (delta.content) {
-            // Check for old format <think> tags and process them correctly
-            const thinkMatches = [...delta.content.matchAll(thinkRegex)];
-            if (thinkMatches.length > 0) {
-              // Extract reasoning from <think> tags
-              thinkMatches.forEach(match => {
-                assistantMessage.reasoning += match[1];
-              });
-              // Remove <think> tags from content
-              assistantMessage.content += delta.content.replace(thinkRegex, '');
-            } else {
-              assistantMessage.content += delta.content;
-            }
+            assistantMessage.content += delta.content;
           }
 
           // Update UI
@@ -1038,6 +1024,10 @@ async function streamResponseFromAPI(provider, assistantMessage) {
         }
       }
     }
+
+    // Final processing for think tags after streaming completes
+    processThinkTags(assistantMessage);
+
   } else {
     // Handle non-streaming response
     try {
@@ -1054,21 +1044,11 @@ async function streamResponseFromAPI(provider, assistantMessage) {
 
         // Handle content
         if (message.content) {
-          // Check for old format  tags and process them correctly
-          const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
-          const thinkMatches = [...message.content.matchAll(thinkRegex)];
-
-          if (thinkMatches.length > 0) {
-            // Extract reasoning from  tags
-            thinkMatches.forEach(match => {
-              assistantMessage.reasoning += match[1];
-            });
-            // Remove  tags from content
-            assistantMessage.content = message.content.replace(thinkRegex, '');
-          } else {
-            assistantMessage.content = message.content;
-          }
+          assistantMessage.content = message.content;
         }
+
+        // Process think tags after setting initial content
+        processThinkTags(assistantMessage);
 
         // Update UI to show the complete message
         updateMessageDisplay(assistantMessageId);
@@ -1077,6 +1057,37 @@ async function streamResponseFromAPI(provider, assistantMessage) {
       console.error('Error parsing non-streaming response:', parseError);
       throw new Error('Failed to parse API response');
     }
+  }
+}
+
+// Process think tags in message content after streaming completes
+function processThinkTags(message) {
+  if (!message.content) return;
+
+  // Define regex pattern for thinking tags - use non-greedy matching and support multiple pairs
+  const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
+
+  // Find all think tag matches
+  const thinkMatches = [...message.content.matchAll(thinkRegex)];
+
+  if (thinkMatches.length > 0) {
+    // Extract reasoning from think tags and concatenate
+    const extractedReasoning = thinkMatches.map(match => match[1]).join('\n\n');
+
+    // Add to existing reasoning (if any)
+    if (extractedReasoning.trim()) {
+      if (message.reasoning) {
+        message.reasoning += (message.reasoning.trim() ? '\n\n' : '') + extractedReasoning;
+      } else {
+        message.reasoning = extractedReasoning;
+      }
+    }
+
+    // Remove think tags from content
+    message.content = message.content.replace(thinkRegex, '').trim();
+
+    // Update display to reflect the changes
+    updateMessageDisplay(message.id);
   }
 }
 
