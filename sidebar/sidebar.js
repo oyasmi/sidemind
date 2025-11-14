@@ -373,7 +373,14 @@ function createMessageElement(message) {
 
   const content = document.createElement('div');
   content.className = 'message-content';
-  content.innerHTML = renderMarkdown(message.content);
+
+  // User messages: render as plain text to preserve line breaks
+  // Assistant messages: render as markdown
+  if (message.role === 'user') {
+    content.textContent = message.content;
+  } else {
+    content.innerHTML = renderMarkdown(message.content);
+  }
 
   // Add reasoning section first (before content) if exists
   if (message.reasoning && message.reasoning.trim()) {
@@ -1282,7 +1289,13 @@ function updateMessageDisplay(messageId) {
 
   const contentElement = messageElement.querySelector('.message-content');
   if (contentElement) {
-    contentElement.innerHTML = renderMarkdown(message.content);
+    // User messages: render as plain text to preserve line breaks
+    // Assistant messages: render as markdown
+    if (message.role === 'user') {
+      contentElement.textContent = message.content;
+    } else {
+      contentElement.innerHTML = renderMarkdown(message.content);
+    }
   }
 
   // Handle reasoning section - create or update dynamically

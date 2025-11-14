@@ -595,6 +595,12 @@ button:disabled {
   line-height: 1.6;
 }
 
+/* User messages: preserve whitespace and line breaks */
+.message.user .message-content {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .message-content p {
   margin-bottom: 8px;
 }
