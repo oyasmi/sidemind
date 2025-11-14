@@ -60,55 +60,55 @@
 }
 
 :root.dark-theme {
-  /* Dark theme */
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #2a2a2a;
-  --bg-tertiary: #252525;
-  --text-primary: #e8e8e8;
-  --text-secondary: #a0a0a0;
-  --text-tertiary: #707070;
-  --border-primary: #404040;
-  --border-secondary: #333333;
-  --accent: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-  --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
+  /* Dark theme - macOS style */
+  --bg-primary: #2C2C2E;
+  --bg-secondary: #3A3A3C;
+  --bg-tertiary: #48484A;
+  --text-primary: #FFFFFF;
+  --text-secondary: #AEAEB2;
+  --text-tertiary: #8E8E93;
+  --border-primary: #545458;
+  --border-secondary: #636366;
+  --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
   --accent-light: #431407;
-  --user-bubble: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-  --assistant-bubble: #333333;
+  --user-bubble: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --assistant-bubble: #3A3A3C;
   --reasoning-bg: #431407;
-  --gradient-primary: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-  --gradient-secondary: linear-gradient(135deg, #ffa652 0%, #ff8c42 100%);
-  --gradient-bg: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
-  --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.4);
+  --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+  --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
+  --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 
 /* System preference fallback - only used when theme is not explicitly set */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Dark theme */
-    --bg-primary: #1a1a1a;
-    --bg-secondary: #2a2a2a;
-    --bg-tertiary: #252525;
-    --text-primary: #e8e8e8;
-    --text-secondary: #a0a0a0;
-    --text-tertiary: #707070;
-    --border-primary: #404040;
-    --border-secondary: #333333;
-    --accent: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-    --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
+    /* Dark theme - macOS style */
+    --bg-primary: #2C2C2E;
+    --bg-secondary: #3A3A3C;
+    --bg-tertiary: #48484A;
+    --text-primary: #FFFFFF;
+    --text-secondary: #AEAEB2;
+    --text-tertiary: #8E8E93;
+    --border-primary: #545458;
+    --border-secondary: #636366;
+    --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
     --accent-light: #431407;
-    --user-bubble: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-    --assistant-bubble: #333333;
+    --user-bubble: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --assistant-bubble: #3A3A3C;
     --reasoning-bg: #431407;
-    --gradient-primary: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-    --gradient-secondary: linear-gradient(135deg, #ffa652 0%, #ff8c42 100%);
-    --gradient-bg: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
-    --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.4);
+    --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+    --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
+    --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -183,7 +183,7 @@ button:disabled {
   flex-direction: column;
   height: 100vh;
   position: relative;
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--bg-secondary);
   backdrop-filter: blur(10px);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -292,8 +292,8 @@ button:disabled {
 
 .model-selector option,
 .system-prompt-selector option {
-  background-color: #333;
-  color: white;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .model-selector:focus,
@@ -459,9 +459,9 @@ button:disabled {
 }
 
 .message.assistant .message-bubble {
-  background: white;
-  color: #333;
-  border: 1px solid #e1e5e9;
+  background: var(--assistant-bubble);
+  color: var(--text-primary);
+  border: 1px solid var(--border-primary);
   border-bottom-left-radius: 6px;
   box-shadow: var(--shadow-sm);
 }
@@ -489,7 +489,7 @@ button:disabled {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: var(--bg-tertiary);
   color: var(--text-tertiary);
   border: none;
   cursor: pointer;
@@ -498,14 +498,14 @@ button:disabled {
 }
 
 .message-actions .copy-btn:hover {
-  background-color: rgba(255, 107, 53, 0.1);
-  color: #ff6b35;
+  background-color: var(--focus-bg);
+  color: var(--focus-color);
   transform: scale(1.05);
 }
 
 .message-actions .copy-btn.copied {
-  color: #4ade80;
-  background-color: rgba(74, 222, 128, 0.1);
+  color: var(--success);
+  background-color: rgba(52, 211, 153, 0.1);
 }
 
 .message-actions .regenerate-btn {
@@ -515,7 +515,7 @@ button:disabled {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: var(--bg-tertiary);
   color: var(--text-tertiary);
   border: none;
   cursor: pointer;
@@ -524,14 +524,14 @@ button:disabled {
 }
 
 .message-actions .regenerate-btn:hover {
-  background-color: rgba(255, 107, 53, 0.1);
-  color: #ff6b35;
+  background-color: var(--focus-bg);
+  color: var(--focus-color);
   transform: scale(1.05);
 }
 
 .message-actions .regenerate-btn.regenerating {
-  color: #ff6b35;
-  background-color: rgba(255, 107, 53, 0.1);
+  color: var(--focus-color);
+  background-color: var(--focus-bg);
   animation: spin 1s linear infinite;
 }
 
@@ -542,38 +542,6 @@ button:disabled {
   white-space: nowrap;
 }
 
-/* Dark theme adjustments */
-@media (prefers-color-scheme: dark) {
-  .message-actions .copy-btn {
-    background-color: rgba(255, 255, 255, 0.05);
-    color: var(--text-tertiary);
-  }
-
-  .message-actions .copy-btn:hover {
-    background-color: rgba(255, 107, 53, 0.2);
-    color: #ff8c42;
-  }
-
-  .message-actions .copy-btn.copied {
-    color: #4ade80;
-    background-color: rgba(74, 222, 128, 0.1);
-  }
-
-  .message-actions .regenerate-btn {
-    background-color: rgba(255, 255, 255, 0.05);
-    color: var(--text-tertiary);
-  }
-
-  .message-actions .regenerate-btn:hover {
-    background-color: rgba(255, 107, 53, 0.2);
-    color: #ff8c42;
-  }
-
-  .message-actions .regenerate-btn.regenerating {
-    color: #ff8c42;
-    background-color: rgba(255, 107, 53, 0.2);
-  }
-}
 
 /* Spin animation for regenerating button */
 @keyframes spin {
@@ -713,7 +681,7 @@ button:disabled {
 
 /* Input container */
 .input-container {
-  background: white;
+  background: var(--bg-secondary);
   border-top: 1px solid var(--border-primary);
   padding: 20px;
   display: flex;
@@ -766,19 +734,19 @@ button:disabled {
 }
 
 .message-input:focus {
-  border-color: #ff6b35;
-  background: white;
-  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.1);
+  border-color: var(--focus-color);
+  background: var(--bg-secondary);
+  box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
 .message-input::placeholder {
-  color: #999;
+  color: var(--text-tertiary);
 }
 
 /* Input area button reset */
 .input-container .icon-btn {
-  background: #f8f9fa;
-  color: #6c757d;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
   border: none;
   width: 36px;
   height: 36px;
@@ -793,8 +761,8 @@ button:disabled {
 }
 
 .new-chat-btn {
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--text-secondary, #6c757d);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
 }
 
 .new-chat-btn:hover {

@@ -60,59 +60,59 @@
 }
 
 :root.dark-theme {
-  /* Dark theme */
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #2a2a2a;
-  --bg-tertiary: #252525;
-  --text-primary: #e8e8e8;
-  --text-secondary: #a0a0a0;
-  --text-tertiary: #707070;
-  --border-primary: #404040;
-  --border-secondary: #333333;
-  --accent: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-  --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
+  /* Dark theme - macOS style */
+  --bg-primary: #2C2C2E;
+  --bg-secondary: #3A3A3C;
+  --bg-tertiary: #48484A;
+  --text-primary: #FFFFFF;
+  --text-secondary: #AEAEB2;
+  --text-tertiary: #8E8E93;
+  --border-primary: #545458;
+  --border-secondary: #636366;
+  --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
   --accent-light: #431407;
-  --focus-color: #ff8c42;
-  --focus-bg: rgba(255, 140, 66, 0.1);
-  --success: #34d399;
-  --success-hover: #10b981;
-  --danger: #f87171;
-  --danger-hover: #ef4444;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
-  --gradient-primary: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-  --gradient-secondary: linear-gradient(135deg, #ffa652 0%, #ff8c42 100%);
-  --gradient-bg: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+  --focus-color: #FF8C42;
+  --focus-bg: rgba(255, 140, 66, 0.15);
+  --success: #34D399;
+  --success-hover: #10B981;
+  --danger: #F87171;
+  --danger-hover: #EF4444;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
+  --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+  --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
 }
 
 /* System preference fallback - only used when theme is not explicitly set */
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Dark theme */
-    --bg-primary: #1a1a1a;
-    --bg-secondary: #2a2a2a;
-    --bg-tertiary: #252525;
-    --text-primary: #e8e8e8;
-    --text-secondary: #a0a0a0;
-    --text-tertiary: #707070;
-    --border-primary: #404040;
-    --border-secondary: #333333;
-    --accent: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-    --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
+    /* Dark theme - macOS style */
+    --bg-primary: #2C2C2E;
+    --bg-secondary: #3A3A3C;
+    --bg-tertiary: #48484A;
+    --text-primary: #FFFFFF;
+    --text-secondary: #AEAEB2;
+    --text-tertiary: #8E8E93;
+    --border-primary: #545458;
+    --border-secondary: #636366;
+    --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
     --accent-light: #431407;
-    --focus-color: #ff8c42;
-    --focus-bg: rgba(255, 140, 66, 0.1);
-    --success: #34d399;
-    --success-hover: #10b981;
-    --danger: #f87171;
-    --danger-hover: #ef4444;
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
-    --gradient-primary: linear-gradient(135deg, #ff8c42 0%, #ff6b35 100%);
-    --gradient-secondary: linear-gradient(135deg, #ffa652 0%, #ff8c42 100%);
-    --gradient-bg: linear-gradient(135deg, #2a2a2a 0%, #1a1a1a 100%);
+    --focus-color: #FF8C42;
+    --focus-bg: rgba(255, 140, 66, 0.15);
+    --success: #34D399;
+    --success-hover: #10B981;
+    --danger: #F87171;
+    --danger-hover: #EF4444;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
+    --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+    --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
   }
 }
 
@@ -138,7 +138,7 @@ body {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--bg-secondary);
   backdrop-filter: blur(10px);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -349,7 +349,7 @@ body {
 
 .number-input:focus {
   border-color: var(--focus-color);
-  background: white;
+  background: var(--bg-secondary);
   box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
@@ -370,7 +370,7 @@ body {
 .select-input:focus,
 .text-input:focus {
   border-color: var(--focus-color);
-  background: white;
+  background: var(--bg-secondary);
   box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
@@ -603,7 +603,7 @@ body {
 .form-group input:focus,
 .form-group textarea:focus {
   border-color: var(--focus-color);
-  background: white;
+  background: var(--bg-secondary);
   box-shadow: 0 0 0 3px var(--focus-bg);
 }
 
