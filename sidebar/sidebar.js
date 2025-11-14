@@ -24,7 +24,8 @@ const state = {
   },
   isStreaming: false,
   currentStreamingMessage: null,
-  userScrolledUp: false
+  userScrolledUp: false,
+  abortController: null
 };
 
 // DOM Elements
@@ -103,7 +104,7 @@ function setupEventListeners() {
 
   // Chat controls
   elements.newChatBtn.addEventListener('click', createNewSession);
-  elements.sendBtn.addEventListener('click', handleSendMessage);
+  elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
 
   // Input handling
@@ -340,6 +341,10 @@ function createMessageElement(message) {
   messageDiv.className = `message ${message.role}`;
   messageDiv.setAttribute('data-message-id', message.id);
 
+  // Create message header with avatar and sender name
+  const messageHeader = document.createElement('div');
+  messageHeader.className = 'message-header';
+
   // Create avatar
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
@@ -349,6 +354,15 @@ function createMessageElement(message) {
   } else {
     avatar.innerHTML = '<i class="fas fa-robot"></i>';
   }
+
+  // Create sender name
+  const senderName = document.createElement('span');
+  senderName.className = 'sender-name';
+  senderName.textContent = message.role === 'user' ? 'You' : 'Assistant';
+
+  // Assemble message header
+  messageHeader.appendChild(avatar);
+  messageHeader.appendChild(senderName);
 
   // Create message wrapper to contain bubble and actions
   const messageWrapper = document.createElement('div');
@@ -377,16 +391,9 @@ function createMessageElement(message) {
   messageWrapper.appendChild(bubble);
   messageWrapper.appendChild(actionsBar);
 
-  // Assemble message with avatar and wrapper
-  if (message.role === 'user') {
-    // User: wrapper first, then avatar
-    messageDiv.appendChild(messageWrapper);
-    messageDiv.appendChild(avatar);
-  } else {
-    // Assistant: avatar first, then wrapper
-    messageDiv.appendChild(avatar);
-    messageDiv.appendChild(messageWrapper);
-  }
+  // Assemble message with header and wrapper
+  messageDiv.appendChild(messageHeader);
+  messageDiv.appendChild(messageWrapper);
 
   return messageDiv;
 }
@@ -619,7 +626,20 @@ function updateInputState() {
   const hasMessage = elements.messageInput.value.trim().length > 0;
   const canSend = hasConfig && hasMessage && !state.isStreaming;
 
+  // Update button disabled state
   elements.sendBtn.disabled = !canSend;
+
+  // Update button appearance and behavior based on streaming state
+  if (state.isStreaming) {
+    // Show loading button (clicking will stop generation)
+    elements.sendBtn.setAttribute('data-state', 'stop');
+    elements.sendBtn.setAttribute('aria-label', 'Click to stop generation');
+    elements.sendBtn.disabled = false; // Always enable stop button
+  } else {
+    // Show send button
+    elements.sendBtn.setAttribute('data-state', 'send');
+    elements.sendBtn.setAttribute('aria-label', 'Send Message');
+  }
 }
 
 function applyFontSettings() {
@@ -761,6 +781,40 @@ async function handleSendMessage() {
   await sendMessageToAPI(message);
 }
 
+// Handle Stop Generation
+async function handleStopGeneration() {
+  if (!state.isStreaming || !state.abortController) {
+    console.log('No active streaming to stop');
+    return;
+  }
+
+  console.log('Stopping generation...');
+
+  try {
+    // Abort the fetch request
+    state.abortController.abort();
+
+    console.log('Generation stopped by user');
+
+  } catch (error) {
+    // Silently ignore abort errors since they're expected
+    if (error.name === 'AbortError') {
+      console.log('Abort signal sent successfully');
+    } else {
+      console.error('Error stopping generation:', error);
+    }
+  }
+}
+
+// Handle Send or Stop button click
+async function handleSendOrStop() {
+  if (state.isStreaming) {
+    await handleStopGeneration();
+  } else {
+    await handleSendMessage();
+  }
+}
+
 function openOptions() {
   chrome.runtime.openOptionsPage();
 }
@@ -896,6 +950,9 @@ async function sendMessageToAPI(_userMessage) {
   // Reset scroll state when starting API response
   state.userScrolledUp = false;
 
+  // Create AbortController for this request
+  state.abortController = new AbortController();
+
   state.isStreaming = true;
   updateInputState();
 
@@ -914,13 +971,51 @@ async function sendMessageToAPI(_userMessage) {
   renderMessages();
 
   try {
-    await streamResponseFromAPI(provider, assistantMessage);
+    await streamResponseFromAPI(provider, assistantMessage, state.abortController.signal);
   } catch (error) {
     console.error('API Error:', error);
-    handleError(error);
+    // Don't handle error if it was aborted by user
+    if (error.name === 'AbortError') {
+      console.log('Request aborted by user');
+    } else {
+      handleError(error);
+    }
   } finally {
+    // Clean up streaming state
+    const wasAborted = state.abortController?.signal.aborted;
+    const streamingMessageId = state.currentStreamingMessage?.id;
+
+    // If this was an abort, handle the partial message properly
+    if (wasAborted && streamingMessageId) {
+      const session = state.sessions[state.currentSessionId];
+      if (session) {
+        const streamingMessage = session.messages.find(m => m.id === streamingMessageId);
+        if (streamingMessage) {
+          // Always keep the message if it has any content or reasoning
+          const hasContent = streamingMessage.content && streamingMessage.content.trim() !== '';
+          const hasReasoning = streamingMessage.reasoning && streamingMessage.reasoning.trim() !== '';
+
+          if (hasContent || hasReasoning) {
+            // Keep the partial message and update its metadata
+            streamingMessage.timestamp = new Date().toISOString();
+            console.log(`Keeping partial message: ${streamingMessage.content?.length || 0} chars content, ${streamingMessage.reasoning?.length || 0} chars reasoning`);
+            renderMessages(); // Re-render to ensure it's properly displayed
+            saveToStorage(); // Save to preserve the partial message
+          } else {
+            // Only remove completely empty messages
+            session.messages = session.messages.filter(m => m.id !== streamingMessageId);
+            console.log('Removed empty streaming message');
+            renderMessages();
+          }
+        }
+      }
+    }
+
+    // Reset streaming state after handling the message
     state.isStreaming = false;
     state.currentStreamingMessage = null;
+    state.abortController = null;
+
     saveToStorage();
     updateInputState();
   }
@@ -955,7 +1050,7 @@ function buildRequestBody(messages) {
   return body;
 }
 
-async function streamResponseFromAPI(provider, assistantMessage) {
+async function streamResponseFromAPI(provider, assistantMessage, signal) {
   const messages = buildMessageHistory();
   const assistantMessageId = assistantMessage.id;
 
@@ -966,14 +1061,27 @@ async function streamResponseFromAPI(provider, assistantMessage) {
   const requestBody = buildRequestBody(messages);
   const isStream = requestBody.stream;
 
-  const response = await fetch(URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${provider.apiKey}`
-    },
-    body: JSON.stringify(requestBody)
-  });
+  let response;
+  try {
+    response = await fetch(URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${provider.apiKey}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: signal
+    });
+  } catch (error) {
+    // Handle abort errors silently
+    if (error.name === 'AbortError') {
+      console.log('Request aborted by user');
+      // Return normally instead of throwing
+      return;
+    }
+    // Re-throw other errors
+    throw error;
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -986,56 +1094,92 @@ async function streamResponseFromAPI(provider, assistantMessage) {
     const decoder = new TextDecoder();
     let partialLine = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+    try {
+      while (true) {
+        // Check if the request was aborted
+        if (signal.aborted) {
+          console.log('Streaming aborted by user');
+          throw new DOMException('Request aborted', 'AbortError');
+        }
 
-    const textChunk = decoder.decode(value);
-    const lines = (partialLine + textChunk).split('\n');
-    partialLine = lines.pop();
+        const { done, value } = await reader.read();
+        if (done) break;
 
-    for (const rawline of lines) {
-      const line = rawline.trim();
-      if (line.trim() === '' || !line.startsWith('data:')) continue;
+        const textChunk = decoder.decode(value);
+        const lines = (partialLine + textChunk).split('\n');
+        partialLine = lines.pop();
 
-      const data = line.slice(5).trim();
-      if (data === '[DONE]') continue;
+        for (const rawline of lines) {
+          const line = rawline.trim();
+          if (line.trim() === '' || !line.startsWith('data:')) continue;
 
-      try {
-          const parsed = JSON.parse(data);
-        const delta = parsed.choices?.[0]?.delta;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') continue;
 
-          if (!delta) continue;
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta;
 
-          // Handle new format reasoning content
-          if (delta.reasoning_content) {
-            assistantMessage.reasoning += delta.reasoning_content;
+            if (!delta) continue;
+
+            // Handle new format reasoning content
+            if (delta.reasoning_content) {
+              assistantMessage.reasoning += delta.reasoning_content;
+            }
+
+            // Handle content (skip think tag processing during streaming)
+            if (delta.content) {
+              assistantMessage.content += delta.content;
+            }
+
+            // Update UI
+            updateMessageDisplay(assistantMessageId);
+          } catch (parseError) {
+            console.warn('Parse error:', parseError, 'Data:', data);
           }
-
-          // Handle content (skip think tag processing during streaming)
-          if (delta.content) {
-            assistantMessage.content += delta.content;
-          }
-
-          // Update UI
-          updateMessageDisplay(assistantMessageId);
-        } catch (parseError) {
-          console.warn('Parse error:', parseError, 'Data:', data);
         }
       }
-    }
 
-    // Final processing for think tags after streaming completes
-    processThinkTags(assistantMessage);
+      // Final processing for think tags after streaming completes
+      processThinkTags(assistantMessage);
+    } catch (error) {
+      // Handle abort errors during streaming
+      if (error.name === 'AbortError' || (error instanceof DOMException && error.message === 'Request aborted')) {
+        console.log('Streaming aborted by user');
+        // Return normally instead of throwing
+        return;
+      }
+      // Re-throw other errors
+      throw error;
+    }
 
   } else {
     // Handle non-streaming response
     try {
+      // Check if aborted before processing response
+      if (signal.aborted) {
+        console.log('Non-streaming response aborted by user');
+        return;
+      }
+
       const responseData = await response.json();
+
+      // Check if aborted while parsing JSON
+      if (signal.aborted) {
+        console.log('Non-streaming response aborted by user during parsing');
+        return;
+      }
+
       const choice = responseData.choices?.[0];
 
       if (choice?.message) {
         const message = choice.message;
+
+        // Check if aborted while processing message
+        if (signal.aborted) {
+          console.log('Non-streaming response aborted by user during message processing');
+          return;
+        }
 
         // Handle reasoning content (new format)
         if (message.reasoning_content) {
@@ -1054,6 +1198,11 @@ async function streamResponseFromAPI(provider, assistantMessage) {
         updateMessageDisplay(assistantMessageId);
       }
     } catch (parseError) {
+      // Check if this is an abort error
+      if (signal.aborted) {
+        console.log('Non-streaming response aborted by user');
+        return;
+      }
       console.error('Error parsing non-streaming response:', parseError);
       throw new Error('Failed to parse API response');
     }

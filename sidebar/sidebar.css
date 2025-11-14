@@ -314,7 +314,7 @@ button:disabled {
 .messages-list {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
+  padding: 8px;
   scroll-behavior: smooth;
 }
 
@@ -360,7 +360,7 @@ button:disabled {
 
 /* Messages */
 .message {
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   animation: fadeInUp 0.3s ease;
 }
 
@@ -393,36 +393,75 @@ button:disabled {
 
 .message.user {
   display: flex;
-  justify-content: flex-end;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .message.assistant {
   display: flex;
-  justify-content: flex-start;
+  flex-direction: column;
   align-items: flex-start;
 }
 
-/* Ensure message wrapper maintains proper alignment */
-.message.user .message-wrapper {
-  align-items: flex-end;
+/* Message header with avatar and sender name */
+.message-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 0 8px;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
 }
 
+.message:hover .message-header {
+  opacity: 1;
+}
+
+.message.user .message-header {
+  flex-direction: row-reverse;
+}
+
+.message.assistant .message-header {
+  flex-direction: row;
+}
+
+.sender-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* Message wrapper adjustments */
+.message-wrapper {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+  position: relative;
+}
+
+/* Message bubble offset for modern staggered look */
 .message.assistant .message-wrapper {
-  align-items: flex-start;
+  margin-left: 18px; /* Move right by 3/4 of avatar width (24px * 0.75 = 18px) */
+  margin-right: 0;
+}
+
+.message.user .message-wrapper {
+  margin-right: 18px; /* Move left by 3/4 of avatar width (24px * 0.75 = 18px) */
+  margin-left: 0;
 }
 
 /* Message avatars */
 .message-avatar {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 600;
-  margin: 0 12px;
   flex-shrink: 0;
 }
 
@@ -454,7 +493,6 @@ button:disabled {
 .message.user .message-bubble {
   background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
   color: white;
-  border-bottom-right-radius: 6px;
   border: none;
 }
 
@@ -462,7 +500,6 @@ button:disabled {
   background: var(--assistant-bubble);
   color: var(--text-primary);
   border: 1px solid var(--border-primary);
-  border-bottom-left-radius: 6px;
   box-shadow: var(--shadow-sm);
 }
 
@@ -766,9 +803,9 @@ button:disabled {
 }
 
 .new-chat-btn:hover {
-  background: var(--gradient-primary);
-  color: white;
-  transform: translateY(-2px);
+  background: var(--bg-tertiary);
+  color: var(--gradient-primary);
+  transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
 
@@ -779,7 +816,7 @@ button:disabled {
   height: 36px;
   position: absolute;
   right: 6px;
-  bottom: 6px;
+  bottom: 4px;
   z-index: 2;
 }
 
@@ -787,6 +824,80 @@ button:disabled {
   background: var(--gradient-secondary);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
+}
+
+/* Send/Stop button state management */
+.send-btn[data-state="stop"] {
+  background: linear-gradient(135deg, #ff9248 0%, #ff6b35 100%);
+}
+
+.send-btn[data-state="stop"]:hover:not(:disabled) {
+  background: linear-gradient(135deg, #ff8c42 0%, #ff5722 100%);
+}
+
+/* Icon visibility management - ensure icons are centered within button */
+.send-btn .send-icon,
+.send-btn .stop-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Ensure stop icon has orange color to match the button theme */
+.send-btn[data-state="stop"] .stop-icon {
+  color: white;
+  animation: spin 1s linear infinite;
+}
+
+/* Spin animation for loading spinner */
+@keyframes spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.send-btn[data-state="send"] .send-icon {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.send-btn[data-state="send"] .stop-icon {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+  pointer-events: none;
+}
+
+.send-btn[data-state="stop"] .send-icon {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+  pointer-events: none;
+}
+
+.send-btn[data-state="stop"] .stop-icon {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* Additional hidden class for fallback */
+.hidden {
+  display: none !important;
+}
+
+/* Ensure button doesn't show hidden icons when switching states */
+.send-btn[data-state="send"] .hidden.send-icon,
+.send-btn[data-state="stop"] .hidden.stop-icon {
+  display: block !important;
 }
 
 /* Chat History Dropdown */
@@ -1016,6 +1127,31 @@ button:disabled {
     width: calc(100vw - 32px);
     right: 16px;
   }
+
+  /* Adjust message layout for smaller screens */
+  .message-avatar {
+    width: 20px;
+    height: 20px;
+    font-size: 10px;
+  }
+
+  .sender-name {
+    font-size: 11px;
+  }
+
+  .message-header {
+    gap: 4px;
+    margin-bottom: 3px;
+  }
+
+  /* Adjust bubble offset for smaller screens (20px * 0.75 = 15px) */
+  .message.assistant .message-wrapper {
+    margin-left: 15px;
+  }
+
+  .message.user .message-wrapper {
+    margin-right: 15px;
+  }
 }
 
 @media (max-width: 360px) {
@@ -1060,5 +1196,34 @@ button:disabled {
   .header-right {
     gap: 4px;
     margin-right: 6px;
+  }
+
+  /* Further adjust message layout for very small screens */
+  .message-avatar {
+    width: 18px;
+    height: 18px;
+    font-size: 9px;
+  }
+
+  .sender-name {
+    font-size: 10px;
+  }
+
+  .message-header {
+    gap: 3px;
+    margin-bottom: 2px;
+  }
+
+  .message-wrapper {
+    max-width: 90%;
+  }
+
+  /* Adjust bubble offset for very small screens (18px * 0.75 = 13.5px ≈ 13px) */
+  .message.assistant .message-wrapper {
+    margin-left: 13px;
+  }
+
+  .message.user .message-wrapper {
+    margin-right: 13px;
   }
 }
