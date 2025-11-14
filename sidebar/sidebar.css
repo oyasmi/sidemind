@@ -252,6 +252,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-right: 8px;
 }
 
 /* Header buttons specifically */
@@ -259,6 +260,12 @@ button:disabled {
   background: rgba(255, 255, 255, 0.1);
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.3);
+  position: relative;
+}
+
+/* Extend click area for options button */
+#optionsBtn {
+  margin-right: 16px;
 }
 
 .header .icon-btn:hover:not(:disabled) {
@@ -1084,5 +1091,6 @@ button:disabled {
 
   .header-right {
     gap: 4px;
+    margin-right: 6px;
   }
 }
