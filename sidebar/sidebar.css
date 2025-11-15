@@ -1,41 +1,24 @@
-/* CSS Variables for theming */
+/* ========================================
+# SIDECHAT SIDEBAR STYLES
+# ======================================== */
+
+/* ========================================
+# CSS VARIABLES & THEMING SYSTEM
+# ======================================== */
+
 :root {
   /* Font settings */
   --main-font-size: 14px; /* Default size */
   --main-font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Default font stack */
 
-  /* Light theme */
-  --bg-primary: #f8f9fa;
-  --bg-secondary: #ffffff;
-  --bg-tertiary: #f9fafb;
-  --text-primary: #1a1a1a;
-  --text-secondary: #666666;
-  --text-tertiary: #999999;
-  --border-primary: #e0e0e0;
-  --border-secondary: #f0f0f0;
-  --accent: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
-  --accent-light: #fff7ed;
-  --user-bubble: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  --assistant-bubble: #f0f0f0;
-  --reasoning-bg: #fff7ed;
-  --gradient-primary: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  --gradient-secondary: linear-gradient(135deg, #ff8c42 0%, #ffa652 100%);
-  --gradient-bg: linear-gradient(135deg, #fff7ed 0%, #fed7aa 100%);
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 -2px 10px rgba(0,0,0,0.1);
+  /* Design tokens */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-pill: 22px;
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
 
-/* Manual theme classes */
-:root.light-theme {
-  /* Light theme - same as default */
+  /* Light theme (default) */
   --bg-primary: #f8f9fa;
   --bg-secondary: #ffffff;
   --bg-tertiary: #f9fafb;
@@ -57,6 +40,11 @@
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
   --shadow-xl: 0 -2px 10px rgba(0,0,0,0.1);
+}
+
+/* Manual theme overrides */
+:root.light-theme {
+  /* Light theme - inherits from :root default, no overrides needed */
 }
 
 :root.dark-theme {
@@ -84,10 +72,10 @@
   --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 
-/* System preference fallback - only used when theme is not explicitly set */
+/* System preference theme (only used when no manual theme is set) */
 @media (prefers-color-scheme: dark) {
-  :root {
-    /* Dark theme - macOS style */
+  :root:not(.light-theme):not(.dark-theme) {
+    /* Dark theme variables */
     --bg-primary: #2C2C2E;
     --bg-secondary: #3A3A3C;
     --bg-tertiary: #48484A;
@@ -112,7 +100,10 @@
   }
 }
 
-/* Reset and base styles */
+/* ========================================
+# BASE STYLES & RESET
+# ======================================== */
+
 * {
   margin: 0;
   padding: 0;
@@ -177,6 +168,10 @@ button:disabled {
   justify-content: center;
 }
 
+/* ========================================
+# LAYOUT COMPONENTS
+# ======================================== */
+
 /* App container */
 .app-container {
   display: flex;
@@ -189,6 +184,10 @@ button:disabled {
   overflow: hidden;
   box-shadow: var(--shadow-md);
 }
+
+/* ========================================
+# HEADER COMPONENTS
+# ======================================== */
 
 /* Header */
 .header {

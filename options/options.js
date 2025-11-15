@@ -8,7 +8,7 @@ let config = {
   selectedModel: null,
   selectedSystemPrompt: 'default',
   temperature: 0.7,
-  max_completion_tokens: '',
+  max_completion_tokens: '', // API standard naming
   stream: true,
   systemPrompts: [
     {
@@ -377,7 +377,7 @@ function createPromptElement(prompt) {
 function renderParameters() {
   elements.temperatureSlider.value = config.temperature;
   elements.temperatureValue.textContent = config.temperature;
-  elements.maxCompletionTokensInput.value = config.max_completion_tokens;
+  elements.maxCompletionTokensInput.value = config.max_completion_tokens; // API standard naming
   elements.streamSelector.value = config.stream.toString();
 
   // Load font settings
@@ -610,7 +610,7 @@ async function updateMaxCompletionTokens() {
   const value = elements.maxCompletionTokensInput.value.trim();
   // Allow empty string (null) or valid positive integer
   if (value === '' || (!isNaN(value) && parseInt(value) > 0)) {
-    config.max_completion_tokens = value;
+    config.max_completion_tokens = value; // API standard naming
     await saveConfig();
   }
 }

@@ -1,7 +1,10 @@
 // SideMind Chrome Extension - Sidebar Script
 // Main application logic for the sidebar chat interface
 
-// State Management
+// ========================================
+// GLOBAL STATE MANAGEMENT
+// ========================================
+
 const state = {
   currentSessionId: null,
   sessions: {},
@@ -11,7 +14,7 @@ const state = {
     selectedModel: null,
     selectedSystemPrompt: 'default',
     temperature: 0.7,
-    max_completion_tokens: '',
+    max_completion_tokens: '', // API standard naming
     stream: true,
     systemPrompts: [
       {
@@ -28,7 +31,10 @@ const state = {
   abortController: null
 };
 
-// DOM Elements
+// ========================================
+// DOM ELEMENT REFERENCES
+// ========================================
+
 const elements = {
   modelSelector: null,
   systemPromptSelector: null,
@@ -44,6 +50,10 @@ const elements = {
   closeBtn: null,
   chatHistoryList: null
 };
+
+// ========================================
+// APPLICATION INITIALIZATION
+// ========================================
 
 // Initialize Application
 document.addEventListener('DOMContentLoaded', async () => {
@@ -151,7 +161,11 @@ function initializeUI() {
   updateInputState();
 }
 
-// Storage Functions
+// ========================================
+// STORAGE MANAGEMENT
+// ========================================
+
+// Load configuration and sessions from Chrome storage
 async function loadFromStorage() {
   try {
     // Try to load from sync storage first (where options now saves)
@@ -198,11 +212,12 @@ async function loadFromStorage() {
     });
 
   } catch (error) {
-    console.error('Error loading from storage:', error);
+    logError(error, 'Storage Load');
     createNewSession();
   }
 }
 
+// Save configuration and sessions to Chrome storage
 async function saveToStorage() {
   try {
     // Save config to sync storage
@@ -218,11 +233,15 @@ async function saveToStorage() {
 
     console.log('Saved to storage (config: sync, sessions: local)');
   } catch (error) {
-    console.error('Error saving to storage:', error);
+    logError(error, 'Storage Save');
   }
 }
 
-// Session Management
+// ========================================
+// SESSION MANAGEMENT
+// ========================================
+
+// Create a new chat session
 function createNewSession() {
   const sessionId = Date.now().toString();
   state.sessions[sessionId] = {
@@ -241,6 +260,7 @@ function createNewSession() {
   console.log('Created new session:', sessionId);
 }
 
+// Switch to a different chat session
 function switchSession(sessionId) {
   if (state.sessions[sessionId]) {
     state.currentSessionId = sessionId;
@@ -253,6 +273,7 @@ function switchSession(sessionId) {
   }
 }
 
+// Delete a chat session
 function deleteSession(sessionId) {
   if (!state.sessions[sessionId]) {
     return;
@@ -289,9 +310,14 @@ function deleteSession(sessionId) {
   console.log('Deleted session:', sessionId);
 }
 
-// Message Management
+// ========================================
+// MESSAGE MANAGEMENT
+// ========================================
+
+// Add a new message to the current session
 function addMessage(role, content, reasoning = null) {
-  const session = state.sessions[state.currentSessionId];
+  const sessionId = state.currentSessionId;
+  const session = state.sessions[sessionId];
   if (!session) return;
 
   const message = {
@@ -304,20 +330,27 @@ function addMessage(role, content, reasoning = null) {
 
   session.messages.push(message);
 
+  // Prepare session updates
+  const sessionUpdates = {
+    timestamp: new Date().toISOString(),
+    modelUsed: state.config.selectedModel,
+    systemPromptId: state.config.selectedSystemPrompt
+  };
+
   // Auto-generate session title from first user message
   if (role === 'user' && session.messages.length === 1) {
-    session.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
+    sessionUpdates.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
   }
 
-  session.timestamp = new Date().toISOString();
-  session.modelUsed = state.config.selectedModel;
-  session.systemPromptId = state.config.selectedSystemPrompt;
-
+  updateSession(sessionId, sessionUpdates);
   renderMessages();
-  saveToStorage();
 }
 
-// UI Rendering
+// ========================================
+// UI RENDERING FUNCTIONS
+// ========================================
+
+// Render all messages in the current session
 function renderMessages() {
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
@@ -336,28 +369,21 @@ function renderMessages() {
   scrollToBottom();
 }
 
+// Create a DOM element for a single message
 function createMessageElement(message) {
-  const messageDiv = document.createElement('div');
-  messageDiv.className = `message ${message.role}`;
+  const messageDiv = createElement('div', `message ${message.role}`);
   messageDiv.setAttribute('data-message-id', message.id);
 
   // Create message header with avatar and sender name
-  const messageHeader = document.createElement('div');
-  messageHeader.className = 'message-header';
+  const messageHeader = createElement('div', 'message-header');
 
-  // Create avatar
-  const avatar = document.createElement('div');
-  avatar.className = 'message-avatar';
-
-  if (message.role === 'user') {
-    avatar.innerHTML = '<i class="fas fa-user"></i>';
-  } else {
-    avatar.innerHTML = '<i class="fas fa-robot"></i>';
-  }
+  // Create avatar with appropriate icon
+  const avatar = createElement('div', 'message-avatar');
+  const avatarIcon = message.role === 'user' ? 'fas fa-user' : 'fas fa-robot';
+  avatar.innerHTML = createIcon(avatarIcon);
 
   // Create sender name
-  const senderName = document.createElement('span');
-  senderName.className = 'sender-name';
+  const senderName = createElement('span', 'sender-name');
   senderName.textContent = message.role === 'user' ? 'You' : 'Assistant';
 
   // Assemble message header
@@ -365,14 +391,9 @@ function createMessageElement(message) {
   messageHeader.appendChild(senderName);
 
   // Create message wrapper to contain bubble and actions
-  const messageWrapper = document.createElement('div');
-  messageWrapper.className = 'message-wrapper';
-
-  const bubble = document.createElement('div');
-  bubble.className = 'message-bubble';
-
-  const content = document.createElement('div');
-  content.className = 'message-content';
+  const messageWrapper = createElement('div', 'message-wrapper');
+  const bubble = createElement('div', 'message-bubble');
+  const content = createElement('div', 'message-content');
 
   // User messages: render as plain text to preserve line breaks
   // Assistant messages: render as markdown
@@ -406,34 +427,22 @@ function createMessageElement(message) {
 }
 
 function createMessageActions(message) {
-  const actionsBar = document.createElement('div');
-  actionsBar.className = 'message-actions';
+  const actionsBar = createElement('div', 'message-actions');
 
   // Create copy button
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 'copy-btn';
-  copyBtn.setAttribute('aria-label', 'Copy message');
-  copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
-
-  // Add copy functionality
+  const copyBtn = createButton('copy-btn', 'Copy message', createIcon('fas fa-copy'));
   copyBtn.addEventListener('click', async () => {
     await copyMessageContent(message, copyBtn);
   });
 
   // Create regenerate button
-  const regenerateBtn = document.createElement('button');
-  regenerateBtn.className = 'regenerate-btn';
-  regenerateBtn.setAttribute('aria-label', 'Regenerate response');
-  regenerateBtn.innerHTML = '<i class="fas fa-redo"></i>';
-
-  // Add regenerate functionality
+  const regenerateBtn = createButton('regenerate-btn', 'Regenerate response', createIcon('fas fa-redo'));
   regenerateBtn.addEventListener('click', async () => {
     await regenerateFromMessage(message, regenerateBtn);
   });
 
   // Create time display
-  const timeDisplay = document.createElement('span');
-  timeDisplay.className = 'time-display';
+  const timeDisplay = createElement('span', 'time-display');
   timeDisplay.textContent = formatMessageTime(message.timestamp);
 
   // Assemble actions bar
@@ -492,20 +501,20 @@ async function copyMessageContent(message, copyBtn) {
 
     // Show copied state
     copyBtn.classList.add('copied');
-    copyBtn.innerHTML = '<i class="fas fa-check"></i>';
+    copyBtn.innerHTML = createIcon('fas fa-check');
 
     // Reset after 2 seconds
     setTimeout(() => {
       copyBtn.classList.remove('copied');
-      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+      copyBtn.innerHTML = createIcon('fas fa-copy');
     }, 2000);
 
   } catch (error) {
-    console.error('Failed to copy message:', error);
+    logError(error, 'Copy Message', { messageId: message.id });
     // Show error state briefly
-    copyBtn.innerHTML = '<i class="fas fa-exclamation"></i>';
+    copyBtn.innerHTML = createIcon('fas fa-exclamation');
     setTimeout(() => {
-      copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+      copyBtn.innerHTML = createIcon('fas fa-copy');
     }, 1000);
   }
 }
@@ -597,7 +606,129 @@ function renderMarkdown(text) {
   }
 }
 
-// UI Helper Functions
+// ========================================
+// UTILITY FUNCTIONS
+// ========================================
+
+// DOM Creation Utilities
+function createElement(tag, className, innerHTML = null) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (innerHTML) element.innerHTML = innerHTML;
+  return element;
+}
+
+// Button Creation Utilities
+function createButton(className, ariaLabel, iconHTML = null) {
+  const button = createElement('button', className);
+  if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
+  if (iconHTML) button.innerHTML = iconHTML;
+  return button;
+}
+
+// Icon Utilities
+function createIcon(iconClass) {
+  return `<i class="${iconClass}"></i>`;
+}
+
+// Error Handling Utilities
+function handleAsyncError(error, context = 'Operation') {
+  console.error(`${context} failed:`, error);
+  const errorMessage = error.name === 'AbortError' ?
+    'Operation was cancelled' :
+    `${context} failed. Please try again.`;
+  return errorMessage;
+}
+
+// Enhanced error handling with specific error types
+function getApiErrorMessage(error) {
+  const message = error.message.toLowerCase();
+
+  if (message.includes('401') || message.includes('authentication')) {
+    return 'Authentication failed. Please check your API key.';
+  }
+  if (message.includes('404') || message.includes('not found')) {
+    return 'Model or endpoint not found. Please check your configuration.';
+  }
+  if (message.includes('429') || message.includes('rate limit')) {
+    return 'Rate limit exceeded. Please try again later.';
+  }
+  if (message.includes('network') || message.includes('fetch')) {
+    return 'Network error. Please check your connection.';
+  }
+
+  return 'An error occurred while processing your request.';
+}
+
+// Unified error logging
+function logError(error, context, additionalInfo = {}) {
+  const errorInfo = {
+    context,
+    message: error.message,
+    name: error.name,
+    timestamp: new Date().toISOString(),
+    ...additionalInfo
+  };
+  console.error(`[${context}] Error:`, errorInfo);
+  return errorInfo;
+}
+
+// Storage Validation Utilities
+function validateConfig(config) {
+  return (
+    typeof config === 'object' &&
+    Array.isArray(config.providers) &&
+    Array.isArray(config.systemPrompts) &&
+    typeof config.temperature === 'number' &&
+    typeof config.max_completion_tokens === 'string' &&
+    typeof config.stream === 'boolean' &&
+    (!config.theme || ['light', 'dark', 'system'].includes(config.theme))
+  );
+}
+
+// State Management Utilities
+function updateConfig(updates, immediateSave = true) {
+  Object.assign(state.config, updates);
+  if (immediateSave) {
+    debouncedSave();
+  }
+}
+
+function updateSession(sessionId, updates, immediateSave = true) {
+  if (!state.sessions[sessionId]) return;
+
+  Object.assign(state.sessions[sessionId], updates);
+  state.sessions[sessionId].timestamp = new Date().toISOString();
+
+  if (immediateSave) {
+    debouncedSave();
+  }
+}
+
+// Debounced save to prevent excessive storage operations
+let saveTimeout = null;
+function debouncedSave(delay = 2000) {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+  }
+  saveTimeout = setTimeout(() => {
+    saveToStorage();
+  }, delay);
+}
+
+// Immediate save for important operations
+function immediateSave() {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+  saveToStorage();
+}
+
+// ========================================
+// UI HELPER FUNCTIONS
+// ========================================
+
 function showWelcomeMessage() {
   if (elements.welcomeMessage) {
     elements.welcomeMessage.classList.remove('hidden');
@@ -716,26 +847,36 @@ function updateSystemPromptSelector() {
   });
 }
 
-// Event Handlers
+// ========================================
+// EVENT HANDLERS
+// ========================================
+
 function handleModelChange(event) {
-  state.config.selectedModel = event.target.value;
+  const selectedModel = event.target.value;
 
   // Find the provider for this model
+  let selectedProvider = null;
   for (const provider of state.config.providers) {
-    const model = provider.models.find(m => m.id === event.target.value);
+    const model = provider.models.find(m => m.id === selectedModel);
     if (model) {
-      state.config.selectedProvider = provider.id;
+      selectedProvider = provider.id;
       break;
     }
   }
 
-  saveToStorage();
+  // Update config with both model and provider
+  updateConfig({
+    selectedModel,
+    selectedProvider
+  });
+
   updateInputState();
 }
 
 function handleSystemPromptChange(event) {
-  state.config.selectedSystemPrompt = event.target.value;
-  saveToStorage();
+  updateConfig({
+    selectedSystemPrompt: event.target.value
+  });
 }
 
 function handleInputChange() {
@@ -946,7 +1087,11 @@ function renderChatHistory() {
   });
 }
 
-// API Functions
+// ========================================
+// API COMMUNICATION FUNCTIONS
+// ========================================
+
+// Send a message to the configured LLM API and handle streaming response
 async function sendMessageToAPI(_userMessage) {
   const provider = getCurrentProvider();
   if (!provider) {
@@ -1028,6 +1173,7 @@ async function sendMessageToAPI(_userMessage) {
   }
 }
 
+// Get the currently selected provider object
 function getCurrentProvider() {
   if (!state.config.selectedProvider) {
     return null;
@@ -1035,6 +1181,7 @@ function getCurrentProvider() {
   return state.config.providers.find(p => p.id === state.config.selectedProvider);
 }
 
+// Build the request body for API calls
 function buildRequestBody(messages) {
   const body = {
     model: state.config.selectedModel,
@@ -1057,162 +1204,161 @@ function buildRequestBody(messages) {
   return body;
 }
 
-async function streamResponseFromAPI(provider, assistantMessage, signal) {
-  const messages = buildMessageHistory();
-  const assistantMessageId = assistantMessage.id;
-
-  // Fix base URL: remove only trailing slashes
+// API request helper functions
+async function makeApiRequest(provider, requestBody, signal) {
   const cleanedBaseUrl = provider.baseUrl.replace(/\/$/, '');
-  const URL = `${cleanedBaseUrl}/chat/completions`;
+  const url = `${cleanedBaseUrl}/chat/completions`;
 
-  const requestBody = buildRequestBody(messages);
-  const isStream = requestBody.stream;
-
-  let response;
   try {
-    response = await fetch(URL, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
       body: JSON.stringify(requestBody),
-      signal: signal
+      signal
     });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
+    }
+
+    return response;
   } catch (error) {
-    // Handle abort errors silently
     if (error.name === 'AbortError') {
       console.log('Request aborted by user');
-      // Return normally instead of throwing
-      return;
+      return null;
     }
-    // Re-throw other errors
     throw error;
   }
+}
 
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(`API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
+// Process streaming response
+async function handleStreamingResponse(response, assistantMessage, signal) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let partialLine = '';
+
+  try {
+    while (true) {
+      if (signal.aborted) {
+        throw new DOMException('Request aborted', 'AbortError');
+      }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const textChunk = decoder.decode(value);
+      const lines = (partialLine + textChunk).split('\n');
+      partialLine = lines.pop();
+
+      for (const rawLine of lines) {
+        await processStreamLine(rawLine, assistantMessage);
+      }
+    }
+
+    // Final processing for think tags after streaming completes
+    processThinkTags(assistantMessage);
+  } catch (error) {
+    if (isAbortError(error)) {
+      console.log('Streaming aborted by user');
+      return;
+    }
+    throw error;
   }
+}
 
-  // Handle streaming response
+// Process individual stream line
+async function processStreamLine(rawLine, assistantMessage) {
+  const line = rawLine.trim();
+  if (line === '' || !line.startsWith('data:')) return;
+
+  const data = line.slice(5).trim();
+  if (data === '[DONE]') return;
+
+  try {
+    const parsed = JSON.parse(data);
+    const delta = parsed.choices?.[0]?.delta;
+
+    if (!delta) return;
+
+    // Handle reasoning content
+    if (delta.reasoning_content) {
+      assistantMessage.reasoning += delta.reasoning_content;
+    }
+
+    // Handle content
+    if (delta.content) {
+      assistantMessage.content += delta.content;
+    }
+
+    // Update UI
+    updateMessageDisplay(assistantMessage.id);
+  } catch (parseError) {
+    console.warn('Parse error:', parseError, 'Data:', data);
+  }
+}
+
+// Process non-streaming response
+async function handleNonStreamingResponse(response, assistantMessage, signal) {
+  try {
+    if (signal.aborted) return;
+
+    const responseData = await response.json();
+    if (signal.aborted) return;
+
+    const choice = responseData.choices?.[0];
+    if (!choice?.message) return;
+
+    if (signal.aborted) return;
+
+    const message = choice.message;
+
+    // Handle reasoning content
+    if (message.reasoning_content) {
+      assistantMessage.reasoning = message.reasoning_content;
+    }
+
+    // Handle content
+    if (message.content) {
+      assistantMessage.content = message.content;
+    }
+
+    // Process think tags after setting initial content
+    processThinkTags(assistantMessage);
+
+    // Update UI to show the complete message
+    updateMessageDisplay(assistantMessage.id);
+  } catch (parseError) {
+    if (signal.aborted) return;
+    console.error('Error parsing non-streaming response:', parseError);
+    throw new Error('Failed to parse API response');
+  }
+}
+
+// Check if error is an abort error
+function isAbortError(error) {
+  return error.name === 'AbortError' ||
+         (error instanceof DOMException && error.message === 'Request aborted');
+}
+
+// Main streaming function (refactored)
+async function streamResponseFromAPI(provider, assistantMessage, signal) {
+  const messages = buildMessageHistory();
+  const requestBody = buildRequestBody(messages);
+  const isStream = requestBody.stream;
+
+  // Make API request
+  const response = await makeApiRequest(provider, requestBody, signal);
+  if (!response) return; // Request was aborted
+
+  // Handle response based on streaming mode
   if (isStream) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let partialLine = '';
-
-    try {
-      while (true) {
-        // Check if the request was aborted
-        if (signal.aborted) {
-          console.log('Streaming aborted by user');
-          throw new DOMException('Request aborted', 'AbortError');
-        }
-
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const textChunk = decoder.decode(value);
-        const lines = (partialLine + textChunk).split('\n');
-        partialLine = lines.pop();
-
-        for (const rawline of lines) {
-          const line = rawline.trim();
-          if (line.trim() === '' || !line.startsWith('data:')) continue;
-
-          const data = line.slice(5).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta;
-
-            if (!delta) continue;
-
-            // Handle new format reasoning content
-            if (delta.reasoning_content) {
-              assistantMessage.reasoning += delta.reasoning_content;
-            }
-
-            // Handle content (skip think tag processing during streaming)
-            if (delta.content) {
-              assistantMessage.content += delta.content;
-            }
-
-            // Update UI
-            updateMessageDisplay(assistantMessageId);
-          } catch (parseError) {
-            console.warn('Parse error:', parseError, 'Data:', data);
-          }
-        }
-      }
-
-      // Final processing for think tags after streaming completes
-      processThinkTags(assistantMessage);
-    } catch (error) {
-      // Handle abort errors during streaming
-      if (error.name === 'AbortError' || (error instanceof DOMException && error.message === 'Request aborted')) {
-        console.log('Streaming aborted by user');
-        // Return normally instead of throwing
-        return;
-      }
-      // Re-throw other errors
-      throw error;
-    }
-
+    await handleStreamingResponse(response, assistantMessage, signal);
   } else {
-    // Handle non-streaming response
-    try {
-      // Check if aborted before processing response
-      if (signal.aborted) {
-        console.log('Non-streaming response aborted by user');
-        return;
-      }
-
-      const responseData = await response.json();
-
-      // Check if aborted while parsing JSON
-      if (signal.aborted) {
-        console.log('Non-streaming response aborted by user during parsing');
-        return;
-      }
-
-      const choice = responseData.choices?.[0];
-
-      if (choice?.message) {
-        const message = choice.message;
-
-        // Check if aborted while processing message
-        if (signal.aborted) {
-          console.log('Non-streaming response aborted by user during message processing');
-          return;
-        }
-
-        // Handle reasoning content (new format)
-        if (message.reasoning_content) {
-          assistantMessage.reasoning = message.reasoning_content;
-        }
-
-        // Handle content
-        if (message.content) {
-          assistantMessage.content = message.content;
-        }
-
-        // Process think tags after setting initial content
-        processThinkTags(assistantMessage);
-
-        // Update UI to show the complete message
-        updateMessageDisplay(assistantMessageId);
-      }
-    } catch (parseError) {
-      // Check if this is an abort error
-      if (signal.aborted) {
-        console.log('Non-streaming response aborted by user');
-        return;
-      }
-      console.error('Error parsing non-streaming response:', parseError);
-      throw new Error('Failed to parse API response');
-    }
+    await handleNonStreamingResponse(response, assistantMessage, signal);
   }
 }
 
@@ -1325,6 +1471,12 @@ function updateMessageDisplay(messageId) {
 }
 
 function handleError(error) {
+  // Log the error with context
+  logError(error, 'API Request', {
+    isStreaming: state.isStreaming,
+    currentSessionId: state.currentSessionId
+  });
+
   // Remove the assistant message if streaming failed
   if (state.currentStreamingMessage) {
     const session = state.sessions[state.currentSessionId];
@@ -1332,18 +1484,8 @@ function handleError(error) {
     renderMessages();
   }
 
-  let errorMessage = 'An error occurred while processing your request.';
-
-  if (error.message.includes('401')) {
-    errorMessage = 'Authentication failed. Please check your API key.';
-  } else if (error.message.includes('404')) {
-    errorMessage = 'Model or endpoint not found. Please check your configuration.';
-  } else if (error.message.includes('429')) {
-    errorMessage = 'Rate limit exceeded. Please try again later.';
-  } else if (error.message.includes('NetworkError') || error.message.includes('Failed to fetch')) {
-    errorMessage = 'Network error. Please check your connection.';
-  }
-
+  // Use unified error message handling
+  const errorMessage = getApiErrorMessage(error);
   showError(errorMessage);
 }
 
@@ -1360,7 +1502,7 @@ function showError(message) {
 
   session.messages.push(errorMessage);
   renderMessages();
-  saveToStorage();
+  immediateSave(); // Use immediate save for error messages
 }
 
 console.log('SideMind sidebar script loaded');
