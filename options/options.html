@@ -9,9 +9,68 @@
 </head>
 <body>
   <div class="options-container">
-    <header class="options-header">
-      <h1>SideMind Configuration</h1>
+    <!-- Project Header Section -->
+    <header class="project-header">
+      <div class="project-title-section">
+        <div class="project-icon">
+          <img src="../icons/icon128.png" alt="SideMind Logo">
+        </div>
+        <div class="project-title">
+          <h1>SideMind - AI Chat Assistant in SideBar</h1>
+          <p class="project-subtitle">Your private AI companion that lives right in your browser sidebar</p>
+        </div>
+      </div>
     </header>
+
+    <!-- About Section -->
+    <section class="section about-section">
+      <div class="features-grid">
+        <div class="feature-item">
+          <div class="feature-icon">
+            <i class="fas fa-shield-alt"></i>
+          </div>
+          <h4>Privacy First</h4>
+          <p>All conversations stored locally, no tracking or data collection</p>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon">
+            <i class="fas fa-bolt"></i>
+          </div>
+          <h4>Real-time Streaming</h4>
+          <p>Watch AI responses appear instantly with smooth animations</p>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon">
+            <i class="fas fa-brain"></i>
+          </div>
+          <h4>Thinking Display</h4>
+          <p>See AI reasoning process with collapsible sections</p>
+        </div>
+
+        </div>
+
+      <div class="about-footer">
+        <div class="about-links">
+          <a href="https://github.com/oyasmi/sidemind" class="about-link" target="_blank" rel="noopener noreferrer">
+            <i class="fas fa-code-branch"></i>
+            GitHub Repository
+          </a>
+          <span class="version-badge">Version 1.0.0</span>
+        </div>
+        <div class="security-info">
+          <i class="fas fa-lock"></i>
+          <span>Open source • Apache 2.0 License</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Configuration Section Header -->
+    <div class="config-section-header">
+      <h2>Configuration</h2>
+      <p>Customize your SideMind experience with the following settings</p>
+    </div>
 
     <main class="options-main">
       <!-- Service Providers Section -->
@@ -20,10 +79,26 @@
         <div id="providersList" class="providers-list">
           <!-- Providers will be added here -->
         </div>
-        <button id="addProviderBtn" class="btn btn-secondary">
-          <i class="fas fa-plus btn-icon"></i>
-          Add Provider
-        </button>
+        <div class="section-actions">
+          <button id="addProviderBtn" class="btn btn-secondary">
+            <i class="fas fa-plus btn-icon"></i>
+            Add Provider
+          </button>
+        </div>
+      </section>
+
+      <!-- System Prompts Section -->
+      <section class="section">
+        <h2>System Prompts</h2>
+        <div id="promptsList" class="prompts-list">
+          <!-- Prompts will be added here -->
+        </div>
+        <div class="section-actions">
+          <button id="addPromptBtn" class="btn btn-secondary">
+            <i class="fas fa-plus btn-icon"></i>
+            Add Prompt
+          </button>
+        </div>
       </section>
 
       <!-- LLM Parameters Section -->
@@ -49,18 +124,6 @@
           </select>
           <small class="parameter-description">If enabled, the model response will be streamed as it's generated using server-sent events.</small>
         </div>
-      </section>
-
-      <!-- System Prompts Section -->
-      <section class="section">
-        <h2>System Prompts</h2>
-        <div id="promptsList" class="prompts-list">
-          <!-- Prompts will be added here -->
-        </div>
-        <button id="addPromptBtn" class="btn btn-secondary">
-          <i class="fas fa-plus btn-icon"></i>
-          Add Prompt
-        </button>
       </section>
 
       <!-- Appearance Section -->
@@ -122,7 +185,7 @@
       <div class="modal-header">
         <h3 id="providerModalTitle">Add Service Provider</h3>
         <button class="modal-close-btn" aria-label="Close">
-          <i class="fas fa-chevron-down"></i>
+          <i class="fas fa-times"></i>
         </button>
       </div>
       <div class="modal-body">
@@ -145,7 +208,9 @@
               <div class="model-item">
                 <input type="text" placeholder="Model Name" class="model-name" required>
                 <input type="text" placeholder="Model ID" class="model-id" required>
-                <button type="button" class="btn-remove-model">×</button>
+                <button type="button" class="btn-remove-model" aria-label="Remove model">
+                  <i class="fas fa-trash-alt"></i>
+                </button>
               </div>
             </div>
             <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
@@ -165,7 +230,7 @@
       <div class="modal-header">
         <h3 id="promptModalTitle">Add System Prompt</h3>
         <button class="modal-close-btn" aria-label="Close">
-          <i class="fas fa-chevron-down"></i>
+          <i class="fas fa-times"></i>
         </button>
       </div>
       <div class="modal-body">
