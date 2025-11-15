@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SideMind",
   "version": "1.0.0",
-  "description": "Quick LLM conversations in your sidebar",
+  "description": "AI Chat Assistant in Your Browser Sidebar",
   "permissions": [
     "storage",
     "sidePanel"
