@@ -315,7 +315,7 @@ function deleteSession(sessionId) {
 // ========================================
 
 // Add a new message to the current session
-function addMessage(role, content, reasoning = null) {
+function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
   const sessionId = state.currentSessionId;
   const session = state.sessions[sessionId];
   if (!session) return;
@@ -325,6 +325,7 @@ function addMessage(role, content, reasoning = null) {
     role,
     content,
     reasoning,
+    reasoningCollapsed,
     timestamp: new Date().toISOString()
   };
 
@@ -405,7 +406,7 @@ function createMessageElement(message) {
 
   // Add reasoning section first (before content) if exists
   if (message.reasoning && message.reasoning.trim()) {
-    const reasoningSection = createReasoningSection(message.reasoning);
+    const reasoningSection = createReasoningSection(message);
     bubble.appendChild(reasoningSection);
   }
 
@@ -453,9 +454,10 @@ function createMessageActions(message) {
   return actionsBar;
 }
 
-function createReasoningSection(reasoning) {
+function createReasoningSection(message) {
+  const isCollapsed = message.reasoningCollapsed;
   const section = document.createElement('div');
-  section.className = 'reasoning-section expanded'; // Start expanded for better UX during streaming
+  section.className = isCollapsed ? 'reasoning-section' : 'reasoning-section expanded'; // Set initial state based on message state
 
   const header = document.createElement('div');
   header.className = 'reasoning-header';
@@ -472,12 +474,17 @@ function createReasoningSection(reasoning) {
   header.appendChild(icon);
   header.appendChild(title);
   header.addEventListener('click', () => {
+    const isExpanded = section.classList.contains('expanded');
     section.classList.toggle('expanded');
+
+    // Save the new state to the message
+    message.reasoningCollapsed = isExpanded; // Save true when collapsing, false when expanding
+    saveToStorage(); // Persist the change
   });
 
   const content = document.createElement('div');
   content.className = 'reasoning-content';
-  content.innerHTML = renderMarkdown(reasoning);
+  content.innerHTML = renderMarkdown(message.reasoning);
 
   section.appendChild(header);
   section.appendChild(content);
@@ -1115,6 +1122,7 @@ async function sendMessageToAPI(_userMessage) {
     role: 'assistant',
     content: '',
     reasoning: '',
+    reasoningCollapsed: false, // Default to expanded for new messages
     timestamp: new Date().toISOString()
   };
 
@@ -1450,7 +1458,7 @@ function updateMessageDisplay(messageId) {
 
     // Create reasoning section if it doesn't exist
     if (!reasoningSection) {
-      reasoningSection = createReasoningSection(message.reasoning);
+      reasoningSection = createReasoningSection(message);
       // Insert reasoning section before content element
       bubble.insertBefore(reasoningSection, contentElement);
     } else {
@@ -1461,10 +1469,8 @@ function updateMessageDisplay(messageId) {
       }
     }
 
-    // Ensure reasoning section is expanded (it's now default behavior)
-    if (!reasoningSection.classList.contains('expanded')) {
-      reasoningSection.classList.add('expanded');
-    }
+    // Respect user's preferred collapsed/expanded state
+    // Don't force expansion - let the saved state determine visibility
   }
 
   scrollToBottom();

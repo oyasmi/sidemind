@@ -5,10 +5,8 @@
   "description": "AI Chat Assistant in Your Browser Sidebar",
   "permissions": [
     "storage",
-    "sidePanel"
-  ],
-  "host_permissions": [
-    "https://*/*"
+    "sidePanel",
+    "activeTab"
   ],
   "action": {
     "default_title": "Open SideMind"
