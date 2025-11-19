@@ -914,7 +914,7 @@ function handleInputChange() {
 }
 
 function handleInputKeydown(event) {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!elements.sendBtn.disabled) {
       handleSendMessage();
