@@ -2,7 +2,7 @@
 
 > **Your private AI companion that lives right in your browser sidebar**
 
-[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chrome.google.com/webstore)
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.0.0-orange.svg)](manifest.json)
 
@@ -46,7 +46,7 @@ SideMind is designed with your privacy as the top priority:
 ### Installation
 
 1. **From Chrome Web Store** (Recommended)
-   - Visit SideMind on [Chrome Web Store](https://chrome.google.com/webstore)
+   - Visit SideMind on [Chrome Web Store](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
    - Click "Add to Chrome"
    - Grant necessary permissions
 
