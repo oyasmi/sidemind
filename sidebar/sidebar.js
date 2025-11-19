@@ -660,7 +660,30 @@ function getApiErrorMessage(error) {
   if (message.includes('429') || message.includes('rate limit')) {
     return 'Rate limit exceeded. Please try again later.';
   }
+
+  // CORS and permission errors
+  if (message.includes('cors') || message.includes('blocked by cors policy') ||
+      message.includes('cross-origin') || message.includes('blocked by browser')) {
+    const provider = getCurrentProvider();
+    const baseUrl = provider ? provider.baseUrl : 'the server';
+    return `CORS权限错误。扩展需要访问 ${baseUrl} 的权限。请在选项页面重新配置此服务提供商以授予相应权限。`;
+  }
+
+  // Network errors that might be permission-related
   if (message.includes('network') || message.includes('fetch')) {
+    // Check if this might be a permission error
+    const provider = getCurrentProvider();
+    if (provider && provider.baseUrl) {
+      try {
+        const hostname = new URL(provider.baseUrl).hostname;
+        if (!hostname.includes('localhost') && !hostname.includes('127.0.0.1') &&
+            !hostname.startsWith('192.168.') && !hostname.startsWith('10.')) {
+          return `网络错误，可能是因为缺少权限。请确保已授予访问 ${provider.baseUrl} 的权限。`;
+        }
+      } catch (e) {
+        // If URL parsing fails, continue with generic network error
+      }
+    }
     return 'Network error. Please check your connection.';
   }
 

@@ -504,6 +504,13 @@ async function saveProvider() {
     return;
   }
 
+  // Ensure we have permission for the provider's baseUrl
+  const hasPermission = await ensureBackendPermission(providerData.baseUrl);
+  if (!hasPermission) {
+    showNotification(`需要授权访问 ${providerData.baseUrl} 才能保存此服务提供商`, 'error');
+    return;
+  }
+
   if (editingProviderId) {
     // Update existing provider
     const index = config.providers.findIndex(p => p.id === editingProviderId);
@@ -723,6 +730,49 @@ function validateConfig(config) {
 function closeAllModals() {
   elements.providerModal.classList.add('hidden');
   elements.promptModal.classList.add('hidden');
+}
+
+// ========================================
+// PERMISSION MANAGEMENT
+// ========================================
+
+// Ensure backend permission for a given URL
+async function ensureBackendPermission(backendUrl) {
+  try {
+    // Validate URL format
+    const urlObj = new URL(backendUrl);
+    const origin = urlObj.origin + '/*';
+
+    // First check if we already have permission
+    const hasPermission = await chrome.permissions.contains({
+      origins: [origin]
+    });
+
+    if (hasPermission) {
+      console.log(`Permission already granted for ${origin}`);
+      return true;
+    }
+
+    // If it's a local address, it might be declared in manifest
+    if (urlObj.hostname === 'localhost' ||
+        urlObj.hostname === '127.0.0.1' ||
+        urlObj.hostname.startsWith('192.168.') ||
+        urlObj.hostname.startsWith('10.') ||
+        urlObj.hostname === '0.0.0.0') {
+      console.log(`Local address detected: ${urlObj.hostname}, assuming permission exists`);
+      return true;
+    }
+
+    // Otherwise request permission dynamically
+    console.log(`Requesting permission for ${origin}`);
+    return await chrome.permissions.request({
+      origins: [origin]
+    });
+
+  } catch (error) {
+    console.error('Error checking/requesting permissions:', error);
+    return false;
+  }
 }
 
 // Notifications
