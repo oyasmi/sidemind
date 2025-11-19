@@ -32,6 +32,87 @@ const state = {
 };
 
 // ========================================
+// RENDERING CACHE SYSTEM
+// ========================================
+
+// Message element cache for performance optimization
+const messageElementCache = new Map();
+
+// Markdown parsing cache with LRU eviction
+const markdownCache = new Map();
+const MAX_MARKDOWN_CACHE_SIZE = 128;
+
+// Stream update scheduling with optimized delay
+let streamUpdateTimeout = null;
+const STREAM_UPDATE_DELAY = 25; // 25ms for smoother 60fps-like experience
+const FORCE_UPDATE_THRESHOLD = 50; // Force update when content exceeds this length
+
+// Schedule stream update with improved timing
+function scheduleStreamUpdate(messageId) {
+  // Get current message to check content length
+  const session = state.sessions[state.currentSessionId];
+  const message = session?.messages.find(m => m.id === messageId);
+
+  // Force immediate update if content has grown too large
+  if (message && (message.content?.length > FORCE_UPDATE_THRESHOLD ||
+      message.reasoning?.length > FORCE_UPDATE_THRESHOLD)) {
+    if (streamUpdateTimeout) {
+      clearTimeout(streamUpdateTimeout);
+      streamUpdateTimeout = null;
+    }
+    updateMessageDisplay(messageId);
+    return;
+  }
+
+  if (streamUpdateTimeout) {
+    clearTimeout(streamUpdateTimeout);
+  }
+
+  streamUpdateTimeout = setTimeout(() => {
+    updateMessageDisplay(messageId);
+    streamUpdateTimeout = null;
+  }, STREAM_UPDATE_DELAY);
+}
+
+// Clear cache for messages not in the current session
+function clearMessageCacheForSession(sessionId) {
+  if (!state.sessions[sessionId]) return;
+
+  const currentSessionMessages = new Set(state.sessions[sessionId].messages.map(m => m.id));
+
+  // Remove cached elements that don't belong to current session
+  for (const [messageId, element] of messageElementCache) {
+    if (!currentSessionMessages.has(messageId)) {
+      messageElementCache.delete(messageId);
+    }
+  }
+}
+
+// Performance monitoring utilities
+let markdownCacheHits = 0;
+let markdownCacheMisses = 0;
+
+function logCacheStats() {
+  console.log('📊 Cache Stats:', {
+    messageElements: messageElementCache.size,
+    markdownCache: markdownCache.size,
+    markdownHitRate: markdownCacheHits + markdownCacheMisses > 0
+      ? ((markdownCacheHits / (markdownCacheHits + markdownCacheMisses)) * 100).toFixed(1) + '%'
+      : 'N/A',
+    streamUpdatePending: !!streamUpdateTimeout
+  });
+}
+
+// Debug function to measure render performance
+function measureRenderPerformance(fn, ...args) {
+  const start = performance.now();
+  const result = fn(...args);
+  const end = performance.now();
+  console.log(`⏱️ ${fn.name}: ${(end - start).toFixed(2)}ms`);
+  return result;
+}
+
+// ========================================
 // DOM ELEMENT REFERENCES
 // ========================================
 
@@ -263,6 +344,9 @@ function createNewSession() {
 // Switch to a different chat session
 function switchSession(sessionId) {
   if (state.sessions[sessionId]) {
+    // Clear cache for messages not in the target session
+    clearMessageCacheForSession(sessionId);
+
     state.currentSessionId = sessionId;
     saveToStorage();
     renderMessages();
@@ -277,6 +361,13 @@ function switchSession(sessionId) {
 function deleteSession(sessionId) {
   if (!state.sessions[sessionId]) {
     return;
+  }
+
+  // Remove cached elements for messages in this session
+  if (state.sessions[sessionId].messages) {
+    state.sessions[sessionId].messages.forEach(message => {
+      messageElementCache.delete(message.id);
+    });
   }
 
   // Delete the session directly without confirmation
@@ -351,7 +442,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 // UI RENDERING FUNCTIONS
 // ========================================
 
-// Render all messages in the current session
+// Render all messages in the current session with caching
 function renderMessages() {
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
@@ -360,12 +451,38 @@ function renderMessages() {
   }
 
   hideWelcomeMessage();
-  elements.messagesList.innerHTML = '';
+
+  const start = performance.now();
+  let cachedCount = 0;
+  let createdCount = 0;
+
+  // Use DocumentFragment for batch DOM operations
+  const fragment = document.createDocumentFragment();
 
   session.messages.forEach(message => {
-    const messageElement = createMessageElement(message);
-    elements.messagesList.appendChild(messageElement);
+    let messageElement = messageElementCache.get(message.id);
+
+    if (!messageElement) {
+      // Only create new message elements if not cached
+      messageElement = createMessageElement(message);
+      messageElementCache.set(message.id, messageElement);
+      createdCount++;
+    } else {
+      cachedCount++;
+    }
+
+    fragment.appendChild(messageElement);
   });
+
+  // Replace all content in one operation
+  elements.messagesList.innerHTML = '';
+  elements.messagesList.appendChild(fragment);
+
+  const end = performance.now();
+
+  // Performance logging
+  console.log(`🎨 renderMessages: ${(end - start).toFixed(2)}ms | Messages: ${session.messages.length} | Cached: ${cachedCount} | Created: ${createdCount}`);
+  logCacheStats();
 
   scrollToBottom();
 }
@@ -423,6 +540,10 @@ function createMessageElement(message) {
   // Assemble message with header and wrapper
   messageDiv.appendChild(messageHeader);
   messageDiv.appendChild(messageWrapper);
+
+  // Initialize cache properties for incremental updates
+  messageDiv.lastContent = message.content || '';
+  messageDiv.lastReasoning = message.reasoning || '';
 
   return messageDiv;
 }
@@ -603,14 +724,64 @@ function formatMessageTime(timestamp) {
   return `${hours}:${minutes}`;
 }
 
-// Markdown Rendering
-function renderMarkdown(text) {
+// Markdown Rendering with Improved Caching
+function renderMarkdownCached(text) {
+  if (!text || text.trim() === '') return '';
+
+  // Check cache first
+  if (markdownCache.has(text)) {
+    const cached = markdownCache.get(text);
+    // LRU: Move to end
+    markdownCache.delete(text);
+    markdownCache.set(text, cached);
+    markdownCacheHits++;
+    return cached;
+  }
+
+  markdownCacheMisses++;
+
+  // Parse and cache
   try {
-    return marked.parse(text);
+    const html = marked.parse(text);
+
+    // Improved cache size control - avoid storing very similar intermediate versions
+    // Only cache if text is reasonably long and not likely an intermediate version
+    const shouldCache = text.length > 20 &&
+                       (text.length < 100 || text.includes('\n') || text.includes('```') ||
+                        text.match(/^[A-Z]/)); // Cache longer texts or structured content
+
+    if (shouldCache) {
+      // Clean up very similar short entries (likely intermediate stream results)
+      if (text.length < 100 && markdownCache.size > MAX_MARKDOWN_CACHE_SIZE * 0.8) {
+        const keysToClean = [];
+        for (const [key] of markdownCache) {
+          if (key.length < 100 && key.length > 10 &&
+              text.startsWith(key.substring(0, Math.min(20, key.length)))) {
+            keysToClean.push(key);
+          }
+        }
+        keysToClean.forEach(key => markdownCache.delete(key));
+      }
+
+      // LRU eviction if still over limit
+      while (markdownCache.size >= MAX_MARKDOWN_CACHE_SIZE) {
+        const firstKey = markdownCache.keys().next().value;
+        markdownCache.delete(firstKey);
+      }
+
+      markdownCache.set(text, html);
+    }
+
+    return html;
   } catch (error) {
     console.error('Markdown parsing error:', error);
     return text;
   }
+}
+
+// Legacy markdown rendering function (for compatibility)
+function renderMarkdown(text) {
+  return renderMarkdownCached(text);
 }
 
 // ========================================
@@ -1292,6 +1463,13 @@ async function handleStreamingResponse(response, assistantMessage, signal) {
 
     // Final processing for think tags after streaming completes
     processThinkTags(assistantMessage);
+
+    // Ensure final UI update is not delayed by debouncing
+    if (streamUpdateTimeout) {
+      clearTimeout(streamUpdateTimeout);
+      streamUpdateTimeout = null;
+    }
+    updateMessageDisplay(assistantMessage.id);
   } catch (error) {
     if (isAbortError(error)) {
       console.log('Streaming aborted by user');
@@ -1325,8 +1503,8 @@ async function processStreamLine(rawLine, assistantMessage) {
       assistantMessage.content += delta.content;
     }
 
-    // Update UI
-    updateMessageDisplay(assistantMessage.id);
+    // Schedule debounced UI update instead of immediate update
+    scheduleStreamUpdate(assistantMessage.id);
   } catch (parseError) {
     console.warn('Parse error:', parseError, 'Data:', data);
   }
@@ -1454,8 +1632,40 @@ function buildMessageHistory() {
   return messages;
 }
 
+function updateReasoningSection(messageElement, message) {
+  let reasoningSection = messageElement.querySelector('.reasoning-section');
+
+  // If no reasoning content, remove reasoning section if it exists
+  if (!message.reasoning || !message.reasoning.trim()) {
+    if (reasoningSection) {
+      reasoningSection.remove();
+      messageElement.lastReasoning = null;
+    }
+    return;
+  }
+
+  // If reasoning content has changed, update it
+  if (!reasoningSection || messageElement.lastReasoning !== message.reasoning) {
+    if (reasoningSection) {
+      // Update existing reasoning content
+      const reasoningContent = reasoningSection.querySelector('.reasoning-content');
+      if (reasoningContent) {
+        reasoningContent.innerHTML = renderMarkdownCached(message.reasoning);
+      }
+    } else {
+      // Create new reasoning section
+      reasoningSection = createReasoningSection(message);
+      const bubble = messageElement.querySelector('.message-bubble');
+      const contentElement = bubble.querySelector('.message-content');
+      bubble.insertBefore(reasoningSection, contentElement);
+    }
+    messageElement.lastReasoning = message.reasoning;
+  }
+}
+
 function updateMessageDisplay(messageId) {
-  const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+  // Get message element from cache first
+  const messageElement = messageElementCache.get(messageId);
   if (!messageElement) return;
 
   const message = state.sessions[state.currentSessionId].messages.find(m => m.id === messageId);
@@ -1464,39 +1674,32 @@ function updateMessageDisplay(messageId) {
   const bubble = messageElement.querySelector('.message-bubble');
   if (!bubble) return;
 
+  let hasChanges = false;
+
+  // Incremental content update - only update if content changed
   const contentElement = messageElement.querySelector('.message-content');
-  if (contentElement) {
-    // User messages: render as plain text to preserve line breaks
-    // Assistant messages: render as markdown
+  if (contentElement && messageElement.lastContent !== message.content) {
     if (message.role === 'user') {
       contentElement.textContent = message.content;
     } else {
-      contentElement.innerHTML = renderMarkdown(message.content);
+      contentElement.innerHTML = renderMarkdownCached(message.content);
     }
+    messageElement.lastContent = message.content;
+    hasChanges = true;
   }
 
-  // Handle reasoning section - create or update dynamically
-  if (message.reasoning && message.reasoning.trim()) {
-    let reasoningSection = messageElement.querySelector('.reasoning-section');
-
-    // Create reasoning section if it doesn't exist
-    if (!reasoningSection) {
-      reasoningSection = createReasoningSection(message);
-      // Insert reasoning section before content element
-      bubble.insertBefore(reasoningSection, contentElement);
-    } else {
-      // Update existing reasoning content
-      const reasoningContent = reasoningSection.querySelector('.reasoning-content');
-      if (reasoningContent) {
-        reasoningContent.innerHTML = renderMarkdown(message.reasoning);
-      }
-    }
-
-    // Respect user's preferred collapsed/expanded state
-    // Don't force expansion - let the saved state determine visibility
+  // Incremental reasoning update - track if reasoning changed
+  const reasoningChanged = messageElement.lastReasoning !== (message.reasoning || '');
+  if (reasoningChanged) {
+    updateReasoningSection(messageElement, message);
+    messageElement.lastReasoning = message.reasoning || '';
+    hasChanges = true;
   }
 
-  scrollToBottom();
+  // Only scroll if there were actual content changes
+  if (hasChanges) {
+    scrollToBottom();
+  }
 }
 
 function handleError(error) {

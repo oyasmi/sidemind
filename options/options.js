@@ -24,6 +24,27 @@ let config = {
 let editingProviderId = null;
 let editingPromptId = null;
 
+// Utility function for debouncing
+function debounce(func, delay) {
+  let timeoutId;
+  return function (...args) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => func.apply(this, args), delay);
+  };
+}
+
+// Input sanitization helper
+function sanitizeInput(input) {
+  return input.replace(/[<>]/g, '').trim();
+}
+
+// Centralized error handling
+function handleError(error, context) {
+  const message = error.message || 'An unexpected error occurred';
+  console.error(`Error in ${context}:`, error);
+  showNotification(`${context}: ${message}`, 'error');
+}
+
 // DOM Elements
 const elements = {
   // Buttons
@@ -82,51 +103,41 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Cache DOM Elements
 function cacheElements() {
-  // Buttons
-  elements.addProviderBtn = document.getElementById('addProviderBtn');
-  elements.addPromptBtn = document.getElementById('addPromptBtn');
-  elements.saveBtn = document.getElementById('saveBtn');
-  elements.exportBtn = document.getElementById('exportBtn');
-  elements.importBtn = document.getElementById('importBtn');
-  elements.importFile = document.getElementById('importFile');
+  const elementIds = [
+    // Buttons
+    'addProviderBtn', 'addPromptBtn', 'saveBtn', 'exportBtn', 'importBtn', 'importFile',
+    // Lists
+    'providersList', 'promptsList',
+    // Parameters
+    'temperatureSlider', 'temperatureValue', 'maxCompletionTokensInput', 'streamSelector',
+    // Appearance
+    'fontSizeSelector', 'fontFamilySelector', 'customFontFamilyInput', 'themeSelector',
+    // Modals
+    'providerModal', 'promptModal',
+    // Forms
+    'providerForm', 'promptForm', 'modelsList', 'addModelBtn',
+    'providerName', 'providerBaseUrl', 'providerApiKey',
+    'promptName', 'promptContent',
+    // Modal buttons
+    'providerSaveBtn', 'providerCancelBtn', 'promptSaveBtn', 'promptCancelBtn'
+  ];
 
-  // Lists
-  elements.providersList = document.getElementById('providersList');
-  elements.promptsList = document.getElementById('promptsList');
+  elementIds.forEach(id => {
+    const element = document.getElementById(id);
+    if (!element) {
+      console.error(`Required element not found: #${id}`);
+      return;
+    }
+    // Convert kebab-case to camelCase for property names
+    const propName = id.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
+    elements[propName] = element;
+  });
 
-  // Parameters
-  elements.temperatureSlider = document.getElementById('temperatureSlider');
-  elements.temperatureValue = document.getElementById('temperatureValue');
-  elements.maxCompletionTokensInput = document.getElementById('maxCompletionTokensInput');
-  elements.streamSelector = document.getElementById('streamSelector');
-
-  // Appearance
-  elements.fontSizeSelector = document.getElementById('fontSizeSelector');
-  elements.fontFamilySelector = document.getElementById('fontFamilySelector');
-  elements.customFontFamilyInput = document.getElementById('customFontFamilyInput');
-  elements.themeSelector = document.getElementById('themeSelector');
-
-  // Modals
-  elements.providerModal = document.getElementById('providerModal');
-  elements.promptModal = document.getElementById('promptModal');
-
-  // Forms
-  elements.providerForm = document.getElementById('providerForm');
-  elements.promptForm = document.getElementById('promptForm');
-  elements.modelsList = document.getElementById('modelsList');
-  elements.addModelBtn = document.getElementById('addModelBtn');
-  elements.providerName = document.getElementById('providerName');
-  elements.providerBaseUrl = document.getElementById('providerBaseUrl');
-  elements.providerApiKey = document.getElementById('providerApiKey');
-  elements.promptName = document.getElementById('promptName');
-  elements.promptContent = document.getElementById('promptContent');
-
-  // Modal buttons
-  elements.providerSaveBtn = document.getElementById('providerSaveBtn');
-  elements.providerCancelBtn = document.getElementById('providerCancelBtn');
-  elements.promptSaveBtn = document.getElementById('promptSaveBtn');
-  elements.promptCancelBtn = document.getElementById('promptCancelBtn');
+  // Handle querySelector elements separately
   elements.modalCloseBtns = document.querySelectorAll('.modal-close-btn');
+  if (elements.modalCloseBtns.length === 0) {
+    console.error('Required elements not found: .modal-close-btn');
+  }
 }
 
 // Setup Event Listeners
@@ -143,11 +154,10 @@ function setupEventListeners() {
   elements.importFile.addEventListener('change', importConfig);
 
   // Parameter controls - use debounced saves to avoid excessive writes
-  let temperatureTimeout;
+  const debouncedSave = debounce(saveConfig, 500);
   elements.temperatureSlider.addEventListener('input', () => {
     updateTemperatureDisplay();
-    clearTimeout(temperatureTimeout);
-    temperatureTimeout = setTimeout(() => saveConfig(), 500);
+    debouncedSave();
   });
   elements.maxCompletionTokensInput.addEventListener('change', updateMaxCompletionTokens);
   elements.streamSelector.addEventListener('change', updateStream);
@@ -216,8 +226,7 @@ async function loadConfig() {
       }
     }
   } catch (error) {
-    console.error('Error loading config:', error);
-    showNotification('Error loading configuration', 'error');
+    handleError(error, 'Loading configuration');
   }
 }
 
@@ -232,17 +241,8 @@ async function saveConfig() {
     await chrome.storage.sync.set({ config });
     showNotification('Configuration saved successfully', 'success');
     console.log('Saved config to sync storage:', config);
-
-    // Verify the save was successful by reading it back
-    const result = await chrome.storage.sync.get(['config']);
-    if (result.config) {
-      console.log('Verified config saved correctly:', result.config);
-    } else {
-      throw new Error('Config verification failed - no data found after save');
-    }
   } catch (error) {
-    console.error('Error saving config:', error);
-    showNotification('Error saving configuration: ' + error.message, 'error');
+    handleError(error, 'Saving configuration');
   }
 }
 
@@ -262,10 +262,11 @@ function renderProviders() {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   config.providers.forEach(provider => {
-    const providerElement = createProviderElement(provider);
-    elements.providersList.appendChild(providerElement);
+    fragment.appendChild(createProviderElement(provider));
   });
+  elements.providersList.appendChild(fragment);
 }
 
 function createProviderElement(provider) {
@@ -317,10 +318,11 @@ function createProviderElement(provider) {
 function renderPrompts() {
   elements.promptsList.innerHTML = '';
 
+  const fragment = document.createDocumentFragment();
   config.systemPrompts.forEach(prompt => {
-    const promptElement = createPromptElement(prompt);
-    elements.promptsList.appendChild(promptElement);
+    fragment.appendChild(createPromptElement(prompt));
   });
+  elements.promptsList.appendChild(fragment);
 }
 
 function createPromptElement(prompt) {
@@ -432,10 +434,11 @@ function renderModelsList(models) {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
   models.forEach(model => {
-    const modelField = createModelField(model.name, model.id);
-    elements.modelsList.appendChild(modelField);
+    fragment.appendChild(createModelField(model.name, model.id));
   });
+  elements.modelsList.appendChild(fragment);
 }
 
 function createModelField(name = '', id = '') {
@@ -483,21 +486,35 @@ async function saveProvider() {
   }
 
   const providerData = {
-    name: elements.providerName.value,
-    baseUrl: elements.providerBaseUrl.value,
-    apiKey: elements.providerApiKey.value,
+    name: sanitizeInput(elements.providerName?.value || ''),
+    baseUrl: sanitizeInput(elements.providerBaseUrl?.value || ''),
+    apiKey: elements.providerApiKey?.value || '', // API key doesn't need sanitization
     models: []
   };
 
-  // Collect models
-  const modelItems = elements.modelsList.querySelectorAll('.model-item');
-  modelItems.forEach(item => {
-    const name = item.querySelector('.model-name').value;
-    const id = item.querySelector('.model-id').value;
-    if (name && id) {
-      providerData.models.push({ name, id });
-    }
-  });
+  // Validate required fields
+  if (!providerData.name || !providerData.baseUrl) {
+    showNotification('Provider name and base URL are required', 'error');
+    return;
+  }
+
+  // Basic URL validation
+  try {
+    new URL(providerData.baseUrl);
+  } catch (error) {
+    showNotification('Please enter a valid base URL (e.g., https://api.example.com)', 'error');
+    return;
+  }
+
+  // Collect models with validation
+  const models = Array.from(elements.modelsList.querySelectorAll('.model-item'))
+    .map(item => ({
+      name: sanitizeInput(item.querySelector('.model-name')?.value || ''),
+      id: sanitizeInput(item.querySelector('.model-id')?.value || '')
+    }))
+    .filter(model => model.name && model.id);
+
+  providerData.models = models;
 
   if (providerData.models.length === 0) {
     showNotification('Please add at least one model', 'error');
@@ -507,7 +524,7 @@ async function saveProvider() {
   // Ensure we have permission for the provider's baseUrl
   const hasPermission = await ensureBackendPermission(providerData.baseUrl);
   if (!hasPermission) {
-    showNotification(`需要授权访问 ${providerData.baseUrl} 才能保存此服务提供商`, 'error');
+    showNotification(`Permission required for ${providerData.baseUrl} to save this provider`, 'error');
     return;
   }
 
@@ -571,9 +588,15 @@ async function savePrompt() {
   }
 
   const promptData = {
-    name: elements.promptName.value,
-    content: elements.promptContent.value
+    name: sanitizeInput(elements.promptName?.value || ''),
+    content: elements.promptContent?.value || ''
   };
+
+  // Validate required fields
+  if (!promptData.name || !promptData.content) {
+    showNotification('Prompt name and content are required', 'error');
+    return;
+  }
 
   if (editingPromptId) {
     // Update existing prompt
@@ -703,8 +726,7 @@ function importConfig(event) {
         showNotification('Invalid configuration file', 'error');
       }
     } catch (error) {
-      console.error('Import error:', error);
-      showNotification('Error importing configuration: ' + error.message, 'error');
+      handleError(error, 'Importing configuration');
     }
   };
   reader.readAsText(file);

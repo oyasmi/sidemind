@@ -8,17 +8,34 @@
 
 :root {
   /* Font settings */
-  --main-font-size: 14px; /* Default size */
-  --main-font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Default font stack */
+  --font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-size: var(--font-base);
 
-  /* Design tokens */
+  /* Spacing system */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Typography */
+  --font-xs: 11px;
+  --font-sm: 12px;
+  --font-base: 14px;
+  --font-lg: 16px;
+  --font-xl: 18px;
+  --font-2xl: 20px;
+  --font-3xl: 24px;
+
+  /* Radius */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-pill: 22px;
-  --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* Light theme (default) */
+  /* Light theme colors */
   --bg-primary: #f8f9fa;
   --bg-secondary: #ffffff;
   --bg-tertiary: #f9fafb;
@@ -27,28 +44,38 @@
   --text-tertiary: #999999;
   --border-primary: #e0e0e0;
   --border-secondary: #f0f0f0;
-  --accent: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  --accent-hover: linear-gradient(135deg, #e55a2b 0%, #d67a1a 100%);
+
+  /* Accent colors */
+  --accent: #ff6b35;
+  --accent-hover: #e55a2b;
   --accent-light: #fff7ed;
-  --user-bubble: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+  --focus-color: var(--accent);
+  --focus-bg: rgba(255, 107, 53, 0.1);
+
+  /* Message specific */
+  --user-bubble: var(--gradient);
   --assistant-bubble: #f0f0f0;
-  --reasoning-bg: #fff7ed;
-  --gradient-primary: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
-  --gradient-secondary: linear-gradient(135deg, #ff8c42 0%, #ffa652 100%);
-  --gradient-bg: linear-gradient(135deg, #fff7ed 0%, #fed7aa 100%);
+  --reasoning-bg: var(--accent-light);
+
+  /* Effects */
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
   --shadow-xl: 0 -2px 10px rgba(0,0,0,0.1);
+
+  /* Gradients */
+  --gradient: linear-gradient(135deg, var(--accent) 0%, #f7931e 100%);
+  --gradient-hover: linear-gradient(135deg, var(--accent-hover) 0%, #d67a1a 100%);
+  --gradient-bg: linear-gradient(135deg, var(--accent-light) 0%, #fed7aa 100%);
+
+  /* Transitions */
+  --transition: all 0.2s ease;
 }
 
-/* Manual theme overrides */
-:root.light-theme {
-  /* Light theme - inherits from :root default, no overrides needed */
-}
+/* Light theme uses default values - no overrides needed */
 
 :root.dark-theme {
-  /* Dark theme - macOS style */
+  /* Dark theme - only override differences */
   --bg-primary: #2C2C2E;
   --bg-secondary: #3A3A3C;
   --bg-tertiary: #48484A;
@@ -57,24 +84,23 @@
   --text-tertiary: #8E8E93;
   --border-primary: #545458;
   --border-secondary: #636366;
-  --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
-  --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
   --accent-light: #431407;
-  --user-bubble: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --focus-bg: rgba(255, 140, 66, 0.15);
   --assistant-bubble: #3A3A3C;
   --reasoning-bg: #431407;
-  --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
-  --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+  --gradient: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+  --gradient-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
   --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
+  --user-bubble: var(--gradient);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
   --shadow-xl: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 
-/* System preference theme (only used when no manual theme is set) */
+/* System preference theme - use dark theme when no manual theme set */
 @media (prefers-color-scheme: dark) {
-  :root:not(.light-theme):not(.dark-theme) {
+  :root:not(.light-theme) {
     /* Dark theme variables */
     --bg-primary: #2C2C2E;
     --bg-secondary: #3A3A3C;
@@ -84,15 +110,14 @@
     --text-tertiary: #8E8E93;
     --border-primary: #545458;
     --border-secondary: #636366;
-    --accent: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
-    --accent-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
     --accent-light: #431407;
-    --user-bubble: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --focus-bg: rgba(255, 140, 66, 0.15);
     --assistant-bubble: #3A3A3C;
     --reasoning-bg: #431407;
-    --gradient-primary: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
-    --gradient-secondary: linear-gradient(135deg, #FFA652 0%, #FF8C42 100%);
+    --gradient: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
+    --gradient-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
     --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
+    --user-bubble: var(--gradient);
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
     --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
@@ -111,8 +136,8 @@
 }
 
 body {
-  font-family: var(--main-font-family);
-  font-size: var(--main-font-size);
+  font-family: var(--font-family);
+  font-size: var(--font-size);
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--gradient-bg);
@@ -194,13 +219,13 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  background: var(--gradient-primary);
+  padding: var(--space-3) var(--space-4);
+  background: var(--gradient);
   color: white;
   border-bottom: none;
   box-shadow: var(--shadow-sm);
   z-index: 10;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .header-left {
@@ -215,7 +240,7 @@ button:disabled {
 }
 
 .app-title {
-  font-size: 14px;
+  font-size: var(--font-base);
   font-weight: 600;
   color: white;
   white-space: nowrap;
@@ -281,7 +306,7 @@ button:disabled {
   background-color: rgba(255, 255, 255, 0.1);
   color: white;
   font-size: 12px;
-  font-family: var(--main-font-family);
+  font-family: var(--font-family);
   min-width: 70px;
   cursor: pointer;
   transition: var(--transition);
@@ -353,7 +378,7 @@ button:disabled {
 }
 
 .welcome-message p {
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   max-width: 300px;
 }
 
@@ -371,7 +396,7 @@ button:disabled {
   background-color: #fef2f2;
   color: #dc2626;
   border: 1px solid #fecaca;
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   max-width: 90%;
   text-align: center;
 }
@@ -490,7 +515,7 @@ button:disabled {
 }
 
 .message.user .message-bubble {
-  background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+  background: var(--user-bubble);
   color: white;
   border: none;
 }
@@ -574,7 +599,7 @@ button:disabled {
 .message-actions .time-display {
   font-size: 11px;
   color: var(--text-tertiary);
-  font-family: var(--main-font-family);
+  font-family: var(--font-family);
   white-space: nowrap;
 }
 
@@ -590,7 +615,7 @@ button:disabled {
 }
 
 .message-content {
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   line-height: 1.6;
 }
 
@@ -619,9 +644,9 @@ button:disabled {
   font-weight: 600;
 }
 
-.message-content h1 { font-size: calc(var(--main-font-size) * 1.5); }
-.message-content h2 { font-size: calc(var(--main-font-size) * 1.3); }
-.message-content h3 { font-size: calc(var(--main-font-size) * 1.1); }
+.message-content h1 { font-size: calc(var(--font-base) * 1.5); }
+.message-content h2 { font-size: calc(var(--font-base) * 1.3); }
+.message-content h3 { font-size: calc(var(--font-base) * 1.1); }
 
 .message-content code {
   background-color: var(--accent-light);
@@ -700,13 +725,13 @@ button:disabled {
 }
 
 .reasoning-title {
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   font-weight: 500;
   color: var(--text-secondary);
 }
 
 .reasoning-content {
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   line-height: 1.5;
   color: var(--text-secondary);
   background-color: var(--bg-tertiary);
@@ -759,10 +784,10 @@ button:disabled {
   border-radius: var(--radius-pill);
   background-color: var(--bg-secondary);
   color: var(--text-primary);
-  font-size: var(--main-font-size);
+  font-size: var(--font-base);
   resize: none;
   overflow-y: hidden;
-  font-family: var(--main-font-family);
+  font-family: var(--font-family);
   line-height: 1.4;
   transition: var(--transition);
   outline: none;
@@ -809,13 +834,13 @@ button:disabled {
 
 .new-chat-btn:hover {
   background: var(--bg-tertiary);
-  color: var(--gradient-primary);
+  color: var(--gradient);
   transform: translateY(-1px);
   box-shadow: var(--shadow-md);
 }
 
 .send-btn {
-  background: var(--gradient-primary);
+  background: var(--gradient);
   color: white;
   width: 36px;
   height: 36px;
@@ -826,7 +851,7 @@ button:disabled {
 }
 
 .send-btn:hover:not(:disabled) {
-  background: var(--gradient-secondary);
+  background: var(--gradient-hover);
   transform: translateY(-1px);
   box-shadow: var(--shadow-sm);
 }

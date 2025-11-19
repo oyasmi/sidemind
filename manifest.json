@@ -6,8 +6,7 @@
   "permissions": [
     "storage",
     "sidePanel",
-    "activeTab",
-    "permissions"
+    "activeTab"
   ],
   "host_permissions": [
     "http://localhost/*",
