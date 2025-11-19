@@ -140,7 +140,7 @@ body {
   font-size: var(--font-size);
   line-height: 1.5;
   color: var(--text-primary);
-  background: var(--gradient-bg);
+  background: var(--bg-secondary);
   height: 100vh;
   overflow: hidden;
   min-width: 420px;
@@ -205,7 +205,7 @@ button:disabled {
   position: relative;
   background: var(--bg-secondary);
   backdrop-filter: blur(10px);
-  border-radius: var(--radius-md);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
   overflow: hidden;
   box-shadow: var(--shadow-md);
 }
@@ -757,6 +757,7 @@ button:disabled {
   box-shadow: var(--shadow-xl);
   width: 100%;
   flex-shrink: 0;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
 
 .input-wrapper {
