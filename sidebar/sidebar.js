@@ -983,10 +983,12 @@ function updateInputState() {
 
 function applyFontSettings() {
   if (state.config.fontSize) {
-    document.documentElement.style.setProperty('--main-font-size', state.config.fontSize);
+    document.documentElement.style.setProperty('--font-size', state.config.fontSize);
+    console.log('Applied font size:', state.config.fontSize);
   }
   if (state.config.fontFamily) {
-    document.documentElement.style.setProperty('--main-font-family', state.config.fontFamily);
+    document.documentElement.style.setProperty('--font-family', state.config.fontFamily);
+    console.log('Applied font family:', state.config.fontFamily);
   }
 }
 
