@@ -773,7 +773,6 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: flex-end;
-  margin-bottom: 20px; /* Space for character counter */
 }
 
 .message-input {
@@ -937,34 +936,6 @@ button:disabled {
   transform: translate(-50%, -50%) scale(1);
 }
 
-/* Character counter */
-.character-count {
-  position: absolute;
-  bottom: -18px;
-  right: 52px;
-  font-size: 10px;
-  color: var(--text-tertiary);
-  opacity: 0.7;
-  display: flex;
-  align-items: center;
-  background-color: transparent;
-  padding: 1px 4px;
-  border-radius: 3px;
-  border: none;
-  white-space: nowrap;
-  z-index: 1;
-  pointer-events: none;
-  transition: opacity 0.2s ease;
-}
-
-.character-count:hover {
-  opacity: 0.9;
-}
-
-.character-count .char-count {
-  font-weight: 400;
-  letter-spacing: 0.3px;
-}
 
 /* Additional hidden class for fallback */
 .hidden {

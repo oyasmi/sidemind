@@ -157,8 +157,7 @@ const elements = {
   dropdownOverlay: null,
   closeBtn: null,
   chatHistoryList: null,
-  characterCount: null
-};
+  };
 
 // ========================================
 // APPLICATION INITIALIZATION
@@ -213,8 +212,7 @@ function cacheElements() {
   elements.dropdownOverlay = document.querySelector('.dropdown-overlay');
   elements.closeBtn = document.querySelector('.close-btn');
   elements.chatHistoryList = document.getElementById('chatHistoryList');
-  elements.characterCount = document.getElementById('characterCount');
-}
+  }
 
 // Setup Event Listeners
 function setupEventListeners() {
@@ -1010,46 +1008,10 @@ function autoResizeTextarea() {
     // Restore scroll position and cursor position
     textarea.scrollTop = scrollTop;
     textarea.setSelectionRange(selectionStart, selectionEnd);
-
-    // Update character counter
-    updateCharacterCounter();
   });
 }
 
 
-// Update character counter display
-function updateCharacterCounter() {
-  const textarea = elements.messageInput;
-  const counter = elements.characterCount;
-
-  if (!textarea || !counter) return;
-
-  const charCount = textarea.value.length;
-
-  // Update display with smart formatting
-  const charSpan = counter.querySelector('.char-count');
-  if (charSpan) {
-    let displayText;
-
-    if (charCount < 1000) {
-      // Show exact count for < 1k
-      displayText = `${charCount} characters`;
-    } else {
-      // Show in k format for >= 1k
-      const kCount = Math.floor(charCount / 1000);
-      displayText = `${kCount}k+ characters`;
-    }
-
-    charSpan.textContent = displayText;
-  }
-
-  // Show/hide counter based on content
-  if (charCount > 0) {
-    counter.classList.remove('hidden');
-  } else {
-    counter.classList.add('hidden');
-  }
-}
 
 
 function updateInputState() {
