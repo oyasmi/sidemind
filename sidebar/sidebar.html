@@ -63,12 +63,14 @@
             class="message-input"
             placeholder="Type your message..."
             rows="1"
-            maxlength="4000"
           ></textarea>
           <button id="sendBtn" class="icon-btn send-btn" aria-label="Send Message" disabled data-state="send">
             <i class="fas fa-paper-plane send-icon"></i>
             <i class="fas fa-spinner stop-icon hidden"></i>
           </button>
+          <div id="characterCount" class="character-count hidden">
+            <span class="char-count">0 characters</span>
+          </div>
         </div>
       </div>
     </footer>

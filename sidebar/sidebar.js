@@ -92,6 +92,33 @@ function clearMessageCacheForSession(sessionId) {
 let markdownCacheHits = 0;
 let markdownCacheMisses = 0;
 
+// Input performance optimization
+let inputResizeTimeout = null;
+const INPUT_RESIZE_DEBOUNCE = 16; // ~60fps
+
+// Debounced auto-resize for very fast typing
+function debouncedAutoResize() {
+  if (inputResizeTimeout) {
+    clearTimeout(inputResizeTimeout);
+  }
+
+  inputResizeTimeout = setTimeout(() => {
+    autoResizeTextarea();
+    inputResizeTimeout = null;
+  }, INPUT_RESIZE_DEBOUNCE);
+}
+
+// Enhanced scroll position management for large content
+function maintainCursorPosition(textarea) {
+  const selectionStart = textarea.selectionStart;
+  const selectionEnd = textarea.selectionEnd;
+
+  // Restore cursor position after resize
+  requestAnimationFrame(() => {
+    textarea.setSelectionRange(selectionStart, selectionEnd);
+  });
+}
+
 function logCacheStats() {
   console.log('📊 Cache Stats:', {
     messageElements: messageElementCache.size,
@@ -129,7 +156,8 @@ const elements = {
   chatHistoryDropdown: null,
   dropdownOverlay: null,
   closeBtn: null,
-  chatHistoryList: null
+  chatHistoryList: null,
+  characterCount: null
 };
 
 // ========================================
@@ -185,6 +213,7 @@ function cacheElements() {
   elements.dropdownOverlay = document.querySelector('.dropdown-overlay');
   elements.closeBtn = document.querySelector('.close-btn');
   elements.chatHistoryList = document.getElementById('chatHistoryList');
+  elements.characterCount = document.getElementById('characterCount');
 }
 
 // Setup Event Listeners
@@ -198,9 +227,11 @@ function setupEventListeners() {
   elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
 
-  // Input handling
+  // Input handling with performance optimization
   elements.messageInput.addEventListener('input', handleInputChange);
   elements.messageInput.addEventListener('keydown', handleInputKeydown);
+  elements.messageInput.addEventListener('paste', handleInputPaste);
+  elements.messageInput.addEventListener('drop', handleInputDrop);
 
   // Chat history
   elements.chatHistoryBtn.addEventListener('click', openChatHistory);
@@ -954,11 +985,72 @@ function scrollToBottom() {
   }
 }
 
+// Enhanced auto-resize with performance optimization and character counting
 function autoResizeTextarea() {
   const textarea = elements.messageInput;
-  textarea.style.height = 'auto';
-  textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+  if (!textarea) return;
+
+  // Use requestAnimationFrame for better performance
+  requestAnimationFrame(() => {
+    // Store current scroll position to maintain it during resize
+    const scrollTop = textarea.scrollTop;
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+
+    // Reset height to natural height
+    textarea.style.height = 'auto';
+
+    // Calculate new height with buffer for comfortable editing
+    const scrollHeight = textarea.scrollHeight;
+    const newHeight = Math.min(Math.max(scrollHeight + 2, 44), 320); // Min 44px, Max 320px
+
+    // Apply new height
+    textarea.style.height = newHeight + 'px';
+
+    // Restore scroll position and cursor position
+    textarea.scrollTop = scrollTop;
+    textarea.setSelectionRange(selectionStart, selectionEnd);
+
+    // Update character counter
+    updateCharacterCounter();
+  });
 }
+
+
+// Update character counter display
+function updateCharacterCounter() {
+  const textarea = elements.messageInput;
+  const counter = elements.characterCount;
+
+  if (!textarea || !counter) return;
+
+  const charCount = textarea.value.length;
+
+  // Update display with smart formatting
+  const charSpan = counter.querySelector('.char-count');
+  if (charSpan) {
+    let displayText;
+
+    if (charCount < 1000) {
+      // Show exact count for < 1k
+      displayText = `${charCount} characters`;
+    } else {
+      // Show in k format for >= 1k
+      const kCount = Math.floor(charCount / 1000);
+      displayText = `${kCount}k+ characters`;
+    }
+
+    charSpan.textContent = displayText;
+  }
+
+  // Show/hide counter based on content
+  if (charCount > 0) {
+    counter.classList.remove('hidden');
+  } else {
+    counter.classList.add('hidden');
+  }
+}
+
 
 function updateInputState() {
   const hasConfig = state.config.selectedProvider && state.config.selectedModel;
@@ -1084,6 +1176,23 @@ function handleSystemPromptChange(event) {
 
 function handleInputChange() {
   updateInputState();
+  autoResizeTextarea();
+}
+
+// Handle paste events with special processing
+function handleInputPaste(event) {
+  // Allow paste event to complete normally, then handle resizing
+  setTimeout(() => {
+    autoResizeTextarea();
+  }, 10);
+}
+
+// Handle drop events for better UX
+function handleInputDrop(event) {
+  // Handle drop events
+  setTimeout(() => {
+    autoResizeTextarea();
+  }, 10);
 }
 
 function handleInputKeydown(event) {
@@ -1123,7 +1232,7 @@ async function handleSendMessage() {
   // Add user message
   addMessage('user', message);
 
-  // Clear input
+  // Clear input and reset counter
   elements.messageInput.value = '';
   autoResizeTextarea();
   updateInputState();
