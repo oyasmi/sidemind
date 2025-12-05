@@ -710,23 +710,26 @@ function applyTheme() {
 
 function updateModelSelector() {
   elements.modelSelector.innerHTML = '<option value="">Select Model...</option>';
-  
+
   state.config.providers.forEach(provider => {
     const optgroup = document.createElement('optgroup');
     optgroup.label = provider.name;
-    
+
     provider.models.forEach(model => {
       const option = document.createElement('option');
-      option.value = model.id;
+      // 使用复合键: "modelId - providerId"
+      option.value = `${model.id} - ${provider.id}`;
+      // UI显示: 只显示模型名称，provider已由optgroup显示
       option.textContent = model.name;
-      
-      if (state.config.selectedModel === model.id) {
+
+      // 检查是否匹配当前的选中项
+      if (state.config.selectedModel === `${model.id} - ${provider.id}`) {
         option.selected = true;
       }
-      
+
       optgroup.appendChild(option);
     });
-    
+
     elements.modelSelector.appendChild(optgroup);
   });
 }
@@ -752,18 +755,26 @@ function updateSystemPromptSelector() {
 // ========================================
 
 function handleModelChange(event) {
-  const selectedModel = event.target.value;
-  
-  let selectedProvider = null;
-  for (const provider of state.config.providers) {
-    if (provider.models.find(m => m.id === selectedModel)) {
-      selectedProvider = provider.id;
-      break;
-    }
+  const selectedValue = event.target.value;
+
+  if (!selectedValue) {
+    state.config.selectedModel = null;
+    state.config.selectedProvider = null;
+    debouncedSave();
+    updateInputState();
+    return;
   }
-  
-  state.config.selectedModel = selectedModel;
-  state.config.selectedProvider = selectedProvider;
+
+  // 解析复合键: "modelId - providerId"
+  const [modelId, providerId] = selectedValue.split(' - ');
+
+  if (!providerId || !modelId) {
+    console.error('Invalid model selection format');
+    return;
+  }
+
+  state.config.selectedModel = selectedValue; // 存储复合键
+  state.config.selectedProvider = providerId;
   debouncedSave();
   updateInputState();
 }
@@ -1148,19 +1159,20 @@ function buildMessages() {
 
 function buildRequestBody(messages) {
   const body = {
-    model: state.config.selectedModel,
+    // 从复合键中提取实际的model ID
+    model: state.config.selectedModel ? state.config.selectedModel.split(' - ')[0] : state.config.selectedModel,
     messages: messages,
     stream: state.config.stream !== false
   };
-  
+
   if (state.config.temperature != null && state.config.temperature !== '') {
     body.temperature = state.config.temperature;
   }
-  
+
   if (state.config.max_completion_tokens && state.config.max_completion_tokens.trim()) {
     body.max_completion_tokens = parseInt(state.config.max_completion_tokens);
   }
-  
+
   return body;
 }
 
