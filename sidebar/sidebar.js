@@ -14,7 +14,7 @@ const state = {
     selectedModel: null,
     selectedSystemPrompt: 'default',
     temperature: 0.7,
-    max_completion_tokens: '', // API standard naming
+    max_completion_tokens: '',
     stream: true,
     systemPrompts: [
       {
@@ -32,112 +32,57 @@ const state = {
 };
 
 // ========================================
-// RENDERING CACHE SYSTEM
+// SIMPLIFIED RENDERING SYSTEM
 // ========================================
 
-// Message element cache for performance optimization
+// Message element cache
 const messageElementCache = new Map();
 
-// Markdown parsing cache with LRU eviction
+// Simplified markdown cache with automatic size control
 const markdownCache = new Map();
-const MAX_MARKDOWN_CACHE_SIZE = 128;
+const MAX_MARKDOWN_CACHE_SIZE = 100;
 
-// Stream update scheduling with optimized delay
-let streamUpdateTimeout = null;
-const STREAM_UPDATE_DELAY = 25; // 25ms for smoother 60fps-like experience
-const FORCE_UPDATE_THRESHOLD = 50; // Force update when content exceeds this length
+// Simplified stream update - direct update without complex scheduling
+let streamUpdatePending = false;
 
-// Schedule stream update with improved timing
 function scheduleStreamUpdate(messageId) {
-  // Get current message to check content length
-  const session = state.sessions[state.currentSessionId];
-  const message = session?.messages.find(m => m.id === messageId);
-
-  // Force immediate update if content has grown too large
-  if (message && (message.content?.length > FORCE_UPDATE_THRESHOLD ||
-      message.reasoning?.length > FORCE_UPDATE_THRESHOLD)) {
-    if (streamUpdateTimeout) {
-      clearTimeout(streamUpdateTimeout);
-      streamUpdateTimeout = null;
-    }
-    updateMessageDisplay(messageId);
-    return;
-  }
-
-  if (streamUpdateTimeout) {
-    clearTimeout(streamUpdateTimeout);
-  }
-
-  streamUpdateTimeout = setTimeout(() => {
-    updateMessageDisplay(messageId);
-    streamUpdateTimeout = null;
-  }, STREAM_UPDATE_DELAY);
-}
-
-// Clear cache for messages not in the current session
-function clearMessageCacheForSession(sessionId) {
-  if (!state.sessions[sessionId]) return;
-
-  const currentSessionMessages = new Set(state.sessions[sessionId].messages.map(m => m.id));
-
-  // Remove cached elements that don't belong to current session
-  for (const [messageId, element] of messageElementCache) {
-    if (!currentSessionMessages.has(messageId)) {
-      messageElementCache.delete(messageId);
-    }
-  }
-}
-
-// Performance monitoring utilities
-let markdownCacheHits = 0;
-let markdownCacheMisses = 0;
-
-// Input performance optimization
-let inputResizeTimeout = null;
-const INPUT_RESIZE_DEBOUNCE = 16; // ~60fps
-
-// Debounced auto-resize for very fast typing
-function debouncedAutoResize() {
-  if (inputResizeTimeout) {
-    clearTimeout(inputResizeTimeout);
-  }
-
-  inputResizeTimeout = setTimeout(() => {
-    autoResizeTextarea();
-    inputResizeTimeout = null;
-  }, INPUT_RESIZE_DEBOUNCE);
-}
-
-// Enhanced scroll position management for large content
-function maintainCursorPosition(textarea) {
-  const selectionStart = textarea.selectionStart;
-  const selectionEnd = textarea.selectionEnd;
-
-  // Restore cursor position after resize
+  // Simple debounce: only schedule if no update is pending
+  if (streamUpdatePending) return;
+  
+  streamUpdatePending = true;
   requestAnimationFrame(() => {
-    textarea.setSelectionRange(selectionStart, selectionEnd);
+    updateMessageDisplay(messageId);
+    streamUpdatePending = false;
   });
 }
 
-function logCacheStats() {
-  console.log('📊 Cache Stats:', {
-    messageElements: messageElementCache.size,
-    markdownCache: markdownCache.size,
-    markdownHitRate: markdownCacheHits + markdownCacheMisses > 0
-      ? ((markdownCacheHits / (markdownCacheHits + markdownCacheMisses)) * 100).toFixed(1) + '%'
-      : 'N/A',
-    streamUpdatePending: !!streamUpdateTimeout
-  });
+// Simple cache cleanup
+function clearOldCacheEntries() {
+  // Clean message cache for non-current sessions
+  if (state.currentSessionId && state.sessions[state.currentSessionId]) {
+    const currentMessages = new Set(
+      state.sessions[state.currentSessionId].messages.map(m => m.id)
+    );
+    
+    for (const [messageId] of messageElementCache) {
+      if (!currentMessages.has(messageId)) {
+        messageElementCache.delete(messageId);
+      }
+    }
+  }
+  
+  // Simple LRU for markdown cache
+  if (markdownCache.size > MAX_MARKDOWN_CACHE_SIZE) {
+    const entries = Array.from(markdownCache.entries());
+    markdownCache.clear();
+    entries.slice(-Math.floor(MAX_MARKDOWN_CACHE_SIZE * 0.8)).forEach(([k, v]) => {
+      markdownCache.set(k, v);
+    });
+  }
 }
 
-// Debug function to measure render performance
-function measureRenderPerformance(fn, ...args) {
-  const start = performance.now();
-  const result = fn(...args);
-  const end = performance.now();
-  console.log(`⏱️ ${fn.name}: ${(end - start).toFixed(2)}ms`);
-  return result;
-}
+// Periodic cleanup
+setInterval(clearOldCacheEntries, 5 * 60 * 1000); // Every 5 minutes
 
 // ========================================
 // DOM ELEMENT REFERENCES
@@ -157,43 +102,20 @@ const elements = {
   dropdownOverlay: null,
   closeBtn: null,
   chatHistoryList: null,
-  };
+};
 
 // ========================================
 // APPLICATION INITIALIZATION
 // ========================================
 
-// Initialize Application
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('SideMind initializing...');
-
-  // Cache DOM elements
+  
   cacheElements();
-
-  // Load configuration and sessions
   await loadFromStorage();
-
-  // Setup event listeners
   setupEventListeners();
-
-  // Initialize UI
   initializeUI();
-
-  // Listen for window focus to refresh config if needed
-  window.addEventListener('focus', async () => {
-    console.log('Window gained focus, checking for config updates...');
-    const oldConfig = JSON.stringify(state.config);
-    await loadFromStorage();
-    const newConfig = JSON.stringify(state.config);
-
-    if (oldConfig !== newConfig) {
-      console.log('Configuration changed, refreshing UI...');
-      updateModelSelector();
-      updateSystemPromptSelector();
-      updateInputState();
-    }
-  });
-
+  
   console.log('SideMind initialized successfully');
 });
 
@@ -212,47 +134,42 @@ function cacheElements() {
   elements.dropdownOverlay = document.querySelector('.dropdown-overlay');
   elements.closeBtn = document.querySelector('.close-btn');
   elements.chatHistoryList = document.getElementById('chatHistoryList');
-  }
+}
 
 // Setup Event Listeners
 function setupEventListeners() {
-  // Model and system prompt selection
   elements.modelSelector.addEventListener('change', handleModelChange);
   elements.systemPromptSelector.addEventListener('change', handleSystemPromptChange);
-
-  // Chat controls
   elements.newChatBtn.addEventListener('click', createNewSession);
   elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
-
-  // Input handling with performance optimization
+  
   elements.messageInput.addEventListener('input', handleInputChange);
   elements.messageInput.addEventListener('keydown', handleInputKeydown);
-  elements.messageInput.addEventListener('paste', handleInputPaste);
-  elements.messageInput.addEventListener('drop', handleInputDrop);
-
-  // Chat history
+  
   elements.chatHistoryBtn.addEventListener('click', openChatHistory);
   elements.closeBtn.addEventListener('click', closeChatHistory);
   elements.dropdownOverlay.addEventListener('click', closeChatHistory);
-
-  // Auto-resize textarea
-  elements.messageInput.addEventListener('input', autoResizeTextarea);
-
-  // Scroll behavior monitoring
+  
   elements.messagesList.addEventListener('scroll', handleScroll);
-
-  // Listen for configuration changes from options page
+  
+  // Listen for config changes
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes.config) {
-      console.log('Configuration changed in options page, updating...');
       state.config = { ...state.config, ...changes.config.newValue };
       updateModelSelector();
       updateSystemPromptSelector();
       updateInputState();
-      applyFontSettings(); // Apply font settings after config update
-      applyTheme(); // Apply theme after config update
-      console.log('Updated configuration from sync storage:', state.config);
+      applyFontSettings();
+      applyTheme();
+    }
+  });
+  
+  // Network status monitoring
+  window.addEventListener('offline', () => {
+    if (state.isStreaming) {
+      handleStopGeneration();
+      showError('Network connection lost. Please try again.');
     }
   });
 }
@@ -261,13 +178,13 @@ function setupEventListeners() {
 function initializeUI() {
   updateModelSelector();
   updateSystemPromptSelector();
-
+  
   if (state.currentSessionId) {
     renderMessages();
   } else {
     showWelcomeMessage();
   }
-
+  
   updateInputState();
 }
 
@@ -275,83 +192,67 @@ function initializeUI() {
 // STORAGE MANAGEMENT
 // ========================================
 
-// Load configuration and sessions from Chrome storage
 async function loadFromStorage() {
   try {
-    // Try to load from sync storage first (where options now saves)
-    let result = await chrome.storage.sync.get(['config']);
-
-    // If no config in sync storage, try to migrate from local storage
+    const result = await chrome.storage.sync.get(['config']);
+    
     if (!result.config) {
       const localResult = await chrome.storage.local.get(['config']);
       if (localResult.config) {
-        // Migrate config to sync storage
         await chrome.storage.sync.set({ config: localResult.config });
-        result = localResult;
-        console.log('Migrated config from local to sync storage');
+        result.config = localResult.config;
       }
     }
-
+    
     if (result.config) {
       state.config = { ...state.config, ...result.config };
-      console.log('Loaded config from sync storage:', state.config);
-      applyFontSettings(); // Apply font settings after loading config
-      applyTheme(); // Apply theme after loading config
+      applyFontSettings();
+      applyTheme();
     }
-
-    // Sessions and current session ID remain in local storage
+    
     const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId']);
-
+    
     if (localResult.sessions) {
       state.sessions = localResult.sessions;
     }
-
+    
     if (localResult.currentSessionId) {
       state.currentSessionId = localResult.currentSessionId;
     }
-
-    // If no current session, create one
+    
     if (!state.currentSessionId) {
       createNewSession();
     }
-
-    console.log('Loaded from storage:', {
-      config: state.config,
-      sessionsCount: Object.keys(state.sessions).length,
-      currentSessionId: state.currentSessionId
-    });
-
+    
   } catch (error) {
-    logError(error, 'Storage Load');
+    console.error('Storage load error:', error);
     createNewSession();
   }
 }
 
-// Save configuration and sessions to Chrome storage
 async function saveToStorage() {
   try {
-    // Save config to sync storage
-    await chrome.storage.sync.set({
-      config: state.config
-    });
-
-    // Save sessions and current session ID to local storage
+    await chrome.storage.sync.set({ config: state.config });
     await chrome.storage.local.set({
       sessions: state.sessions,
       currentSessionId: state.currentSessionId
     });
-
-    console.log('Saved to storage (config: sync, sessions: local)');
   } catch (error) {
-    logError(error, 'Storage Save');
+    console.error('Storage save error:', error);
   }
+}
+
+// Debounced save
+let saveTimeout = null;
+function debouncedSave() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => saveToStorage(), 1000);
 }
 
 // ========================================
 // SESSION MANAGEMENT
 // ========================================
 
-// Create a new chat session
 function createNewSession() {
   const sessionId = Date.now().toString();
   state.sessions[sessionId] = {
@@ -362,84 +263,71 @@ function createNewSession() {
     systemPromptId: state.config.selectedSystemPrompt
   };
   state.currentSessionId = sessionId;
-
+  
   saveToStorage();
   renderMessages();
   updateInputState();
-
-  console.log('Created new session:', sessionId);
 }
 
-// Switch to a different chat session
-function switchSession(sessionId) {
-  if (state.sessions[sessionId]) {
-    // Clear cache for messages not in the target session
-    clearMessageCacheForSession(sessionId);
-
-    state.currentSessionId = sessionId;
-    saveToStorage();
-    renderMessages();
-    updateInputState();
-    closeChatHistory();
-
-    console.log('Switched to session:', sessionId);
+async function switchSession(sessionId) {
+  if (!state.sessions[sessionId]) return;
+  
+  // Stop current streaming if any
+  if (state.isStreaming) {
+    await handleStopGeneration();
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
+  
+  clearOldCacheEntries();
+  state.currentSessionId = sessionId;
+  saveToStorage();
+  renderMessages();
+  updateInputState();
+  closeChatHistory();
 }
 
-// Delete a chat session
 function deleteSession(sessionId) {
-  if (!state.sessions[sessionId]) {
-    return;
-  }
-
-  // Remove cached elements for messages in this session
+  if (!state.sessions[sessionId]) return;
+  
+  // Clear cache for this session
   if (state.sessions[sessionId].messages) {
-    state.sessions[sessionId].messages.forEach(message => {
-      messageElementCache.delete(message.id);
+    state.sessions[sessionId].messages.forEach(msg => {
+      messageElementCache.delete(msg.id);
     });
   }
-
-  // Delete the session directly without confirmation
+  
   delete state.sessions[sessionId];
-
-  // If deleted session was the current session, create a new one
+  
+  // Switch to another session or create new
   if (state.currentSessionId === sessionId) {
-    const remainingSessions = Object.keys(state.sessions);
-    if (remainingSessions.length > 0) {
-      // Switch to the most recent session
-      const recentSessionId = remainingSessions.sort((a, b) => {
-        return new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp);
-      })[0];
-      state.currentSessionId = recentSessionId;
+    const remaining = Object.keys(state.sessions);
+    if (remaining.length > 0) {
+      const recent = remaining.sort((a, b) => 
+        new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
+      )[0];
+      state.currentSessionId = recent;
     } else {
-      // No sessions left, create a new one
       createNewSession();
     }
   }
-
-  // Save and update UI
+  
   saveToStorage();
   renderMessages();
   updateInputState();
-
-  // Refresh chat history if it's open
+  
   if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
     renderChatHistory();
   }
-
-  console.log('Deleted session:', sessionId);
 }
 
 // ========================================
 // MESSAGE MANAGEMENT
 // ========================================
 
-// Add a new message to the current session
 function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
-  const sessionId = state.currentSessionId;
-  const session = state.sessions[sessionId];
+  const session = state.sessions[state.currentSessionId];
   if (!session) return;
-
+  
   const message = {
     id: Date.now().toString(),
     role,
@@ -448,658 +336,413 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
     reasoningCollapsed,
     timestamp: new Date().toISOString()
   };
-
+  
   session.messages.push(message);
-
-  // Prepare session updates
-  const sessionUpdates = {
-    timestamp: new Date().toISOString(),
-    modelUsed: state.config.selectedModel,
-    systemPromptId: state.config.selectedSystemPrompt
-  };
-
-  // Auto-generate session title from first user message
+  
+  session.timestamp = new Date().toISOString();
+  session.modelUsed = state.config.selectedModel;
+  session.systemPromptId = state.config.selectedSystemPrompt;
+  
+  // Auto-generate title from first user message
   if (role === 'user' && session.messages.length === 1) {
-    sessionUpdates.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
+    session.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
   }
-
-  updateSession(sessionId, sessionUpdates);
+  
+  debouncedSave();
   renderMessages();
 }
 
 // ========================================
-// UI RENDERING FUNCTIONS
+// UI RENDERING
 // ========================================
 
-// Render all messages in the current session with caching
 function renderMessages() {
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
     showWelcomeMessage();
     return;
   }
-
+  
   hideWelcomeMessage();
-
-  const start = performance.now();
-  let cachedCount = 0;
-  let createdCount = 0;
-
-  // Use DocumentFragment for batch DOM operations
+  
   const fragment = document.createDocumentFragment();
-
+  
   session.messages.forEach(message => {
     let messageElement = messageElementCache.get(message.id);
-
+    
     if (!messageElement) {
-      // Only create new message elements if not cached
       messageElement = createMessageElement(message);
       messageElementCache.set(message.id, messageElement);
-      createdCount++;
-    } else {
-      cachedCount++;
     }
-
+    
     fragment.appendChild(messageElement);
   });
-
-  // Replace all content in one operation
+  
   elements.messagesList.innerHTML = '';
   elements.messagesList.appendChild(fragment);
-
-  const end = performance.now();
-
-  // Performance logging
-  console.log(`🎨 renderMessages: ${(end - start).toFixed(2)}ms | Messages: ${session.messages.length} | Cached: ${cachedCount} | Created: ${createdCount}`);
-  logCacheStats();
-
   scrollToBottom();
 }
 
-// Create a DOM element for a single message
 function createMessageElement(message) {
-  const messageDiv = createElement('div', `message ${message.role}`);
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `message ${message.role}`;
   messageDiv.setAttribute('data-message-id', message.id);
-
-  // Create message header with avatar and sender name
-  const messageHeader = createElement('div', 'message-header');
-
-  // Create avatar with appropriate icon
-  const avatar = createElement('div', 'message-avatar');
-  const avatarIcon = message.role === 'user' ? 'fas fa-user' : 'fas fa-robot';
-  avatar.innerHTML = createIcon(avatarIcon);
-
-  // Create sender name
-  const senderName = createElement('span', 'sender-name');
+  
+  // Header
+  const header = document.createElement('div');
+  header.className = 'message-header';
+  
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.innerHTML = `<i class="fas fa-${message.role === 'user' ? 'user' : 'robot'}"></i>`;
+  
+  const senderName = document.createElement('span');
+  senderName.className = 'sender-name';
   senderName.textContent = message.role === 'user' ? 'You' : 'Assistant';
-
-  // Assemble message header
-  messageHeader.appendChild(avatar);
-  messageHeader.appendChild(senderName);
-
-  // Create message wrapper to contain bubble and actions
-  const messageWrapper = createElement('div', 'message-wrapper');
-  const bubble = createElement('div', 'message-bubble');
-  const content = createElement('div', 'message-content');
-
-  // User messages: render as plain text to preserve line breaks
-  // Assistant messages: render as markdown
+  
+  header.appendChild(avatar);
+  header.appendChild(senderName);
+  
+  // Wrapper
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message-wrapper';
+  
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  
+  // Reasoning section (if exists)
+  if (message.reasoning && message.reasoning.trim()) {
+    bubble.appendChild(createReasoningSection(message));
+  }
+  
+  // Content
+  const content = document.createElement('div');
+  content.className = 'message-content';
+  
   if (message.role === 'user') {
     content.textContent = message.content;
   } else {
     content.innerHTML = renderMarkdown(message.content);
   }
-
-  // Add reasoning section first (before content) if exists
-  if (message.reasoning && message.reasoning.trim()) {
-    const reasoningSection = createReasoningSection(message);
-    bubble.appendChild(reasoningSection);
-  }
-
-  // Add content after reasoning
+  
   bubble.appendChild(content);
-
-  // Create message actions bar
-  const actionsBar = createMessageActions(message);
-
-  // Assemble message wrapper with bubble and actions
-  messageWrapper.appendChild(bubble);
-  messageWrapper.appendChild(actionsBar);
-
-  // Assemble message with header and wrapper
-  messageDiv.appendChild(messageHeader);
-  messageDiv.appendChild(messageWrapper);
-
-  // Initialize cache properties for incremental updates
+  
+  // Actions
+  const actions = createMessageActions(message);
+  
+  wrapper.appendChild(bubble);
+  wrapper.appendChild(actions);
+  messageDiv.appendChild(header);
+  messageDiv.appendChild(wrapper);
+  
+  // Cache tracking
   messageDiv.lastContent = message.content || '';
   messageDiv.lastReasoning = message.reasoning || '';
-
+  
   return messageDiv;
 }
 
-function createMessageActions(message) {
-  const actionsBar = createElement('div', 'message-actions');
-
-  // Create copy button
-  const copyBtn = createButton('copy-btn', 'Copy message', createIcon('fas fa-copy'));
-  copyBtn.addEventListener('click', async () => {
-    await copyMessageContent(message, copyBtn);
-  });
-
-  // Create regenerate button
-  const regenerateBtn = createButton('regenerate-btn', 'Regenerate response', createIcon('fas fa-redo'));
-  regenerateBtn.addEventListener('click', async () => {
-    await regenerateFromMessage(message, regenerateBtn);
-  });
-
-  // Create time display
-  const timeDisplay = createElement('span', 'time-display');
-  timeDisplay.textContent = formatMessageTime(message.timestamp);
-
-  // Assemble actions bar
-  actionsBar.appendChild(copyBtn);
-  actionsBar.appendChild(regenerateBtn);
-  actionsBar.appendChild(timeDisplay);
-
-  return actionsBar;
-}
-
 function createReasoningSection(message) {
-  const isCollapsed = message.reasoningCollapsed;
   const section = document.createElement('div');
-  section.className = isCollapsed ? 'reasoning-section' : 'reasoning-section expanded'; // Set initial state based on message state
-
+  section.className = message.reasoningCollapsed ? 'reasoning-section' : 'reasoning-section expanded';
+  
   const header = document.createElement('div');
   header.className = 'reasoning-header';
-
+  
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.classList.add('reasoning-icon');
   icon.setAttribute('viewBox', '0 0 24 24');
   icon.innerHTML = '<polyline points="9,18 15,12 9,6"></polyline>';
-
+  
   const title = document.createElement('span');
   title.className = 'reasoning-title';
   title.textContent = '🤔 Thinking...';
-
+  
   header.appendChild(icon);
   header.appendChild(title);
   header.addEventListener('click', () => {
-    const isExpanded = section.classList.contains('expanded');
     section.classList.toggle('expanded');
-
-    // Save the new state to the message
-    message.reasoningCollapsed = isExpanded; // Save true when collapsing, false when expanding
-    saveToStorage(); // Persist the change
+    message.reasoningCollapsed = !section.classList.contains('expanded');
+    debouncedSave();
   });
-
+  
   const content = document.createElement('div');
   content.className = 'reasoning-content';
   content.innerHTML = renderMarkdown(message.reasoning);
-
+  
   section.appendChild(header);
   section.appendChild(content);
-
+  
   return section;
 }
 
-// Copy Message Content
-async function copyMessageContent(message, copyBtn) {
+function createMessageActions(message) {
+  const actions = document.createElement('div');
+  actions.className = 'message-actions';
+  
+  // Copy button
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.setAttribute('aria-label', 'Copy message');
+  copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+  copyBtn.addEventListener('click', () => copyMessage(message, copyBtn));
+  
+  // Regenerate button
+  const regenBtn = document.createElement('button');
+  regenBtn.className = 'regenerate-btn';
+  regenBtn.setAttribute('aria-label', 'Regenerate response');
+  regenBtn.innerHTML = '<i class="fas fa-redo"></i>';
+  regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
+  
+  // Time
+  const time = document.createElement('span');
+  time.className = 'time-display';
+  time.textContent = formatTime(message.timestamp);
+  
+  actions.appendChild(copyBtn);
+  actions.appendChild(regenBtn);
+  actions.appendChild(time);
+  
+  return actions;
+}
+
+async function copyMessage(message, button) {
   try {
-    // For assistant messages, copy the original markdown content
-    // For user messages, copy the raw content
-    let textToCopy = message.content;
-
-    // If it's an assistant message with reasoning, include reasoning
-    if (message.role === 'assistant' && message.reasoning && message.reasoning.trim()) {
-      textToCopy = `🤔 Thinking:\n${message.reasoning}\n\n${message.content}`;
+    let text = message.content;
+    if (message.role === 'assistant' && message.reasoning) {
+      text = `🤔 Thinking:\n${message.reasoning}\n\n${text}`;
     }
-
-    await navigator.clipboard.writeText(textToCopy);
-
-    // Show copied state
-    copyBtn.classList.add('copied');
-    copyBtn.innerHTML = createIcon('fas fa-check');
-
-    // Reset after 2 seconds
+    
+    await navigator.clipboard.writeText(text);
+    button.classList.add('copied');
+    button.innerHTML = '<i class="fas fa-check"></i>';
+    
     setTimeout(() => {
-      copyBtn.classList.remove('copied');
-      copyBtn.innerHTML = createIcon('fas fa-copy');
+      button.classList.remove('copied');
+      button.innerHTML = '<i class="fas fa-copy"></i>';
     }, 2000);
-
   } catch (error) {
-    logError(error, 'Copy Message', { messageId: message.id });
-    // Show error state briefly
-    copyBtn.innerHTML = createIcon('fas fa-exclamation');
-    setTimeout(() => {
-      copyBtn.innerHTML = createIcon('fas fa-copy');
-    }, 1000);
+    console.error('Copy failed:', error);
   }
 }
 
-// Regenerate Response from Message
-async function regenerateFromMessage(message, regenerateBtn) {
-  if (state.isStreaming) {
-    console.log('Cannot regenerate while streaming');
-    return;
-  }
-
+async function regenerateMessage(message, button) {
+  if (state.isStreaming) return;
+  
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
-
-  // Show regenerating state
-  regenerateBtn.classList.add('regenerating');
-  regenerateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-
+  
+  button.classList.add('regenerating');
+  button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  
   try {
-    // Find message index
-    const messageIndex = session.messages.findIndex(m => m.id === message.id);
-    if (messageIndex === -1) {
-      console.error('Message not found');
-      return;
-    }
-
-    // Remove messages based on role
-    let messagesToKeep;
-    if (message.role === 'user') {
-      // For user messages, keep messages up to and including this message
-      messagesToKeep = session.messages.slice(0, messageIndex + 1);
-    } else {
-      // For assistant messages, keep messages before this message
-      messagesToKeep = session.messages.slice(0, messageIndex);
-    }
-
-    // Update session messages
-    session.messages = messagesToKeep;
+    const index = session.messages.findIndex(m => m.id === message.id);
+    if (index === -1) return;
+    
+    const keepMessages = message.role === 'user' 
+      ? session.messages.slice(0, index + 1)
+      : session.messages.slice(0, index);
+    
+    session.messages = keepMessages;
     session.timestamp = new Date().toISOString();
-
-    // Save to storage and render
+    
     saveToStorage();
     renderMessages();
-
-    // If it's a user message, send API request
+    
     if (message.role === 'user') {
       await sendMessageToAPI(message.content);
     } else {
-      // If it's an assistant message, find the last user message and resend
-      const lastUserMessage = session.messages
-        .slice()
-        .reverse()
-        .find(m => m.role === 'user');
-
-      if (lastUserMessage) {
-        await sendMessageToAPI(lastUserMessage.content);
-      } else {
-        console.error('No user message found to regenerate');
+      const lastUser = session.messages.slice().reverse().find(m => m.role === 'user');
+      if (lastUser) {
+        await sendMessageToAPI(lastUser.content);
       }
     }
-
-  } catch (error) {
-    console.error('Error regenerating response:', error);
-    showError('Failed to regenerate response. Please try again.');
   } finally {
-    // Reset button state
-    regenerateBtn.classList.remove('regenerating');
-    regenerateBtn.innerHTML = '<i class="fas fa-redo"></i>';
+    button.classList.remove('regenerating');
+    button.innerHTML = '<i class="fas fa-redo"></i>';
   }
 }
 
-// Format Message Time
-function formatMessageTime(timestamp) {
+function formatTime(timestamp) {
   if (!timestamp) return '';
-
   const date = new Date(timestamp);
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
 }
 
-// Markdown Rendering with Improved Caching
-function renderMarkdownCached(text) {
-  if (!text || text.trim() === '') return '';
-
-  // Check cache first
+function renderMarkdown(text) {
+  if (!text) return '';
+  
+  // Check cache
   if (markdownCache.has(text)) {
-    const cached = markdownCache.get(text);
-    // LRU: Move to end
-    markdownCache.delete(text);
-    markdownCache.set(text, cached);
-    markdownCacheHits++;
-    return cached;
+    return markdownCache.get(text);
   }
-
-  markdownCacheMisses++;
-
-  // Parse and cache
+  
   try {
     const html = marked.parse(text);
-
-    // Improved cache size control - avoid storing very similar intermediate versions
-    // Only cache if text is reasonably long and not likely an intermediate version
-    const shouldCache = text.length > 20 &&
-                       (text.length < 100 || text.includes('\n') || text.includes('```') ||
-                        text.match(/^[A-Z]/)); // Cache longer texts or structured content
-
-    if (shouldCache) {
-      // Clean up very similar short entries (likely intermediate stream results)
-      if (text.length < 100 && markdownCache.size > MAX_MARKDOWN_CACHE_SIZE * 0.8) {
-        const keysToClean = [];
-        for (const [key] of markdownCache) {
-          if (key.length < 100 && key.length > 10 &&
-              text.startsWith(key.substring(0, Math.min(20, key.length)))) {
-            keysToClean.push(key);
-          }
-        }
-        keysToClean.forEach(key => markdownCache.delete(key));
-      }
-
-      // LRU eviction if still over limit
-      while (markdownCache.size >= MAX_MARKDOWN_CACHE_SIZE) {
-        const firstKey = markdownCache.keys().next().value;
-        markdownCache.delete(firstKey);
-      }
-
+    
+    // Cache if reasonable size
+    if (text.length > 20 && markdownCache.size < MAX_MARKDOWN_CACHE_SIZE) {
       markdownCache.set(text, html);
     }
-
+    
     return html;
   } catch (error) {
-    console.error('Markdown parsing error:', error);
+    console.error('Markdown error:', error);
     return text;
   }
 }
 
-// Legacy markdown rendering function (for compatibility)
-function renderMarkdown(text) {
-  return renderMarkdownCached(text);
-}
-
-// ========================================
-// UTILITY FUNCTIONS
-// ========================================
-
-// DOM Creation Utilities
-function createElement(tag, className, innerHTML = null) {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (innerHTML) element.innerHTML = innerHTML;
-  return element;
-}
-
-// Button Creation Utilities
-function createButton(className, ariaLabel, iconHTML = null) {
-  const button = createElement('button', className);
-  if (ariaLabel) button.setAttribute('aria-label', ariaLabel);
-  if (iconHTML) button.innerHTML = iconHTML;
-  return button;
-}
-
-// Icon Utilities
-function createIcon(iconClass) {
-  return `<i class="${iconClass}"></i>`;
-}
-
-// Error Handling Utilities
-function handleAsyncError(error, context = 'Operation') {
-  console.error(`${context} failed:`, error);
-  const errorMessage = error.name === 'AbortError' ?
-    'Operation was cancelled' :
-    `${context} failed. Please try again.`;
-  return errorMessage;
-}
-
-// Enhanced error handling with specific error types
-function getApiErrorMessage(error) {
-  const message = error.message.toLowerCase();
-
-  if (message.includes('401') || message.includes('authentication')) {
-    return 'Authentication failed. Please check your API key.';
-  }
-  if (message.includes('404') || message.includes('not found')) {
-    return 'Model or endpoint not found. Please check your configuration.';
-  }
-  if (message.includes('429') || message.includes('rate limit')) {
-    return 'Rate limit exceeded. Please try again later.';
-  }
-
-  // CORS and permission errors
-  if (message.includes('cors') || message.includes('blocked by cors policy') ||
-      message.includes('cross-origin') || message.includes('blocked by browser')) {
-    const provider = getCurrentProvider();
-    const baseUrl = provider ? provider.baseUrl : 'the server';
-    return `CORS权限错误。扩展需要访问 ${baseUrl} 的权限。请在选项页面重新配置此服务提供商以授予相应权限。`;
-  }
-
-  // Network errors that might be permission-related
-  if (message.includes('network') || message.includes('fetch')) {
-    // Check if this might be a permission error
-    const provider = getCurrentProvider();
-    if (provider && provider.baseUrl) {
-      try {
-        const hostname = new URL(provider.baseUrl).hostname;
-        if (!hostname.includes('localhost') && !hostname.includes('127.0.0.1') &&
-            !hostname.startsWith('192.168.') && !hostname.startsWith('10.')) {
-          return `网络错误，可能是因为缺少权限。请确保已授予访问 ${provider.baseUrl} 的权限。`;
-        }
-      } catch (e) {
-        // If URL parsing fails, continue with generic network error
-      }
+function updateMessageDisplay(messageId) {
+  const messageElement = messageElementCache.get(messageId);
+  if (!messageElement) return;
+  
+  const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
+  if (!message) return;
+  
+  // Update content if changed
+  const contentEl = messageElement.querySelector('.message-content');
+  if (contentEl && messageElement.lastContent !== message.content) {
+    if (message.role === 'user') {
+      contentEl.textContent = message.content;
+    } else {
+      contentEl.innerHTML = renderMarkdown(message.content);
     }
-    return 'Network error. Please check your connection.';
+    messageElement.lastContent = message.content;
+    scrollToBottom();
   }
-
-  return 'An error occurred while processing your request.';
-}
-
-// Unified error logging
-function logError(error, context, additionalInfo = {}) {
-  const errorInfo = {
-    context,
-    message: error.message,
-    name: error.name,
-    timestamp: new Date().toISOString(),
-    ...additionalInfo
-  };
-  console.error(`[${context}] Error:`, errorInfo);
-  return errorInfo;
-}
-
-// Storage Validation Utilities
-function validateConfig(config) {
-  return (
-    typeof config === 'object' &&
-    Array.isArray(config.providers) &&
-    Array.isArray(config.systemPrompts) &&
-    typeof config.temperature === 'number' &&
-    typeof config.max_completion_tokens === 'string' &&
-    typeof config.stream === 'boolean' &&
-    (!config.theme || ['light', 'dark', 'system'].includes(config.theme))
-  );
-}
-
-// State Management Utilities
-function updateConfig(updates, immediateSave = true) {
-  Object.assign(state.config, updates);
-  if (immediateSave) {
-    debouncedSave();
+  
+  // Update reasoning if changed
+  if (messageElement.lastReasoning !== (message.reasoning || '')) {
+    const bubble = messageElement.querySelector('.message-bubble');
+    let reasoningSection = messageElement.querySelector('.reasoning-section');
+    
+    if (message.reasoning && message.reasoning.trim()) {
+      if (reasoningSection) {
+        const reasoningContent = reasoningSection.querySelector('.reasoning-content');
+        if (reasoningContent) {
+          reasoningContent.innerHTML = renderMarkdown(message.reasoning);
+        }
+      } else {
+        const newSection = createReasoningSection(message);
+        const contentEl = bubble.querySelector('.message-content');
+        bubble.insertBefore(newSection, contentEl);
+      }
+    } else if (reasoningSection) {
+      reasoningSection.remove();
+    }
+    
+    messageElement.lastReasoning = message.reasoning || '';
+    scrollToBottom();
   }
-}
-
-function updateSession(sessionId, updates, immediateSave = true) {
-  if (!state.sessions[sessionId]) return;
-
-  Object.assign(state.sessions[sessionId], updates);
-  state.sessions[sessionId].timestamp = new Date().toISOString();
-
-  if (immediateSave) {
-    debouncedSave();
-  }
-}
-
-// Debounced save to prevent excessive storage operations
-let saveTimeout = null;
-function debouncedSave(delay = 2000) {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-  }
-  saveTimeout = setTimeout(() => {
-    saveToStorage();
-  }, delay);
-}
-
-// Immediate save for important operations
-function immediateSave() {
-  if (saveTimeout) {
-    clearTimeout(saveTimeout);
-    saveTimeout = null;
-  }
-  saveToStorage();
 }
 
 // ========================================
-// UI HELPER FUNCTIONS
+// UI HELPERS
 // ========================================
 
 function showWelcomeMessage() {
-  if (elements.welcomeMessage) {
-    elements.welcomeMessage.classList.remove('hidden');
-  }
-  if (elements.messagesList) {
-    elements.messagesList.classList.add('hidden');
-  }
+  elements.welcomeMessage?.classList.remove('hidden');
+  elements.messagesList?.classList.add('hidden');
 }
 
 function hideWelcomeMessage() {
-  if (elements.welcomeMessage) {
-    elements.welcomeMessage.classList.add('hidden');
-  }
-  if (elements.messagesList) {
-    elements.messagesList.classList.remove('hidden');
-  }
+  elements.welcomeMessage?.classList.add('hidden');
+  elements.messagesList?.classList.remove('hidden');
 }
 
 function scrollToBottom() {
-  if (elements.messagesList && !state.userScrolledUp) {
+  if (!state.userScrolledUp && elements.messagesList) {
     elements.messagesList.scrollTop = elements.messagesList.scrollHeight;
   }
 }
 
-// Enhanced auto-resize with performance optimization and character counting
 function autoResizeTextarea() {
   const textarea = elements.messageInput;
   if (!textarea) return;
-
-  // Use requestAnimationFrame for better performance
+  
   requestAnimationFrame(() => {
-    // Store current scroll position to maintain it during resize
-    const scrollTop = textarea.scrollTop;
-    const selectionStart = textarea.selectionStart;
-    const selectionEnd = textarea.selectionEnd;
-
-    // Reset height to natural height
     textarea.style.height = 'auto';
-
-    // Calculate new height with buffer for comfortable editing
-    const scrollHeight = textarea.scrollHeight;
-    const newHeight = Math.min(Math.max(scrollHeight + 2, 44), 320); // Min 44px, Max 320px
-
-    // Apply new height
+    const newHeight = Math.min(Math.max(textarea.scrollHeight + 2, 44), 320);
     textarea.style.height = newHeight + 'px';
-
-    // Restore scroll position and cursor position
-    textarea.scrollTop = scrollTop;
-    textarea.setSelectionRange(selectionStart, selectionEnd);
   });
 }
-
-
-
 
 function updateInputState() {
   const hasConfig = state.config.selectedProvider && state.config.selectedModel;
   const hasMessage = elements.messageInput.value.trim().length > 0;
   const canSend = hasConfig && hasMessage && !state.isStreaming;
-
-  // Update button disabled state
+  
   elements.sendBtn.disabled = !canSend;
-
-  // Update button appearance and behavior based on streaming state
+  
   if (state.isStreaming) {
-    // Show loading button (clicking will stop generation)
     elements.sendBtn.setAttribute('data-state', 'stop');
-    elements.sendBtn.setAttribute('aria-label', 'Click to stop generation');
-    elements.sendBtn.disabled = false; // Always enable stop button
+    elements.sendBtn.setAttribute('aria-label', 'Stop generation');
+    elements.sendBtn.disabled = false;
   } else {
-    // Show send button
     elements.sendBtn.setAttribute('data-state', 'send');
-    elements.sendBtn.setAttribute('aria-label', 'Send Message');
+    elements.sendBtn.setAttribute('aria-label', 'Send message');
   }
 }
 
 function applyFontSettings() {
   if (state.config.fontSize) {
     document.documentElement.style.setProperty('--font-size', state.config.fontSize);
-    console.log('Applied font size:', state.config.fontSize);
   }
   if (state.config.fontFamily) {
     document.documentElement.style.setProperty('--font-family', state.config.fontFamily);
-    console.log('Applied font family:', state.config.fontFamily);
   }
 }
 
 function applyTheme() {
   const theme = state.config.theme || 'light';
   const html = document.documentElement;
-
-  // Remove existing theme classes
+  
   html.classList.remove('light-theme', 'dark-theme');
-
-  // Apply the selected theme
+  
   if (theme === 'light') {
     html.classList.add('light-theme');
   } else if (theme === 'dark') {
     html.classList.add('dark-theme');
   }
-  // If 'system', don't add any class - let the system preference media query handle it
-
-  console.log(`Applied theme: ${theme}`);
 }
 
-// UI Update Functions
 function updateModelSelector() {
   elements.modelSelector.innerHTML = '<option value="">Select Model...</option>';
-
+  
   state.config.providers.forEach(provider => {
     const optgroup = document.createElement('optgroup');
     optgroup.label = provider.name;
-
+    
     provider.models.forEach(model => {
       const option = document.createElement('option');
       option.value = model.id;
       option.textContent = model.name;
-
+      
       if (state.config.selectedModel === model.id) {
         option.selected = true;
       }
-
+      
       optgroup.appendChild(option);
     });
-
+    
     elements.modelSelector.appendChild(optgroup);
   });
 }
 
 function updateSystemPromptSelector() {
   elements.systemPromptSelector.innerHTML = '';
-
+  
   state.config.systemPrompts.forEach(prompt => {
     const option = document.createElement('option');
     option.value = prompt.id;
     option.textContent = prompt.name;
-
+    
     if (state.config.selectedSystemPrompt === prompt.id) {
       option.selected = true;
     }
-
+    
     elements.systemPromptSelector.appendChild(option);
   });
 }
@@ -1110,51 +753,29 @@ function updateSystemPromptSelector() {
 
 function handleModelChange(event) {
   const selectedModel = event.target.value;
-
-  // Find the provider for this model
+  
   let selectedProvider = null;
   for (const provider of state.config.providers) {
-    const model = provider.models.find(m => m.id === selectedModel);
-    if (model) {
+    if (provider.models.find(m => m.id === selectedModel)) {
       selectedProvider = provider.id;
       break;
     }
   }
-
-  // Update config with both model and provider
-  updateConfig({
-    selectedModel,
-    selectedProvider
-  });
-
+  
+  state.config.selectedModel = selectedModel;
+  state.config.selectedProvider = selectedProvider;
+  debouncedSave();
   updateInputState();
 }
 
 function handleSystemPromptChange(event) {
-  updateConfig({
-    selectedSystemPrompt: event.target.value
-  });
+  state.config.selectedSystemPrompt = event.target.value;
+  debouncedSave();
 }
 
 function handleInputChange() {
   updateInputState();
   autoResizeTextarea();
-}
-
-// Handle paste events with special processing
-function handleInputPaste(event) {
-  // Allow paste event to complete normally, then handle resizing
-  setTimeout(() => {
-    autoResizeTextarea();
-  }, 10);
-}
-
-// Handle drop events for better UX
-function handleInputDrop(event) {
-  // Handle drop events
-  setTimeout(() => {
-    autoResizeTextarea();
-  }, 10);
 }
 
 function handleInputKeydown(event) {
@@ -1168,67 +789,44 @@ function handleInputKeydown(event) {
 
 function handleScroll() {
   if (!elements.messagesList) return;
-
+  
   const { scrollTop, scrollHeight, clientHeight } = elements.messagesList;
-  const threshold = 50; // pixels from bottom to consider "at bottom"
-
-  // Check if user is scrolled up (not at bottom)
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-  state.userScrolledUp = distanceFromBottom > threshold;
-
-  // If user scrolls back to bottom, reset the flag
-  if (distanceFromBottom <= threshold && state.userScrolledUp) {
-    state.userScrolledUp = false;
-  }
+  
+  state.userScrolledUp = distanceFromBottom > 50;
 }
 
 async function handleSendMessage() {
   const message = elements.messageInput.value.trim();
-  if (!message || elements.sendBtn.disabled) {
-    return;
-  }
-
-  // Reset scroll state when user sends a new message
+  if (!message || elements.sendBtn.disabled) return;
+  
   state.userScrolledUp = false;
-
-  // Add user message
+  
   addMessage('user', message);
-
-  // Clear input and reset counter
+  
   elements.messageInput.value = '';
   autoResizeTextarea();
   updateInputState();
-
-  // Send API request
+  
   await sendMessageToAPI(message);
 }
 
-// Handle Stop Generation
 async function handleStopGeneration() {
-  if (!state.isStreaming || !state.abortController) {
-    console.log('No active streaming to stop');
-    return;
-  }
-
+  if (!state.isStreaming || !state.abortController) return;
+  
   console.log('Stopping generation...');
-
-  try {
-    // Abort the fetch request
-    state.abortController.abort();
-
-    console.log('Generation stopped by user');
-
-  } catch (error) {
-    // Silently ignore abort errors since they're expected
-    if (error.name === 'AbortError') {
-      console.log('Abort signal sent successfully');
-    } else {
-      console.error('Error stopping generation:', error);
-    }
-  }
+  
+  // Mark as not streaming immediately
+  state.isStreaming = false;
+  updateInputState();
+  
+  // Abort the request
+  state.abortController.abort();
+  
+  // Give abort time to propagate
+  await new Promise(resolve => setTimeout(resolve, 100));
 }
 
-// Handle Send or Stop button click
 async function handleSendOrStop() {
   if (state.isStreaming) {
     await handleStopGeneration();
@@ -1241,7 +839,6 @@ function openOptions() {
   chrome.runtime.openOptionsPage();
 }
 
-// Chat History Functions
 function openChatHistory() {
   elements.chatHistoryDropdown.classList.remove('hidden');
   renderChatHistory();
@@ -1253,237 +850,327 @@ function closeChatHistory() {
 
 function renderChatHistory() {
   elements.chatHistoryList.innerHTML = '';
-
-  const sessionIds = Object.keys(state.sessions).sort((a, b) => {
-    return new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp);
-  });
-
+  
+  const sessionIds = Object.keys(state.sessions).sort((a, b) => 
+    new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
+  );
+  
   if (sessionIds.length === 0) {
-    const emptyMessage = document.createElement('div');
-    emptyMessage.className = 'chat-history-empty';
-    emptyMessage.textContent = 'No chat history yet';
-    emptyMessage.style.cssText = 'padding: 20px; text-align: center; color: var(--text-tertiary); font-size: 13px;';
-    elements.chatHistoryList.appendChild(emptyMessage);
+    const empty = document.createElement('div');
+    empty.className = 'chat-history-empty';
+    empty.textContent = 'No chat history yet';
+    empty.style.cssText = 'padding: 20px; text-align: center; color: var(--text-tertiary);';
+    elements.chatHistoryList.appendChild(empty);
     return;
   }
-
+  
   sessionIds.forEach(sessionId => {
     const session = state.sessions[sessionId];
     const item = document.createElement('div');
     item.className = 'chat-history-item';
-
+    
     if (sessionId === state.currentSessionId) {
       item.style.backgroundColor = 'var(--accent-light)';
     }
-
-    // Create content container
+    
     const content = document.createElement('div');
     content.className = 'chat-history-content';
-
+    
     const title = document.createElement('div');
     title.className = 'chat-history-title';
     title.textContent = session.title;
-
+    
     const meta = document.createElement('div');
     meta.className = 'chat-history-meta';
-
-    // Format date as mm-dd HH:MM
+    
     const date = new Date(session.timestamp);
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const dateStr = `${month}-${day} ${hours}:${minutes}`;
-
-    // Get provider, model, and system prompt info
+    const dateStr = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    
     let metaInfo = [];
-
+    
     if (session.modelUsed) {
-      // Find the provider for this model
-      let providerName = 'Unknown';
       for (const provider of state.config.providers) {
         const model = provider.models.find(m => m.id === session.modelUsed);
         if (model) {
-          providerName = provider.name;
-          metaInfo.push(providerName);
+          metaInfo.push(provider.name, model.name);
           break;
         }
       }
-
-      // Find the model name
-      let modelName = session.modelUsed;
-      for (const provider of state.config.providers) {
-        const model = provider.models.find(m => m.id === session.modelUsed);
-        if (model) {
-          modelName = model.name;
-          break;
-        }
-      }
-      metaInfo.push(modelName);
     }
-
-    // Handle system prompt - try to get it from session or current config
-    let systemPromptId = session.systemPromptId || state.config.selectedSystemPrompt;
-
-    if (systemPromptId) {
-      const systemPrompt = state.config.systemPrompts.find(p => p.id === systemPromptId);
-      if (systemPrompt) {
-        metaInfo.push(systemPrompt.name);
-      }
+    
+    const systemPrompt = state.config.systemPrompts.find(p => p.id === (session.systemPromptId || state.config.selectedSystemPrompt));
+    if (systemPrompt) {
+      metaInfo.push(systemPrompt.name);
     }
-
-    const metaStr = metaInfo.length > 0 ? metaInfo.join(' • ') : 'Unknown';
-
-    meta.innerHTML = `<span>${dateStr}</span><span>${metaStr}</span>`;
-
+    
+    meta.innerHTML = `<span>${dateStr}</span><span>${metaInfo.join(' • ') || 'Unknown'}</span>`;
+    
     content.appendChild(title);
     content.appendChild(meta);
-
-    // Create delete button
+    
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'delete-chat-btn';
     deleteBtn.setAttribute('aria-label', 'Delete chat');
     deleteBtn.innerHTML = '<i class="fas fa-times"></i>';
-
-    deleteBtn.addEventListener('click', (event) => {
-      event.stopPropagation(); // Prevent switching to the session
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       deleteSession(sessionId);
     });
-
+    
     item.appendChild(content);
     item.appendChild(deleteBtn);
-
-    item.addEventListener('click', () => {
-      switchSession(sessionId);
-    });
-
+    item.addEventListener('click', () => switchSession(sessionId));
+    
     elements.chatHistoryList.appendChild(item);
   });
 }
 
 // ========================================
-// API COMMUNICATION FUNCTIONS
+// SIMPLIFIED API COMMUNICATION
 // ========================================
 
-// Send a message to the configured LLM API and handle streaming response
 async function sendMessageToAPI(_userMessage) {
   const provider = getCurrentProvider();
   if (!provider) {
-    showError('No service provider configured. Please configure a provider in the options.');
+    showError('No provider configured. Please configure in options.');
     return;
   }
-
-  // Reset scroll state when starting API response
+  
+  // Stop any existing stream
+  if (state.isStreaming) {
+    await handleStopGeneration();
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  // Initialize streaming state
   state.userScrolledUp = false;
-
-  // Create AbortController for this request
   state.abortController = new AbortController();
-
   state.isStreaming = true;
   updateInputState();
-
-  // Create assistant message placeholder
-  const assistantMessageId = Date.now().toString();
+  
+  // Create assistant message
   const assistantMessage = {
-    id: assistantMessageId,
+    id: Date.now().toString(),
     role: 'assistant',
     content: '',
     reasoning: '',
-    reasoningCollapsed: false, // Default to expanded for new messages
+    reasoningCollapsed: false,
     timestamp: new Date().toISOString()
   };
-
+  
   state.sessions[state.currentSessionId].messages.push(assistantMessage);
   state.currentStreamingMessage = assistantMessage;
   renderMessages();
-
+  
   try {
-    await streamResponseFromAPI(provider, assistantMessage, state.abortController.signal);
+    await streamResponse(provider, assistantMessage, state.abortController.signal);
   } catch (error) {
-    console.error('API Error:', error);
-    // Don't handle error if it was aborted by user
-    if (error.name === 'AbortError') {
-      console.log('Request aborted by user');
-    } else {
-      handleError(error);
+    if (error.name !== 'AbortError') {
+      console.error('API Error:', error);
+      handleApiError(error);
     }
   } finally {
-    // Clean up streaming state
-    const wasAborted = state.abortController?.signal.aborted;
-    const streamingMessageId = state.currentStreamingMessage?.id;
-
-    // If this was an abort, handle the partial message properly
-    if (wasAborted && streamingMessageId) {
-      const session = state.sessions[state.currentSessionId];
-      if (session) {
-        const streamingMessage = session.messages.find(m => m.id === streamingMessageId);
-        if (streamingMessage) {
-          // Always keep the message if it has any content or reasoning
-          const hasContent = streamingMessage.content && streamingMessage.content.trim() !== '';
-          const hasReasoning = streamingMessage.reasoning && streamingMessage.reasoning.trim() !== '';
-
-          if (hasContent || hasReasoning) {
-            // Keep the partial message and update its metadata
-            streamingMessage.timestamp = new Date().toISOString();
-            console.log(`Keeping partial message: ${streamingMessage.content?.length || 0} chars content, ${streamingMessage.reasoning?.length || 0} chars reasoning`);
-            renderMessages(); // Re-render to ensure it's properly displayed
-            saveToStorage(); // Save to preserve the partial message
-          } else {
-            // Only remove completely empty messages
-            session.messages = session.messages.filter(m => m.id !== streamingMessageId);
-            console.log('Removed empty streaming message');
-            renderMessages();
-          }
-        }
-      }
-    }
-
-    // Reset streaming state after handling the message
-    state.isStreaming = false;
-    state.currentStreamingMessage = null;
-    state.abortController = null;
-
-    saveToStorage();
-    updateInputState();
+    cleanupStreaming(assistantMessage.id);
   }
 }
 
-// Get the currently selected provider object
 function getCurrentProvider() {
-  if (!state.config.selectedProvider) {
-    return null;
-  }
+  if (!state.config.selectedProvider) return null;
   return state.config.providers.find(p => p.id === state.config.selectedProvider);
 }
 
-// Build the request body for API calls
+// SIMPLIFIED STREAMING - Core streaming logic
+async function streamResponse(provider, assistantMessage, signal) {
+  const messages = buildMessages();
+  const body = buildRequestBody(messages);
+  
+  // Make API request
+  const response = await makeApiRequest(provider, body, signal);
+  if (!response) return; // Aborted
+  
+  // Handle streaming or non-streaming
+  if (body.stream) {
+    await processStream(response, assistantMessage, signal);
+  } else {
+    await processNonStream(response, assistantMessage, signal);
+  }
+  
+  // Final processing
+  processThinkTags(assistantMessage);
+  updateMessageDisplay(assistantMessage.id);
+}
+
+// Simple stream processing
+async function processStream(response, message, signal) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8', { stream: true });
+  let buffer = '';
+  
+  try {
+    while (true) {
+      if (signal.aborted) {
+        await reader.cancel();
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      
+      const { done, value } = await reader.read();
+      
+      if (done) {
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          processStreamLine(buffer, message);
+        }
+        break;
+      }
+      
+      // Decode chunk
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = (buffer + chunk).split('\n');
+      
+      // Keep last incomplete line in buffer
+      buffer = lines.pop() || '';
+      
+      // Process complete lines
+      for (const line of lines) {
+        if (signal.aborted) {
+          await reader.cancel();
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        processStreamLine(line, message);
+      }
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      try { await reader.cancel(); } catch (e) {}
+    }
+    throw error;
+  }
+}
+
+// Process single stream line
+function processStreamLine(line, message) {
+  line = line.trim();
+  if (!line || !line.startsWith('data:')) return;
+  
+  const data = line.slice(5).trim();
+  if (data === '[DONE]') return;
+  
+  try {
+    const parsed = JSON.parse(data);
+    const delta = parsed.choices?.[0]?.delta;
+    if (!delta) return;
+    
+    let updated = false;
+    
+    if (delta.reasoning_content) {
+      message.reasoning = (message.reasoning || '') + delta.reasoning_content;
+      updated = true;
+    }
+    
+    if (delta.content) {
+      message.content = (message.content || '') + delta.content;
+      updated = true;
+    }
+    
+    if (updated) {
+      scheduleStreamUpdate(message.id);
+    }
+  } catch (error) {
+    // Ignore parse errors, continue streaming
+    console.warn('Parse error (ignored):', error.message);
+  }
+}
+
+// Process non-streaming response
+async function processNonStream(response, message, signal) {
+  if (signal.aborted) return;
+  
+  const data = await response.json();
+  if (signal.aborted) return;
+  
+  const choice = data.choices?.[0];
+  if (!choice?.message) return;
+  
+  const msg = choice.message;
+  
+  if (msg.reasoning_content) {
+    message.reasoning = msg.reasoning_content;
+  }
+  
+  if (msg.content) {
+    message.content = msg.content;
+  }
+}
+
+// Process think tags
+function processThinkTags(message) {
+  if (!message.content) return;
+  
+  const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
+  const matches = [...message.content.matchAll(thinkRegex)];
+  
+  if (matches.length > 0) {
+    const extracted = matches.map(m => m[1]).join('\n\n');
+    
+    if (extracted.trim()) {
+      if (message.reasoning) {
+        message.reasoning += '\n\n' + extracted;
+      } else {
+        message.reasoning = extracted;
+      }
+    }
+    
+    message.content = message.content.replace(thinkRegex, '').trim();
+  }
+}
+
+function buildMessages() {
+  const session = state.sessions[state.currentSessionId];
+  const messages = [];
+  
+  // System prompt
+  const systemPrompt = state.config.systemPrompts.find(p => p.id === state.config.selectedSystemPrompt);
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt.content });
+  }
+  
+  // History (excluding current streaming message)
+  session.messages
+    .filter(m => m.id !== state.currentStreamingMessage?.id)
+    .forEach(m => {
+      if (m.role === 'user' || m.role === 'assistant') {
+        messages.push({ role: m.role, content: m.content });
+      }
+    });
+  
+  return messages;
+}
+
 function buildRequestBody(messages) {
   const body = {
     model: state.config.selectedModel,
-    messages: messages
+    messages: messages,
+    stream: state.config.stream !== false
   };
-
-  // Add temperature only if not null or empty
-  if (state.config.temperature !== null && state.config.temperature !== '') {
+  
+  if (state.config.temperature != null && state.config.temperature !== '') {
     body.temperature = state.config.temperature;
   }
-
-  // Add max_completion_tokens only if not empty
-  if (state.config.max_completion_tokens && state.config.max_completion_tokens.trim() !== '') {
+  
+  if (state.config.max_completion_tokens && state.config.max_completion_tokens.trim()) {
     body.max_completion_tokens = parseInt(state.config.max_completion_tokens);
   }
-
-  // Always add stream parameter (defaults to true if not set)
-  body.stream = state.config.stream !== false; // Default to true
-
+  
   return body;
 }
 
-// API request helper functions
-async function makeApiRequest(provider, requestBody, signal) {
-  const cleanedBaseUrl = provider.baseUrl.replace(/\/$/, '');
-  const url = `${cleanedBaseUrl}/chat/completions`;
-
+async function makeApiRequest(provider, body, signal) {
+  const url = `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  
+  const timeoutId = setTimeout(() => {
+    console.warn('Request timeout (360s)');
+  }, 360000);
+  
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -1491,323 +1178,109 @@ async function makeApiRequest(provider, requestBody, signal) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(body),
       signal
     });
-
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
+      const error = await response.json().catch(() => ({}));
+      throw new Error(`API Error (${response.status}): ${error.error?.message || response.statusText}`);
     }
-
+    
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+    
     return response;
   } catch (error) {
+    clearTimeout(timeoutId);
     if (error.name === 'AbortError') {
-      console.log('Request aborted by user');
       return null;
     }
     throw error;
   }
 }
 
-// Process streaming response
-async function handleStreamingResponse(response, assistantMessage, signal) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let partialLine = '';
-
-  try {
-    while (true) {
-      if (signal.aborted) {
-        throw new DOMException('Request aborted', 'AbortError');
-      }
-
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const textChunk = decoder.decode(value);
-      const lines = (partialLine + textChunk).split('\n');
-      partialLine = lines.pop();
-
-      for (const rawLine of lines) {
-        await processStreamLine(rawLine, assistantMessage);
-      }
-    }
-
-    // Final processing for think tags after streaming completes
-    processThinkTags(assistantMessage);
-
-    // Ensure final UI update is not delayed by debouncing
-    if (streamUpdateTimeout) {
-      clearTimeout(streamUpdateTimeout);
-      streamUpdateTimeout = null;
-    }
-    updateMessageDisplay(assistantMessage.id);
-  } catch (error) {
-    if (isAbortError(error)) {
-      console.log('Streaming aborted by user');
-      return;
-    }
-    throw error;
-  }
-}
-
-// Process individual stream line
-async function processStreamLine(rawLine, assistantMessage) {
-  const line = rawLine.trim();
-  if (line === '' || !line.startsWith('data:')) return;
-
-  const data = line.slice(5).trim();
-  if (data === '[DONE]') return;
-
-  try {
-    const parsed = JSON.parse(data);
-    const delta = parsed.choices?.[0]?.delta;
-
-    if (!delta) return;
-
-    // Handle reasoning content
-    if (delta.reasoning_content) {
-      assistantMessage.reasoning += delta.reasoning_content;
-    }
-
-    // Handle content
-    if (delta.content) {
-      assistantMessage.content += delta.content;
-    }
-
-    // Schedule debounced UI update instead of immediate update
-    scheduleStreamUpdate(assistantMessage.id);
-  } catch (parseError) {
-    console.warn('Parse error:', parseError, 'Data:', data);
-  }
-}
-
-// Process non-streaming response
-async function handleNonStreamingResponse(response, assistantMessage, signal) {
-  try {
-    if (signal.aborted) return;
-
-    const responseData = await response.json();
-    if (signal.aborted) return;
-
-    const choice = responseData.choices?.[0];
-    if (!choice?.message) return;
-
-    if (signal.aborted) return;
-
-    const message = choice.message;
-
-    // Handle reasoning content
-    if (message.reasoning_content) {
-      assistantMessage.reasoning = message.reasoning_content;
-    }
-
-    // Handle content
-    if (message.content) {
-      assistantMessage.content = message.content;
-    }
-
-    // Process think tags after setting initial content
-    processThinkTags(assistantMessage);
-
-    // Update UI to show the complete message
-    updateMessageDisplay(assistantMessage.id);
-  } catch (parseError) {
-    if (signal.aborted) return;
-    console.error('Error parsing non-streaming response:', parseError);
-    throw new Error('Failed to parse API response');
-  }
-}
-
-// Check if error is an abort error
-function isAbortError(error) {
-  return error.name === 'AbortError' ||
-         (error instanceof DOMException && error.message === 'Request aborted');
-}
-
-// Main streaming function (refactored)
-async function streamResponseFromAPI(provider, assistantMessage, signal) {
-  const messages = buildMessageHistory();
-  const requestBody = buildRequestBody(messages);
-  const isStream = requestBody.stream;
-
-  // Make API request
-  const response = await makeApiRequest(provider, requestBody, signal);
-  if (!response) return; // Request was aborted
-
-  // Handle response based on streaming mode
-  if (isStream) {
-    await handleStreamingResponse(response, assistantMessage, signal);
-  } else {
-    await handleNonStreamingResponse(response, assistantMessage, signal);
-  }
-}
-
-// Process think tags in message content after streaming completes
-function processThinkTags(message) {
-  if (!message.content) return;
-
-  // Define regex pattern for thinking tags - use non-greedy matching and support multiple pairs
-  const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
-
-  // Find all think tag matches
-  const thinkMatches = [...message.content.matchAll(thinkRegex)];
-
-  if (thinkMatches.length > 0) {
-    // Extract reasoning from think tags and concatenate
-    const extractedReasoning = thinkMatches.map(match => match[1]).join('\n\n');
-
-    // Add to existing reasoning (if any)
-    if (extractedReasoning.trim()) {
-      if (message.reasoning) {
-        message.reasoning += (message.reasoning.trim() ? '\n\n' : '') + extractedReasoning;
+function cleanupStreaming(messageId) {
+  const wasAborted = state.abortController?.signal.aborted;
+  
+  if (wasAborted && messageId) {
+    const session = state.sessions[state.currentSessionId];
+    const message = session?.messages.find(m => m.id === messageId);
+    
+    if (message) {
+      const hasContent = message.content?.trim() || message.reasoning?.trim();
+      
+      if (hasContent) {
+        message.timestamp = new Date().toISOString();
       } else {
-        message.reasoning = extractedReasoning;
+        session.messages = session.messages.filter(m => m.id !== messageId);
       }
     }
-
-    // Remove think tags from content
-    message.content = message.content.replace(thinkRegex, '').trim();
-
-    // Update display to reflect the changes
-    updateMessageDisplay(message.id);
   }
+  
+  state.isStreaming = false;
+  state.currentStreamingMessage = null;
+  state.abortController = null;
+  streamUpdatePending = false;
+  
+  saveToStorage();
+  renderMessages();
+  updateInputState();
 }
 
-function buildMessageHistory() {
-  const session = state.sessions[state.currentSessionId];
-  const messages = [];
-
-  // Add system prompt
-  const systemPrompt = state.config.systemPrompts.find(p => p.id === state.config.selectedSystemPrompt);
-  if (systemPrompt) {
-    messages.push({
-      role: 'system',
-      content: systemPrompt.content
-    });
-  }
-
-  // Add existing messages (excluding the current streaming assistant message)
-  // Note: The user message is already in the session.messages from addMessage(),
-  // so we don't need to add it again to avoid duplication
-  session.messages
-    .filter(msg => msg.id !== state.currentStreamingMessage?.id)
-    .forEach(msg => {
-      if (msg.role === 'user' || msg.role === 'assistant') {
-        messages.push({
-          role: msg.role,
-          content: msg.content
-        });
-      }
-    });
-
-  return messages;
-}
-
-function updateReasoningSection(messageElement, message) {
-  let reasoningSection = messageElement.querySelector('.reasoning-section');
-
-  // If no reasoning content, remove reasoning section if it exists
-  if (!message.reasoning || !message.reasoning.trim()) {
-    if (reasoningSection) {
-      reasoningSection.remove();
-      messageElement.lastReasoning = null;
-    }
-    return;
-  }
-
-  // If reasoning content has changed, update it
-  if (!reasoningSection || messageElement.lastReasoning !== message.reasoning) {
-    if (reasoningSection) {
-      // Update existing reasoning content
-      const reasoningContent = reasoningSection.querySelector('.reasoning-content');
-      if (reasoningContent) {
-        reasoningContent.innerHTML = renderMarkdownCached(message.reasoning);
-      }
-    } else {
-      // Create new reasoning section
-      reasoningSection = createReasoningSection(message);
-      const bubble = messageElement.querySelector('.message-bubble');
-      const contentElement = bubble.querySelector('.message-content');
-      bubble.insertBefore(reasoningSection, contentElement);
-    }
-    messageElement.lastReasoning = message.reasoning;
-  }
-}
-
-function updateMessageDisplay(messageId) {
-  // Get message element from cache first
-  const messageElement = messageElementCache.get(messageId);
-  if (!messageElement) return;
-
-  const message = state.sessions[state.currentSessionId].messages.find(m => m.id === messageId);
-  if (!message) return;
-
-  const bubble = messageElement.querySelector('.message-bubble');
-  if (!bubble) return;
-
-  let hasChanges = false;
-
-  // Incremental content update - only update if content changed
-  const contentElement = messageElement.querySelector('.message-content');
-  if (contentElement && messageElement.lastContent !== message.content) {
-    if (message.role === 'user') {
-      contentElement.textContent = message.content;
-    } else {
-      contentElement.innerHTML = renderMarkdownCached(message.content);
-    }
-    messageElement.lastContent = message.content;
-    hasChanges = true;
-  }
-
-  // Incremental reasoning update - track if reasoning changed
-  const reasoningChanged = messageElement.lastReasoning !== (message.reasoning || '');
-  if (reasoningChanged) {
-    updateReasoningSection(messageElement, message);
-    messageElement.lastReasoning = message.reasoning || '';
-    hasChanges = true;
-  }
-
-  // Only scroll if there were actual content changes
-  if (hasChanges) {
-    scrollToBottom();
-  }
-}
-
-function handleError(error) {
-  // Log the error with context
-  logError(error, 'API Request', {
-    isStreaming: state.isStreaming,
-    currentSessionId: state.currentSessionId
-  });
-
-  // Remove the assistant message if streaming failed
+function handleApiError(error) {
+  // Remove failed message
   if (state.currentStreamingMessage) {
     const session = state.sessions[state.currentSessionId];
     session.messages = session.messages.filter(m => m.id !== state.currentStreamingMessage.id);
     renderMessages();
   }
+  
+  // Show error
+  const message = getErrorMessage(error);
+  showError(message);
+}
 
-  // Use unified error message handling
-  const errorMessage = getApiErrorMessage(error);
-  showError(errorMessage);
+function getErrorMessage(error) {
+  const msg = error.message.toLowerCase();
+  
+  if (msg.includes('401') || msg.includes('authentication')) {
+    return 'Authentication failed. Check your API key.';
+  }
+  if (msg.includes('404')) {
+    return 'Model not found. Check your configuration.';
+  }
+  if (msg.includes('429') || msg.includes('rate limit')) {
+    return 'Rate limit exceeded. Try again later.';
+  }
+  if (msg.includes('cors') || msg.includes('blocked')) {
+    const provider = getCurrentProvider();
+    return `CORS error. Need permission to access ${provider?.baseUrl}. Reconfigure in options.`;
+  }
+  if (msg.includes('network') || msg.includes('fetch')) {
+    return 'Network error. Check your connection.';
+  }
+  
+  return 'An error occurred. Please try again.';
 }
 
 function showError(message) {
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
-
-  const errorMessage = {
+  
+  const errorMsg = {
     id: Date.now().toString(),
     role: 'system',
     content: message,
     timestamp: new Date().toISOString()
   };
-
-  session.messages.push(errorMessage);
+  
+  session.messages.push(errorMsg);
   renderMessages();
-  immediateSave(); // Use immediate save for error messages
+  saveToStorage();
 }
 
-console.log('SideMind sidebar script loaded');
+console.log('SideMind loaded');
