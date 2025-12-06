@@ -1256,26 +1256,26 @@ function handleApiError(error) {
   showError(message);
 }
 
-function getErrorMessage(error) {
-  const msg = error.message.toLowerCase();
-  
-  if (msg.includes('401') || msg.includes('authentication')) {
-    return 'Authentication failed. Check your API key.';
-  }
-  if (msg.includes('404')) {
-    return 'Model not found. Check your configuration.';
-  }
-  if (msg.includes('429') || msg.includes('rate limit')) {
-    return 'Rate limit exceeded. Try again later.';
-  }
-  if (msg.includes('cors') || msg.includes('blocked')) {
+const ERROR_HANDLERS = [
+  { patterns: ['401', 'authentication'], message: 'Authentication failed. Check your API key.' },
+  { patterns: ['404'], message: 'Model not found. Check your configuration.' },
+  { patterns: ['429', 'rate limit'], message: 'Rate limit exceeded. Try again later.' },
+  { patterns: ['cors', 'blocked'], message: () => {
     const provider = getCurrentProvider();
     return `CORS error. Need permission to access ${provider?.baseUrl}. Reconfigure in options.`;
+  }},
+  { patterns: ['network', 'fetch'], message: 'Network error. Check your connection.' }
+];
+
+function getErrorMessage(error) {
+  const msg = error.message.toLowerCase();
+
+  for (const { patterns, message } of ERROR_HANDLERS) {
+    if (patterns.some(pattern => msg.includes(pattern))) {
+      return typeof message === 'function' ? message() : message;
+    }
   }
-  if (msg.includes('network') || msg.includes('fetch')) {
-    return 'Network error. Check your connection.';
-  }
-  
+
   return 'An error occurred. Please try again.';
 }
 
