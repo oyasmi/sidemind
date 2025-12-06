@@ -42,20 +42,6 @@ const messageElementCache = new Map();
 const markdownCache = new Map();
 const MAX_MARKDOWN_CACHE_SIZE = 100;
 
-// Simplified stream update - direct update without complex scheduling
-let streamUpdatePending = false;
-
-function scheduleStreamUpdate(messageId) {
-  // Simple debounce: only schedule if no update is pending
-  if (streamUpdatePending) return;
-  
-  streamUpdatePending = true;
-  requestAnimationFrame(() => {
-    updateMessageDisplay(messageId);
-    streamUpdatePending = false;
-  });
-}
-
 // Simple cache cleanup
 function clearOldCacheEntries() {
   // Clean message cache for non-current sessions
@@ -1084,7 +1070,7 @@ function processStreamLine(line, message) {
     }
     
     if (updated) {
-      scheduleStreamUpdate(message.id);
+      updateMessageDisplay(message.id);
     }
   } catch (error) {
     // Ignore parse errors, continue streaming
@@ -1236,7 +1222,6 @@ function cleanupStreaming(messageId) {
   state.isStreaming = false;
   state.currentStreamingMessage = null;
   state.abortController = null;
-  streamUpdatePending = false;
   
   saveToStorage();
   renderMessages();
