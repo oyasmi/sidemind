@@ -57,18 +57,17 @@ function clearOldCacheEntries() {
     }
   }
   
-  // Simple LRU for markdown cache
+  // Simple size-based markdown cache eviction
   if (markdownCache.size > MAX_MARKDOWN_CACHE_SIZE) {
-    const entries = Array.from(markdownCache.entries());
-    markdownCache.clear();
-    entries.slice(-Math.floor(MAX_MARKDOWN_CACHE_SIZE * 0.8)).forEach(([k, v]) => {
-      markdownCache.set(k, v);
-    });
+    const entriesToDelete = markdownCache.size - MAX_MARKDOWN_CACHE_SIZE + 10;
+    let deleted = 0;
+    for (const [key] of markdownCache) {
+      if (deleted >= entriesToDelete) break;
+      markdownCache.delete(key);
+      deleted++;
+    }
   }
 }
-
-// Periodic cleanup
-setInterval(clearOldCacheEntries, 5 * 60 * 1000); // Every 5 minutes
 
 // ========================================
 // DOM ELEMENT REFERENCES
@@ -421,10 +420,6 @@ function createMessageElement(message) {
   messageDiv.appendChild(header);
   messageDiv.appendChild(wrapper);
   
-  // Cache tracking
-  messageDiv.lastContent = message.content || '';
-  messageDiv.lastReasoning = message.reasoning || '';
-  
   return messageDiv;
 }
 
@@ -587,41 +582,37 @@ function updateMessageDisplay(messageId) {
   const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
   if (!message) return;
   
-  // Update content if changed
+  // Update content
   const contentEl = messageElement.querySelector('.message-content');
-  if (contentEl && messageElement.lastContent !== message.content) {
+  if (contentEl) {
     if (message.role === 'user') {
       contentEl.textContent = message.content;
     } else {
       contentEl.innerHTML = renderMarkdown(message.content);
     }
-    messageElement.lastContent = message.content;
     scrollToBottom();
   }
-  
-  // Update reasoning if changed
-  if (messageElement.lastReasoning !== (message.reasoning || '')) {
-    const bubble = messageElement.querySelector('.message-bubble');
-    let reasoningSection = messageElement.querySelector('.reasoning-section');
-    
-    if (message.reasoning && message.reasoning.trim()) {
-      if (reasoningSection) {
-        const reasoningContent = reasoningSection.querySelector('.reasoning-content');
-        if (reasoningContent) {
-          reasoningContent.innerHTML = renderMarkdown(message.reasoning);
-        }
-      } else {
-        const newSection = createReasoningSection(message);
-        const contentEl = bubble.querySelector('.message-content');
-        bubble.insertBefore(newSection, contentEl);
+
+  // Update reasoning
+  const bubble = messageElement.querySelector('.message-bubble');
+  let reasoningSection = messageElement.querySelector('.reasoning-section');
+
+  if (message.reasoning && message.reasoning.trim()) {
+    if (reasoningSection) {
+      const reasoningContent = reasoningSection.querySelector('.reasoning-content');
+      if (reasoningContent) {
+        reasoningContent.innerHTML = renderMarkdown(message.reasoning);
       }
-    } else if (reasoningSection) {
-      reasoningSection.remove();
+    } else {
+      const newSection = createReasoningSection(message);
+      const contentEl = bubble.querySelector('.message-content');
+      bubble.insertBefore(newSection, contentEl);
     }
-    
-    messageElement.lastReasoning = message.reasoning || '';
-    scrollToBottom();
+  } else if (reasoningSection) {
+    reasoningSection.remove();
   }
+
+  scrollToBottom();
 }
 
 // ========================================

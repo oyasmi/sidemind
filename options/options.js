@@ -775,17 +775,7 @@ async function ensureBackendPermission(backendUrl) {
       return true;
     }
 
-    // If it's a local address, it might be declared in manifest
-    if (urlObj.hostname === 'localhost' ||
-        urlObj.hostname === '127.0.0.1' ||
-        urlObj.hostname.startsWith('192.168.') ||
-        urlObj.hostname.startsWith('10.') ||
-        urlObj.hostname === '0.0.0.0') {
-      console.log(`Local address detected: ${urlObj.hostname}, assuming permission exists`);
-      return true;
-    }
-
-    // Otherwise request permission dynamically
+    // Request permission dynamically
     console.log(`Requesting permission for ${origin}`);
     return await chrome.permissions.request({
       origins: [origin]
