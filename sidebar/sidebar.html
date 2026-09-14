@@ -39,7 +39,7 @@
 
     <!-- Chat Messages Area -->
     <main class="chat-container">
-      <div id="messagesList" class="messages-list">
+      <div id="messagesList" class="messages-list" role="log">
         <!-- Messages will be dynamically added here -->
       </div>
 
@@ -48,6 +48,15 @@
         <h2>Welcome to SideMind</h2>
         <p>Select a model and start chatting with AI assistants in your sidebar.</p>
       </div>
+
+      <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" aria-label="Scroll to latest message">
+        <i class="fas fa-arrow-down"></i>
+      </button>
+
+      <!-- Short status announcements. The transcript itself is not a live
+           region: its content is rewritten on every streaming repaint, which
+           would make a screen reader replay the whole answer each time. -->
+      <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
     </main>
 
     <!-- Input Area -->

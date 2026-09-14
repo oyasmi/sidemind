@@ -132,10 +132,33 @@ Two request/response shapes are supported, selected **per provider** via `provid
 
 ### Message Rendering & Caching
 - **Element Cache**: DOM elements cached in `messageElementCache` Map for fast updates
-- **Markdown Cache**: Size-limited cache (100 entries) for parsed markdown output
+- **Throttled Streaming**: Deltas are coalesced by `scheduleMessageDisplay()` into one repaint
+  per `STREAM_RENDER_INTERVAL` (60ms). `flushMessageDisplays()` forces a pending frame out —
+  call it before any final render.
+- **Markdown Cache**: Size-limited cache (100 entries). `renderMarkdown(text, cache)` is called
+  with `cache: false` while streaming, otherwise every intermediate prefix of the growing
+  message would be stored and would evict the finished messages that are actually re-read.
 - **Debounced Saves**: 1-second debounce on `saveToStorage()` to reduce chrome.storage writes
-- **Auto-scroll Detection**: Only auto-scroll when user is at bottom (50px threshold)
-- **Incremental Updates**: During streaming, only update changed message content
+- **Auto-scroll Detection**: Only auto-scroll when user is at bottom (50px threshold);
+  `scrollToBottom(true)` forces a smooth jump for the jump-to-latest button
+- **Code Blocks**: `decorateCodeBlocks()` adds per-block copy buttons, but only on the final
+  render — mid-stream the whole subtree is replaced on the next repaint anyway
+
+### Streaming UI States
+An assistant message moves through four visible states, all driven by `updateMessageDisplay()`:
+
+1. **Waiting** — pulsing dots (`.typing-indicator`), plus an elapsed counter after 3s.
+   `message.startedAt` is stamped when the request goes out.
+2. **Thinking** — reasoning section expanded, header ticks `🤔 Thinking… 8s` via
+   `startStreamTicker()` (1s interval, updates labels only — no markdown re-render).
+3. **Answering** — the first visible token sets `message.thinkingMs`, the header settles on
+   `🤔 Thought for 12s` and the reasoning folds away unless `message.reasoningTouched`
+   (the user opened or closed it by hand).
+4. **Done** — `cleanupStreaming()` records `message.durationMs`, flushes pending frames, then
+   repaints once more so the final markdown is cached and code blocks get their copy buttons.
+
+Screen readers are served by `#srStatus` (`role="status"`), not by a live region on the
+transcript — the transcript's content is rewritten on every repaint.
 
 ### Model Selection (Composite Key Pattern)
 To support models with identical IDs from different providers, the extension uses a composite key:

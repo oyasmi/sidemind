@@ -30,7 +30,8 @@ const state = {
   isStreaming: false,
   currentStreamingMessage: null,
   userScrolledUp: false,
-  abortController: null
+  abortController: null,
+  streamTicker: null
 };
 
 // ========================================
@@ -43,6 +44,38 @@ const messageElementCache = new Map();
 // Simplified markdown cache with automatic size control
 const markdownCache = new Map();
 const MAX_MARKDOWN_CACHE_SIZE = 100;
+
+// ----------------------------------------
+// Throttled streaming updates
+// ----------------------------------------
+// A stream can deliver dozens of deltas per second and each repaint re-parses
+// the whole message. Coalesce them into one repaint per interval instead.
+const STREAM_RENDER_INTERVAL = 60;
+const pendingDisplayUpdates = new Set();
+let streamRenderTimer = null;
+
+function scheduleMessageDisplay(messageId) {
+  pendingDisplayUpdates.add(messageId);
+  if (streamRenderTimer !== null) return;
+
+  streamRenderTimer = setTimeout(() => {
+    streamRenderTimer = null;
+    flushMessageDisplays();
+  }, STREAM_RENDER_INTERVAL);
+}
+
+function flushMessageDisplays() {
+  if (streamRenderTimer !== null) {
+    clearTimeout(streamRenderTimer);
+    streamRenderTimer = null;
+  }
+
+  if (pendingDisplayUpdates.size === 0) return;
+
+  const ids = [...pendingDisplayUpdates];
+  pendingDisplayUpdates.clear();
+  ids.forEach(id => updateMessageDisplay(id));
+}
 
 // Simple cache cleanup
 function clearOldCacheEntries() {
@@ -89,6 +122,8 @@ const elements = {
   dropdownOverlay: null,
   closeBtn: null,
   chatHistoryList: null,
+  scrollBottomBtn: null,
+  srStatus: null,
 };
 
 // ========================================
@@ -121,6 +156,8 @@ function cacheElements() {
   elements.dropdownOverlay = document.querySelector('.dropdown-overlay');
   elements.closeBtn = document.querySelector('.close-btn');
   elements.chatHistoryList = document.getElementById('chatHistoryList');
+  elements.scrollBottomBtn = document.getElementById('scrollBottomBtn');
+  elements.srStatus = document.getElementById('srStatus');
 }
 
 // Setup Event Listeners
@@ -139,6 +176,7 @@ function setupEventListeners() {
   elements.dropdownOverlay.addEventListener('click', closeChatHistory);
   
   elements.messagesList.addEventListener('scroll', handleScroll);
+  elements.scrollBottomBtn.addEventListener('click', () => scrollToBottom(true));
   
   // Listen for config changes
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -250,7 +288,8 @@ function createNewSession() {
     systemPromptId: state.config.selectedSystemPrompt
   };
   state.currentSessionId = sessionId;
-  
+  state.userScrolledUp = false;
+
   saveToStorage();
   renderMessages();
   updateInputState();
@@ -267,6 +306,7 @@ async function switchSession(sessionId) {
   
   clearOldCacheEntries();
   state.currentSessionId = sessionId;
+  state.userScrolledUp = false;
   saveToStorage();
   renderMessages();
   updateInputState();
@@ -410,9 +450,16 @@ function createMessageElement(message) {
     content.textContent = message.content;
   } else {
     content.innerHTML = renderMarkdown(message.content);
+    decorateCodeBlocks(content);
   }
-  
+
   bubble.appendChild(content);
+
+  // Waiting indicator - the only feedback between "sent" and the first token,
+  // which with reasoning models can be half a minute away
+  if (message.role === 'assistant') {
+    bubble.appendChild(createTypingIndicator(message));
+  }
   
   // Actions
   const actions = createMessageActions(message);
@@ -439,24 +486,149 @@ function createReasoningSection(message) {
   
   const title = document.createElement('span');
   title.className = 'reasoning-title';
-  title.textContent = '🤔 Thinking...';
-  
+  title.textContent = reasoningTitle(message);
+
   header.appendChild(icon);
   header.appendChild(title);
   header.addEventListener('click', () => {
     section.classList.toggle('expanded');
     message.reasoningCollapsed = !section.classList.contains('expanded');
+    // Once opened or closed by hand, stop auto-folding this one
+    message.reasoningTouched = true;
     debouncedSave();
   });
-  
+
   const content = document.createElement('div');
   content.className = 'reasoning-content';
-  content.innerHTML = renderMarkdown(message.reasoning);
+  content.innerHTML = renderMarkdown(message.reasoning, !isStreamingMessage(message.id));
   
   section.appendChild(header);
   section.appendChild(content);
   
   return section;
+}
+
+function announce(text) {
+  if (elements.srStatus) elements.srStatus.textContent = text;
+}
+
+function createTypingIndicator(message) {
+  const indicator = document.createElement('div');
+  indicator.className = 'typing-indicator';
+  indicator.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span>' +
+    '<span class="typing-dot"></span><span class="typing-elapsed"></span>';
+  indicator.hidden = !isAwaitingFirstToken(message);
+  return indicator;
+}
+
+function isStreamingMessage(messageId) {
+  return state.currentStreamingMessage?.id === messageId;
+}
+
+function isAwaitingFirstToken(message) {
+  return isStreamingMessage(message.id) &&
+    !message.content?.trim() &&
+    !message.reasoning?.trim();
+}
+
+function formatDuration(ms) {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function reasoningTitle(message) {
+  if (message.thinkingMs != null) {
+    return `🤔 Thought for ${formatDuration(message.thinkingMs)}`;
+  }
+
+  if (isStreamingMessage(message.id) && message.startedAt) {
+    return `🤔 Thinking… ${formatDuration(Date.now() - message.startedAt)}`;
+  }
+
+  return '🤔 Thought process';
+}
+
+// Reasoning is considered finished the moment the first visible token lands
+function markStreamProgress(message) {
+  if (!message.startedAt || message.thinkingMs != null) return;
+  if (!message.content || !message.reasoning) return;
+
+  message.thinkingMs = Date.now() - message.startedAt;
+
+  // Fold the chain of thought away so the answer is not pushed off screen
+  if (!message.reasoningTouched) {
+    message.reasoningCollapsed = true;
+  }
+}
+
+// Refresh just the elapsed-time labels - no markdown re-render
+function updateStreamTimers() {
+  const message = state.currentStreamingMessage;
+  if (!message) {
+    stopStreamTicker();
+    return;
+  }
+
+  const element = messageElementCache.get(message.id);
+  if (!element) return;
+
+  const title = element.querySelector('.reasoning-title');
+  if (title) title.textContent = reasoningTitle(message);
+
+  const elapsed = element.querySelector('.typing-elapsed');
+  if (elapsed && message.startedAt) {
+    const waited = Date.now() - message.startedAt;
+    // Stay quiet for short waits, speak up when the model is taking its time
+    elapsed.textContent = waited >= 3000 ? formatDuration(waited) : '';
+  }
+}
+
+function startStreamTicker() {
+  stopStreamTicker();
+  state.streamTicker = setInterval(updateStreamTimers, 1000);
+}
+
+function stopStreamTicker() {
+  if (state.streamTicker) {
+    clearInterval(state.streamTicker);
+    state.streamTicker = null;
+  }
+}
+
+// Add a copy button to every code block - the most-used action in a coding
+// sidebar, and impossible to do by hand while the message is still streaming
+function decorateCodeBlocks(container) {
+  container.querySelectorAll('pre').forEach(pre => {
+    if (pre.querySelector('.code-copy-btn')) return;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'code-copy-btn';
+    button.setAttribute('aria-label', 'Copy code');
+    button.innerHTML = '<i class="fas fa-copy"></i>';
+    button.addEventListener('click', () => copyCode(pre, button));
+
+    pre.appendChild(button);
+  });
+}
+
+async function copyCode(pre, button) {
+  const code = pre.querySelector('code');
+  const text = code ? code.textContent : pre.textContent;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    button.classList.add('copied');
+    button.innerHTML = '<i class="fas fa-check"></i>';
+
+    setTimeout(() => {
+      button.classList.remove('copied');
+      button.innerHTML = '<i class="fas fa-copy"></i>';
+    }, 2000);
+  } catch (error) {
+    console.error('Copy failed:', error);
+  }
 }
 
 function createMessageActions(message) {
@@ -554,22 +726,23 @@ function formatTime(timestamp) {
   return `${h}:${m}`;
 }
 
-function renderMarkdown(text) {
+// `cache` is false while streaming - otherwise every intermediate prefix of the
+// growing message would be stored, filling the cache with entries that are
+// never read again and evicting the finished messages that are.
+function renderMarkdown(text, cache = true) {
   if (!text) return '';
-  
-  // Check cache
+
   if (markdownCache.has(text)) {
     return markdownCache.get(text);
   }
-  
+
   try {
     const html = marked.parse(text);
-    
-    // Cache if reasonable size
-    if (text.length > 20 && markdownCache.size < MAX_MARKDOWN_CACHE_SIZE) {
+
+    if (cache && text.length > 20 && markdownCache.size < MAX_MARKDOWN_CACHE_SIZE) {
       markdownCache.set(text, html);
     }
-    
+
     return html;
   } catch (error) {
     console.error('Markdown error:', error);
@@ -580,19 +753,24 @@ function renderMarkdown(text) {
 function updateMessageDisplay(messageId) {
   const messageElement = messageElementCache.get(messageId);
   if (!messageElement) return;
-  
+
   const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
   if (!message) return;
-  
+
+  const streaming = isStreamingMessage(messageId);
+  markStreamProgress(message);
+
   // Update content
   const contentEl = messageElement.querySelector('.message-content');
   if (contentEl) {
     if (message.role === 'user') {
       contentEl.textContent = message.content;
     } else {
-      contentEl.innerHTML = renderMarkdown(message.content);
+      contentEl.innerHTML = renderMarkdown(message.content, !streaming);
+      // Decorating mid-stream is wasted work: the next repaint replaces the
+      // whole subtree anyway
+      if (!streaming) decorateCodeBlocks(contentEl);
     }
-    scrollToBottom();
   }
 
   // Update reasoning
@@ -600,18 +778,33 @@ function updateMessageDisplay(messageId) {
   let reasoningSection = messageElement.querySelector('.reasoning-section');
 
   if (message.reasoning && message.reasoning.trim()) {
-    if (reasoningSection) {
+    if (!reasoningSection) {
+      reasoningSection = createReasoningSection(message);
+      bubble.insertBefore(reasoningSection, bubble.firstChild);
+    } else {
       const reasoningContent = reasoningSection.querySelector('.reasoning-content');
       if (reasoningContent) {
-        reasoningContent.innerHTML = renderMarkdown(message.reasoning);
+        reasoningContent.innerHTML = renderMarkdown(message.reasoning, !streaming);
+
+        // Follow the thinking as it is written
+        if (streaming && !message.reasoningCollapsed) {
+          reasoningContent.scrollTop = reasoningContent.scrollHeight;
+        }
       }
-    } else {
-      const newSection = createReasoningSection(message);
-      const contentEl = bubble.querySelector('.message-content');
-      bubble.insertBefore(newSection, contentEl);
+
+      const title = reasoningSection.querySelector('.reasoning-title');
+      if (title) title.textContent = reasoningTitle(message);
     }
+
+    reasoningSection.classList.toggle('expanded', !message.reasoningCollapsed);
   } else if (reasoningSection) {
     reasoningSection.remove();
+  }
+
+  // Waiting indicator
+  const indicator = messageElement.querySelector('.typing-indicator');
+  if (indicator) {
+    indicator.hidden = !isAwaitingFirstToken(message);
   }
 
   scrollToBottom();
@@ -631,10 +824,33 @@ function hideWelcomeMessage() {
   elements.messagesList?.classList.remove('hidden');
 }
 
-function scrollToBottom() {
-  if (!state.userScrolledUp && elements.messagesList) {
+function scrollToBottom(force = false) {
+  if (!elements.messagesList) return;
+
+  if (force) {
+    state.userScrolledUp = false;
+    elements.messagesList.scrollTo({
+      top: elements.messagesList.scrollHeight,
+      behavior: 'smooth'
+    });
+  } else if (!state.userScrolledUp) {
+    // Instant during streaming - smooth scrolling would fight itself when the
+    // target moves on every repaint
     elements.messagesList.scrollTop = elements.messagesList.scrollHeight;
   }
+
+  updateScrollButton();
+}
+
+function updateScrollButton() {
+  const button = elements.scrollBottomBtn;
+  if (!button) return;
+
+  const session = state.sessions[state.currentSessionId];
+  const show = state.userScrolledUp && session?.messages.length > 0;
+
+  button.classList.toggle('hidden', !show);
+  button.classList.toggle('has-new', show && state.isStreaming);
 }
 
 function autoResizeTextarea() {
@@ -782,11 +998,12 @@ function handleInputKeydown(event) {
 
 function handleScroll() {
   if (!elements.messagesList) return;
-  
+
   const { scrollTop, scrollHeight, clientHeight } = elements.messagesList;
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-  
+
   state.userScrolledUp = distanceFromBottom > 50;
+  updateScrollButton();
 }
 
 async function handleSendMessage() {
@@ -948,12 +1165,15 @@ async function sendMessageToAPI(_userMessage) {
     content: '',
     reasoning: '',
     reasoningCollapsed: false,
+    startedAt: Date.now(),
     timestamp: new Date().toISOString()
   };
-  
+
   state.sessions[state.currentSessionId].messages.push(assistantMessage);
   state.currentStreamingMessage = assistantMessage;
   renderMessages();
+  startStreamTicker();
+  announce('Waiting for the assistant…');
   
   try {
     await streamResponse(provider, assistantMessage, state.abortController.signal);
@@ -1023,6 +1243,8 @@ async function streamResponse(provider, assistantMessage, signal) {
   }
 
   // Final processing
+  pendingDisplayUpdates.delete(assistantMessage.id);
+  flushMessageDisplays();
   processThinkTags(assistantMessage);
   updateMessageDisplay(assistantMessage.id);
 }
@@ -1094,7 +1316,7 @@ function processStreamLine(line, message, adapter) {
   }
 
   if (adapter.applyStreamEvent(parsed, message)) {
-    updateMessageDisplay(message.id);
+    scheduleMessageDisplay(message.id);
   }
 }
 
@@ -1430,7 +1652,12 @@ async function makeApiRequest(provider, endpoint, body, signal) {
 
 function cleanupStreaming(messageId) {
   const wasAborted = state.abortController?.signal.aborted;
-  
+
+  stopStreamTicker();
+  pendingDisplayUpdates.delete(messageId);
+  flushMessageDisplays();
+  finalizeTiming(messageId);
+
   if (wasAborted && messageId) {
     const session = state.sessions[state.currentSessionId];
     const message = session?.messages.find(m => m.id === messageId);
@@ -1449,10 +1676,31 @@ function cleanupStreaming(messageId) {
   state.isStreaming = false;
   state.currentStreamingMessage = null;
   state.abortController = null;
-  
+
+  announce(wasAborted ? 'Generation stopped.' : 'Response complete.');
+
   saveToStorage();
   renderMessages();
+  // Repaint once more now that the message counts as finished: final markdown
+  // goes into the cache, code blocks get their copy buttons, the reasoning
+  // header settles on its final duration.
+  updateMessageDisplay(messageId);
   updateInputState();
+}
+
+function finalizeTiming(messageId) {
+  const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
+  if (!message?.startedAt) return;
+
+  message.durationMs = Date.now() - message.startedAt;
+
+  // A reply that was nothing but reasoning still deserves a duration
+  if (message.thinkingMs == null && message.reasoning?.trim()) {
+    message.thinkingMs = message.durationMs;
+    if (!message.reasoningTouched) {
+      message.reasoningCollapsed = true;
+    }
+  }
 }
 
 function handleApiError(error) {
@@ -1506,6 +1754,7 @@ function showError(message) {
   };
   
   session.messages.push(errorMsg);
+  announce(`Error: ${message}`);
   renderMessages();
   saveToStorage();
 }
