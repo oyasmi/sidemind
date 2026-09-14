@@ -10,6 +10,8 @@ let config = {
   temperature: 0.7,
   max_completion_tokens: '', // API standard naming
   stream: true,
+  reasoning_effort: '', // '' = not sent; minimal | low | medium | high
+  reasoning_summary: 'auto', // Responses API only; 'off' disables it
   systemPrompts: [
     {
       id: 'default',
@@ -38,6 +40,12 @@ function sanitizeInput(input) {
   return input.replace(/[<>]/g, '').trim();
 }
 
+// Strip trailing slashes and an endpoint path the user may have pasted in,
+// so the base URL always works for both /chat/completions and /responses
+function normalizeBaseUrl(url) {
+  return url.replace(/\/+$/, '').replace(/\/(chat\/completions|responses)$/, '');
+}
+
 // Centralized error handling
 function handleError(error, context) {
   const message = error.message || 'An unexpected error occurred';
@@ -62,8 +70,11 @@ const elements = {
   // Parameters
   temperatureSlider: null,
   temperatureValue: null,
+  temperatureDefaultToggle: null,
   maxCompletionTokensInput: null,
   streamSelector: null,
+  reasoningEffortSelector: null,
+  reasoningSummarySelector: null,
 
   // Modals
   providerModal: null,
@@ -77,6 +88,7 @@ const elements = {
   providerName: null,
   providerBaseUrl: null,
   providerApiKey: null,
+  providerApiType: null,
   promptName: null,
   promptContent: null,
 
@@ -109,14 +121,16 @@ function cacheElements() {
     // Lists
     'providersList', 'promptsList',
     // Parameters
-    'temperatureSlider', 'temperatureValue', 'maxCompletionTokensInput', 'streamSelector',
+    'temperatureSlider', 'temperatureValue', 'temperatureDefaultToggle',
+    'maxCompletionTokensInput', 'streamSelector',
+    'reasoningEffortSelector', 'reasoningSummarySelector',
     // Appearance
     'fontSizeSelector', 'fontFamilySelector', 'customFontFamilyInput', 'themeSelector',
     // Modals
     'providerModal', 'promptModal',
     // Forms
     'providerForm', 'promptForm', 'modelsList', 'addModelBtn',
-    'providerName', 'providerBaseUrl', 'providerApiKey',
+    'providerName', 'providerBaseUrl', 'providerApiKey', 'providerApiType',
     'promptName', 'promptContent',
     // Modal buttons
     'providerSaveBtn', 'providerCancelBtn', 'promptSaveBtn', 'promptCancelBtn'
@@ -159,8 +173,11 @@ function setupEventListeners() {
     updateTemperatureDisplay();
     debouncedSave();
   });
+  elements.temperatureDefaultToggle.addEventListener('change', updateTemperatureMode);
   elements.maxCompletionTokensInput.addEventListener('change', updateMaxCompletionTokens);
   elements.streamSelector.addEventListener('change', updateStream);
+  elements.reasoningEffortSelector.addEventListener('change', updateReasoningEffort);
+  elements.reasoningSummarySelector.addEventListener('change', updateReasoningSummary);
 
   // Appearance controls
   elements.fontSizeSelector.addEventListener('change', updateFontSize);
@@ -280,9 +297,15 @@ function createProviderElement(provider) {
   name.className = 'provider-name';
   name.textContent = provider.name;
 
+  const apiBadge = document.createElement('span');
+  apiBadge.className = 'provider-api';
+  apiBadge.textContent = provider.apiType === 'responses' ? 'Responses' : 'Chat Completions';
+  name.appendChild(apiBadge);
+
   const details = document.createElement('div');
   details.className = 'provider-details';
-  details.textContent = provider.baseUrl;
+  details.textContent = normalizeBaseUrl(provider.baseUrl || '') +
+    (provider.apiType === 'responses' ? '/responses' : '/chat/completions');
 
   const models = document.createElement('div');
   models.className = 'provider-models';
@@ -377,10 +400,11 @@ function createPromptElement(prompt) {
 
 // Render Parameters
 function renderParameters() {
-  elements.temperatureSlider.value = config.temperature;
-  elements.temperatureValue.textContent = config.temperature;
+  renderTemperature();
   elements.maxCompletionTokensInput.value = config.max_completion_tokens; // API standard naming
   elements.streamSelector.value = config.stream.toString();
+  elements.reasoningEffortSelector.value = config.reasoning_effort || '';
+  elements.reasoningSummarySelector.value = config.reasoning_summary || 'auto';
 
   // Load font settings
   elements.fontSizeSelector.value = config.fontSize || '14px';
@@ -410,9 +434,12 @@ function openProviderModal(provider = null) {
     elements.providerName.value = provider.name;
     elements.providerBaseUrl.value = provider.baseUrl;
     elements.providerApiKey.value = provider.apiKey;
+    // Providers saved before Responses support default to Chat Completions
+    elements.providerApiType.value = provider.apiType === 'responses' ? 'responses' : 'chat';
     renderModelsList(provider.models);
   } else {
     elements.providerForm.reset();
+    elements.providerApiType.value = 'chat';
     renderModelsList([]);
   }
 
@@ -422,6 +449,7 @@ function openProviderModal(provider = null) {
 function closeProviderModal() {
   elements.providerModal.classList.add('hidden');
   elements.providerForm.reset();
+  elements.providerApiType.value = 'chat';
   editingProviderId = null;
   renderModelsList([]);
 }
@@ -487,8 +515,9 @@ async function saveProvider() {
 
   const providerData = {
     name: sanitizeInput(elements.providerName?.value || ''),
-    baseUrl: sanitizeInput(elements.providerBaseUrl?.value || ''),
+    baseUrl: normalizeBaseUrl(sanitizeInput(elements.providerBaseUrl?.value || '')),
     apiKey: elements.providerApiKey?.value || '', // API key doesn't need sanitization
+    apiType: elements.providerApiType?.value === 'responses' ? 'responses' : 'chat',
     models: []
   };
 
@@ -631,9 +660,41 @@ async function deletePrompt(id) {
 }
 
 // Parameter Management
+
+// A null temperature means "omit the parameter" - reasoning models such as
+// GPT-5 reject it outright on both APIs.
+function isTemperatureOmitted() {
+  return config.temperature == null || config.temperature === '';
+}
+
+function renderTemperature() {
+  const omitted = isTemperatureOmitted();
+  elements.temperatureDefaultToggle.checked = omitted;
+  elements.temperatureSlider.disabled = omitted;
+  elements.temperatureSlider.value = omitted ? 0.7 : config.temperature;
+  elements.temperatureValue.textContent = omitted ? 'model default' : config.temperature;
+}
+
 function updateTemperatureDisplay() {
-  config.temperature = parseFloat(elements.temperatureSlider.value);
-  elements.temperatureValue.textContent = config.temperature;
+  config.temperature = elements.temperatureDefaultToggle.checked
+    ? null
+    : parseFloat(elements.temperatureSlider.value);
+  renderTemperature();
+}
+
+async function updateTemperatureMode() {
+  updateTemperatureDisplay();
+  await saveConfig();
+}
+
+async function updateReasoningEffort() {
+  config.reasoning_effort = elements.reasoningEffortSelector.value;
+  await saveConfig();
+}
+
+async function updateReasoningSummary() {
+  config.reasoning_summary = elements.reasoningSummarySelector.value;
+  await saveConfig();
 }
 
 async function updateMaxCompletionTokens() {
@@ -741,7 +802,7 @@ function validateConfig(config) {
     typeof config === 'object' &&
     Array.isArray(config.providers) &&
     Array.isArray(config.systemPrompts) &&
-    typeof config.temperature === 'number' &&
+    (config.temperature === null || config.temperature === '' || typeof config.temperature === 'number') &&
     (typeof config.max_completion_tokens === 'string') && // Can be empty string
     typeof config.stream === 'boolean' &&
     (!config.theme || ['light', 'dark', 'system'].includes(config.theme))

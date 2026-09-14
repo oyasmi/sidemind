@@ -81,6 +81,23 @@ sidemind/
 
 ## Architecture Patterns
 
+### API Adapters
+Providers carry an `apiType` field selecting the request/response shape:
+
+- `chat` (default) — `POST {baseUrl}/chat/completions`, OpenAI Chat Completions
+- `responses` — `POST {baseUrl}/responses`, OpenAI Responses API
+
+`API_ADAPTERS` in `sidebar/sidebar.js` holds `{ endpoint, buildRequestBody, applyStreamEvent, applyResponse }`
+for each type; the rest of the app never branches on the API. Add a new API flavour by adding an entry there
+plus an option in the provider modal (`options/options.html`).
+
+```javascript
+// Streaming is dispatched through the adapter, never inlined
+const adapter = getAdapter(provider);
+const body = adapter.buildRequestBody();
+const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
+```
+
 ### State Management
 - Single global `state` object as source of truth
 - Direct mutation, then debounced save via `saveToStorage()`

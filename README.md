@@ -14,7 +14,7 @@
 
 - **🎯 Always Accessible** - Chat with LLMs in your browser sidebar, available on any webpage
 - **🔐 Privacy First** - All conversations stored locally, no data collection or tracking
-- **🤖 Multi-Provider Support** - Works with OpenAI, Claude, and any OpenAI-compatible API
+- **🤖 Multi-Provider Support** - Works with OpenAI, Claude, and any OpenAI-compatible API (Chat Completions or Responses)
 - **⚡ Real-time Streaming** - Watch AI responses appear in real-time with smooth animations
 - **🧠 Thinking Display** - See AI reasoning process in collapsible sections
 - **💬 Smart Chat Management** - Multiple chat sessions with auto-generated titles
@@ -69,6 +69,7 @@ SideMind is designed with your privacy as the top priority:
    - Click the SideMind icon in your toolbar
    - Open Options (right-click → Extension Options)
    - Add your AI provider with API key
+   - Pick the API type: **Chat Completions** (`/chat/completions`) or **Responses** (`/responses`)
    - Select your preferred model
 
 2. **Start Chatting**
@@ -78,9 +79,11 @@ SideMind is designed with your privacy as the top priority:
 
 ## 🔧 Supported Providers
 
-SideMind works with any OpenAI-compatible LLM chat API:
+SideMind works with any OpenAI-compatible LLM API - both the classic **Chat Completions**
+endpoint and OpenAI's newer **Responses** API. The API type is chosen per provider, so you can
+mix both in the same install.
 
-- **OpenAI** - GPT-3/4/5
+- **OpenAI** - GPT-3/4/5 (Chat Completions or Responses)
 - **Anthropic Claude** - Claude family
 - **Google Gemini** - Gemini Pro models
 - **Alibaba Cloud** - Qwen models
@@ -96,8 +99,9 @@ SideMind works with any OpenAI-compatible LLM chat API:
 - Message regeneration and editing
 
 ### AI Capabilities
-- Real-time streaming responses
-- Thinking/reasoning display
+- Real-time streaming responses (Chat Completions + Responses APIs)
+- Thinking/reasoning display, including Responses API reasoning summaries
+- Configurable reasoning effort and summary detail
 - Markdown rendering
 - Code syntax highlighting
 - Copy message content

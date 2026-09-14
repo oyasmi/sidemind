@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **SideMind** is a production-ready Chrome Extension (Manifest V3) that provides a sidebar interface for chatting with Large Language Models (LLMs). It's built with vanilla HTML/CSS/JavaScript following the KISS principle - no frameworks, no build tools, just pure web technologies.
 
 ### Current Status
-- **Version**: 1.3.0 (Production Ready)
+- **Version**: 1.4.0 (Production Ready)
 - **Chrome Web Store**: Published and available for installation
 - **License**: Apache 2.0
 - **Total Development Time**: ~3-4 hours
@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **No Frameworks**: Pure vanilla JavaScript - no React, Vue, or build tools
 - **Self-Contained**: All assets (FontAwesome, icons) are local - no CDN dependencies
 - **KISS Principle**: Simple, straightforward code that's easy to understand and modify
-- **OpenAI-Compatible API**: Works with any LLM provider that supports the OpenAI chat completions format
+- **OpenAI-Compatible API**: Works with any LLM provider that supports the OpenAI Chat Completions *or* Responses format
 
 ## Key Architecture
 
@@ -44,7 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Provider Management**: CRUD operations for LLM service providers
 - **System Prompts**: Pre-configured and custom prompt management
 - **Import/Export**: Configuration backup and restore functionality
-- **LLM Parameters**: Temperature and max_completion_tokens configuration
+- **LLM Parameters**: Temperature (optional), max_completion_tokens, streaming and reasoning effort/summary
 
 #### 3. Storage Schema
 ```javascript
@@ -52,12 +52,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 {
   config: {
     providers: [...],           // OpenAI-compatible API providers
+                                // each: { id, name, baseUrl, apiKey, apiType, models: [...] }
+                                // apiType: 'chat' (default) | 'responses'
     selectedProvider: string,   // Currently selected provider (ID)
     selectedModel: string,      // Currently selected model (composite key: "modelId - providerId")
     selectedSystemPrompt: string,
-    temperature: number,
+    temperature: number|null,   // null = omit the parameter (reasoning models reject it)
     max_completion_tokens: string,
     stream: boolean,
+    reasoning_effort: string,   // '' = not sent | minimal | low | medium | high
+    reasoning_summary: string,  // Responses API only: auto | concise | detailed | off
     systemPrompts: [...],       // Custom system prompts
     theme: string               // 'light', 'dark', or 'system'
   },
@@ -105,12 +109,26 @@ Creates `sidemind-vX.X.X.zip` (version read from manifest.json) containing only 
 
 ## Key Implementation Details
 
+### API Adapters (Chat Completions + Responses)
+Two request/response shapes are supported, selected **per provider** via `provider.apiType`:
+
+| apiType | Endpoint | Request | Text delta | Reasoning delta |
+|---|---|---|---|---|
+| `chat` (default) | `/chat/completions` | `messages[]`, `max_completion_tokens`, `reasoning_effort` | `choices[0].delta.content` | `choices[0].delta.reasoning_content` |
+| `responses` | `/responses` | `input[]` + `instructions`, `max_output_tokens`, `reasoning:{effort,summary}`, `store:false` | `response.output_text.delta` | `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` |
+
+- **`API_ADAPTERS`** (sidebar.js) maps each type to `{ endpoint, buildRequestBody, applyStreamEvent, applyResponse }`; everything outside the adapters is API-agnostic.
+- **Responses is stateless here**: `store: false` and the full history is replayed as `input` on every turn — no `previous_response_id`.
+- **Reasoning visibility**: OpenAI reasoning models only emit a chain of thought when `reasoning.summary` is requested, hence the `reasoning_summary: 'auto'` default.
+- **Base URL normalization**: `buildEndpointUrl()` strips trailing slashes and a pasted `/chat/completions` or `/responses` suffix, so one base URL works for both.
+
 ### Streaming API Integration
-- **Server-Sent Events (SSE)**: Real-time streaming using OpenAI-compatible format
-- **Dual Reasoning Format Support**: Handles `reasoning_content` field and `<think>`/`<thinking>` tags
+- **Server-Sent Events (SSE)**: Real-time streaming for both APIs. `event:` lines are ignored — both formats carry a discriminator inside the `data:` payload.
+- **Dual Reasoning Format Support**: Handles `reasoning_content`, Responses reasoning events, and `<think>`/`<thinking>` tags
+- **Error events**: `error` / `response.failed` / streamed `{"error":...}` abort the stream with the provider's own message
 - **AbortController**: Proper cancellation of in-flight requests with stop button
 - **360s Timeout**: Configurable timeout for complex reasoning tasks
-- **Key functions**: `streamResponse()`, `processStream()`, `processStreamLine()` in sidebar.js:971-1070
+- **Key functions**: `streamResponse()`, `processStream()`, `processStreamLine()` in `sidebar/sidebar.js`
 
 ### Message Rendering & Caching
 - **Element Cache**: DOM elements cached in `messageElementCache` Map for fast updates
@@ -220,8 +238,14 @@ sidemind/
 1. Right-click extension → Options
 2. Click "Add Provider" button
 3. Fill in provider details (name, base URL, API key)
-4. Add models with display names
-5. Save
+4. Pick the **API Type** — `Chat Completions` for the classic endpoint, `Responses` for OpenAI's newer API
+5. Add models with display names
+6. Save
+
+### Using the Responses API
+- Set the provider's API Type to `Responses` (base URL stays the root, e.g. `https://api.openai.com/v1`)
+- For GPT-5 style reasoning models, tick **Use model default (omit temperature)** — they reject `temperature`
+- Set **Reasoning Summary** to `auto` (default) to see the model's thinking; set it to `off` for providers that reject the field
 
 ### Debugging Streaming Issues
 - Open DevTools in sidebar (right-click → Inspect)

@@ -16,6 +16,8 @@ const state = {
     temperature: 0.7,
     max_completion_tokens: '',
     stream: true,
+    reasoning_effort: '',
+    reasoning_summary: 'auto',
     systemPrompts: [
       {
         id: 'default',
@@ -690,7 +692,10 @@ function updateModelSelector() {
 
   state.config.providers.forEach(provider => {
     const optgroup = document.createElement('optgroup');
-    optgroup.label = provider.name;
+    // 非默认接口在分组标题上标注，便于区分同名 provider
+    optgroup.label = getApiType(provider) === 'responses'
+      ? `${provider.name} · Responses`
+      : provider.name;
 
     provider.models.forEach(model => {
       const option = document.createElement('option');
@@ -967,64 +972,98 @@ function getCurrentProvider() {
   return state.config.providers.find(p => p.id === state.config.selectedProvider);
 }
 
+// ========================================
+// API ADAPTERS
+// ========================================
+
+// Two request/response shapes are supported, selected per provider:
+//   chat      -> POST /chat/completions  (legacy OpenAI Chat Completions)
+//   responses -> POST /responses         (OpenAI Responses API)
+// Each adapter owns its endpoint, request body, streaming events and
+// non-streaming payload, so the rest of the app stays API-agnostic.
+const API_ADAPTERS = {
+  chat: {
+    label: 'Chat Completions',
+    endpoint: '/chat/completions',
+    buildRequestBody: buildChatRequestBody,
+    applyStreamEvent: applyChatStreamEvent,
+    applyResponse: applyChatResponse
+  },
+  responses: {
+    label: 'Responses',
+    endpoint: '/responses',
+    buildRequestBody: buildResponsesRequestBody,
+    applyStreamEvent: applyResponsesStreamEvent,
+    applyResponse: applyResponsesResponse
+  }
+};
+
+function getApiType(provider) {
+  return provider?.apiType === 'responses' ? 'responses' : 'chat';
+}
+
+function getAdapter(provider) {
+  return API_ADAPTERS[getApiType(provider)];
+}
+
 // SIMPLIFIED STREAMING - Core streaming logic
 async function streamResponse(provider, assistantMessage, signal) {
-  const messages = buildMessages();
-  const body = buildRequestBody(messages);
-  
+  const adapter = getAdapter(provider);
+  const body = adapter.buildRequestBody();
+
   // Make API request
-  const response = await makeApiRequest(provider, body, signal);
+  const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
   if (!response) return; // Aborted
-  
+
   // Handle streaming or non-streaming
   if (body.stream) {
-    await processStream(response, assistantMessage, signal);
+    await processStream(response, assistantMessage, signal, adapter);
   } else {
-    await processNonStream(response, assistantMessage, signal);
+    await processNonStream(response, assistantMessage, signal, adapter);
   }
-  
+
   // Final processing
   processThinkTags(assistantMessage);
   updateMessageDisplay(assistantMessage.id);
 }
 
 // Simple stream processing
-async function processStream(response, message, signal) {
+async function processStream(response, message, signal, adapter) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8', { stream: true });
   let buffer = '';
-  
+
   try {
     while (true) {
       if (signal.aborted) {
         await reader.cancel();
         throw new DOMException('Aborted', 'AbortError');
       }
-      
+
       const { done, value } = await reader.read();
-      
+
       if (done) {
         // Process any remaining buffer
         if (buffer.trim()) {
-          processStreamLine(buffer, message);
+          processStreamLine(buffer, message, adapter);
         }
         break;
       }
-      
+
       // Decode chunk
       const chunk = decoder.decode(value, { stream: true });
       const lines = (buffer + chunk).split('\n');
-      
+
       // Keep last incomplete line in buffer
       buffer = lines.pop() || '';
-      
+
       // Process complete lines
       for (const line of lines) {
         if (signal.aborted) {
           await reader.cancel();
           throw new DOMException('Aborted', 'AbortError');
         }
-        processStreamLine(line, message);
+        processStreamLine(line, message, adapter);
       }
     }
   } catch (error) {
@@ -1036,57 +1075,154 @@ async function processStream(response, message, signal) {
 }
 
 // Process single stream line
-function processStreamLine(line, message) {
+function processStreamLine(line, message, adapter) {
   line = line.trim();
+  // Ignore SSE framing lines (`event:`, `id:`, `retry:`, comments) - both APIs
+  // carry everything we need inside the `data:` payload itself.
   if (!line || !line.startsWith('data:')) return;
-  
+
   const data = line.slice(5).trim();
-  if (data === '[DONE]') return;
-  
+  if (!data || data === '[DONE]') return;
+
+  let parsed;
   try {
-    const parsed = JSON.parse(data);
-    const delta = parsed.choices?.[0]?.delta;
-    if (!delta) return;
-    
-    let updated = false;
-    
-    if (delta.reasoning_content) {
-      message.reasoning = (message.reasoning || '') + delta.reasoning_content;
-      updated = true;
-    }
-    
-    if (delta.content) {
-      message.content = (message.content || '') + delta.content;
-      updated = true;
-    }
-    
-    if (updated) {
-      updateMessageDisplay(message.id);
-    }
+    parsed = JSON.parse(data);
   } catch (error) {
     // Ignore parse errors, continue streaming
     console.warn('Parse error (ignored):', error.message);
+    return;
+  }
+
+  if (adapter.applyStreamEvent(parsed, message)) {
+    updateMessageDisplay(message.id);
+  }
+}
+
+// Chat Completions: deltas arrive under choices[0].delta
+function applyChatStreamEvent(parsed, message) {
+  if (parsed.error) {
+    throw new Error(`API Error: ${parsed.error.message || 'Unknown streaming error'}`);
+  }
+
+  const delta = parsed.choices?.[0]?.delta;
+  if (!delta) return false;
+
+  let updated = false;
+
+  if (delta.reasoning_content) {
+    message.reasoning = (message.reasoning || '') + delta.reasoning_content;
+    updated = true;
+  }
+
+  if (delta.content) {
+    message.content = (message.content || '') + delta.content;
+    updated = true;
+  }
+
+  return updated;
+}
+
+// Responses API: semantic events, each payload carries its own `type`.
+// Only text/reasoning deltas and terminal events are meaningful here.
+function applyResponsesStreamEvent(parsed, message) {
+  switch (parsed.type) {
+    case 'response.output_text.delta':
+    case 'response.refusal.delta':
+      if (!parsed.delta) return false;
+      message.content = (message.content || '') + parsed.delta;
+      return true;
+
+    case 'response.reasoning_summary_text.delta':
+    case 'response.reasoning_text.delta':
+      if (!parsed.delta) return false;
+      message.reasoning = (message.reasoning || '') + parsed.delta;
+      return true;
+
+    // A reasoning summary can be split into several parts - keep them readable
+    case 'response.reasoning_summary_part.added':
+      if (!message.reasoning) return false;
+      message.reasoning += '\n\n';
+      return true;
+
+    case 'response.failed': {
+      const error = parsed.response?.error;
+      throw new Error(`API Error: ${error?.message || 'Response failed'}`);
+    }
+
+    case 'response.incomplete':
+      console.warn('Response incomplete:', parsed.response?.incomplete_details?.reason || 'unknown reason');
+      return false;
+
+    case 'error':
+      throw new Error(`API Error: ${parsed.message || 'Unknown streaming error'}`);
+
+    default:
+      return false;
   }
 }
 
 // Process non-streaming response
-async function processNonStream(response, message, signal) {
+async function processNonStream(response, message, signal, adapter) {
   if (signal.aborted) return;
-  
+
   const data = await response.json();
   if (signal.aborted) return;
-  
-  const choice = data.choices?.[0];
-  if (!choice?.message) return;
-  
-  const msg = choice.message;
-  
+
+  adapter.applyResponse(data, message);
+}
+
+// Chat Completions: a single choices[0].message object
+function applyChatResponse(data, message) {
+  const msg = data.choices?.[0]?.message;
+  if (!msg) return;
+
   if (msg.reasoning_content) {
     message.reasoning = msg.reasoning_content;
   }
-  
+
   if (msg.content) {
     message.content = msg.content;
+  }
+}
+
+// Responses API: a list of output items. `reasoning` items hold the summary
+// (and optionally raw reasoning text), `message` items hold the answer.
+function applyResponsesResponse(data, message) {
+  if (data.error || data.status === 'failed') {
+    throw new Error(`API Error: ${data.error?.message || 'Response failed'}`);
+  }
+
+  const contentParts = [];
+  const reasoningParts = [];
+
+  (data.output || []).forEach(item => {
+    if (item?.type === 'reasoning') {
+      (item.summary || []).forEach(part => part?.text && reasoningParts.push(part.text));
+      (item.content || []).forEach(part => part?.text && reasoningParts.push(part.text));
+    } else if (item?.type === 'message') {
+      (item.content || []).forEach(part => {
+        if (part?.type === 'output_text' && part.text) {
+          contentParts.push(part.text);
+        } else if (part?.type === 'refusal' && part.refusal) {
+          contentParts.push(part.refusal);
+        }
+      });
+    }
+  });
+
+  if (reasoningParts.length > 0) {
+    message.reasoning = reasoningParts.join('\n\n');
+  }
+
+  if (contentParts.length > 0) {
+    message.content = contentParts.join('');
+  } else if (typeof data.output_text === 'string' && data.output_text) {
+    // Fallback for compatible providers that only expose the flattened form
+    message.content = data.output_text;
+  }
+
+  if (data.status === 'incomplete') {
+    console.warn('Response incomplete:', data.incomplete_details?.reason || 'unknown reason');
   }
 }
 
@@ -1112,49 +1248,149 @@ function processThinkTags(message) {
   }
 }
 
-function buildMessages() {
-  const session = state.sessions[state.currentSessionId];
-  const messages = [];
-  
-  // System prompt
-  const systemPrompt = state.config.systemPrompts.find(p => p.id === state.config.selectedSystemPrompt);
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt.content });
-  }
-  
-  // History (excluding current streaming message)
-  session.messages
-    .filter(m => m.id !== state.currentStreamingMessage?.id)
-    .forEach(m => {
-      if (m.role === 'user' || m.role === 'assistant') {
-        messages.push({ role: m.role, content: m.content });
-      }
-    });
-  
-  return messages;
+// ========================================
+// REQUEST BUILDING
+// ========================================
+
+function getSystemPromptContent() {
+  const prompt = state.config.systemPrompts.find(p => p.id === state.config.selectedSystemPrompt);
+  return prompt?.content || '';
 }
 
-function buildRequestBody(messages) {
+// Model selection uses a composite "modelId - providerId" key
+function getSelectedModelId() {
+  const selected = state.config.selectedModel;
+  return selected ? selected.split(' - ')[0] : selected;
+}
+
+function getTemperature() {
+  const temperature = state.config.temperature;
+  // null/'' means "use the model default" - required by reasoning models that
+  // reject the parameter outright.
+  return (temperature == null || temperature === '') ? null : temperature;
+}
+
+function getMaxTokens() {
+  const value = String(state.config.max_completion_tokens ?? '').trim();
+  if (!value) return null;
+
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function getReasoningEffort() {
+  return state.config.reasoning_effort || null;
+}
+
+// Conversation history, shared by both APIs.
+// The in-flight assistant placeholder is excluded.
+function buildHistory() {
+  const session = state.sessions[state.currentSessionId];
+  if (!session) return [];
+
+  return session.messages
+    .filter(m => m.id !== state.currentStreamingMessage?.id)
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => ({ role: m.role, content: m.content || '' }));
+}
+
+function buildMessages() {
+  const messages = [];
+
+  // System prompt
+  const systemPrompt = getSystemPromptContent();
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
+  }
+
+  return messages.concat(buildHistory());
+}
+
+function buildChatRequestBody() {
   const body = {
-    // 从复合键中提取实际的model ID
-    model: state.config.selectedModel ? state.config.selectedModel.split(' - ')[0] : state.config.selectedModel,
-    messages: messages,
+    model: getSelectedModelId(),
+    messages: buildMessages(),
     stream: state.config.stream !== false
   };
 
-  if (state.config.temperature != null && state.config.temperature !== '') {
-    body.temperature = state.config.temperature;
+  const temperature = getTemperature();
+  if (temperature != null) {
+    body.temperature = temperature;
   }
 
-  if (state.config.max_completion_tokens && state.config.max_completion_tokens.trim()) {
-    body.max_completion_tokens = parseInt(state.config.max_completion_tokens);
+  const maxTokens = getMaxTokens();
+  if (maxTokens != null) {
+    body.max_completion_tokens = maxTokens;
+  }
+
+  const effort = getReasoningEffort();
+  if (effort) {
+    body.reasoning_effort = effort;
   }
 
   return body;
 }
 
-async function makeApiRequest(provider, body, signal) {
-  const url = `${provider.baseUrl.replace(/\/$/, '')}/chat/completions`;
+// https://platform.openai.com/docs/api-reference/responses/create
+function buildResponsesRequestBody() {
+  const body = {
+    model: getSelectedModelId(),
+    input: buildHistory(),
+    stream: state.config.stream !== false,
+    // Stateless by design: full history is replayed on every turn, nothing is
+    // retained server-side.
+    store: false
+  };
+
+  // The system prompt is a first-class field rather than a message
+  const systemPrompt = getSystemPromptContent();
+  if (systemPrompt) {
+    body.instructions = systemPrompt;
+  }
+
+  const temperature = getTemperature();
+  if (temperature != null) {
+    body.temperature = temperature;
+  }
+
+  const maxTokens = getMaxTokens();
+  if (maxTokens != null) {
+    body.max_output_tokens = maxTokens;
+  }
+
+  const reasoning = {};
+
+  const effort = getReasoningEffort();
+  if (effort) {
+    reasoning.effort = effort;
+  }
+
+  // Reasoning models only emit a visible chain of thought when a summary is
+  // requested, so 'auto' is the default.
+  const summary = state.config.reasoning_summary;
+  if (summary && summary !== 'off') {
+    reasoning.summary = summary;
+  }
+
+  if (Object.keys(reasoning).length > 0) {
+    body.reasoning = reasoning;
+  }
+
+  return body;
+}
+
+// Tolerate base URLs that already include the endpoint (e.g. .../v1/responses)
+function buildEndpointUrl(provider, endpoint) {
+  const base = (provider.baseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/(chat\/completions|responses)$/, '');
+
+  return `${base}${endpoint}`;
+}
+
+async function makeApiRequest(provider, endpoint, body, signal) {
+  const url = buildEndpointUrl(provider, endpoint);
   
   const timeoutId = setTimeout(() => {
     console.warn('Request timeout (360s)');
@@ -1233,6 +1469,8 @@ function handleApiError(error) {
 }
 
 const ERROR_HANDLERS = [
+  { patterns: ['unsupported parameter', 'unsupported value', 'unknown parameter', 'unrecognized request argument'],
+    message: 'The provider rejected a request parameter. Check the API type, temperature and reasoning settings in options.' },
   { patterns: ['401', 'authentication'], message: 'Authentication failed. Check your API key.' },
   { patterns: ['404'], message: 'Model not found. Check your configuration.' },
   { patterns: ['429', 'rate limit'], message: 'Rate limit exceeded. Try again later.' },
@@ -1252,7 +1490,8 @@ function getErrorMessage(error) {
     }
   }
 
-  return 'An error occurred. Please try again.';
+  // Surface the provider's own message - far more useful than a generic string
+  return error.message.startsWith('API Error') ? error.message : 'An error occurred. Please try again.';
 }
 
 function showError(message) {

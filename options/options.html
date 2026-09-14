@@ -107,7 +107,11 @@
         <div class="parameter-group">
           <label for="temperatureSlider">Temperature: <span id="temperatureValue">0.7</span></label>
           <input type="range" id="temperatureSlider" min="0" max="2" step="0.1" value="0.7" class="slider">
-          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic.</small>
+          <label class="checkbox-label" for="temperatureDefaultToggle">
+            <input type="checkbox" id="temperatureDefaultToggle">
+            Use model default (omit temperature)
+          </label>
+          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic. Reasoning models such as GPT-5 reject this parameter - omit it for those.</small>
         </div>
 
         <div class="parameter-group">
@@ -123,6 +127,29 @@
             <option value="false">Disabled (Complete Response)</option>
           </select>
           <small class="parameter-description">If enabled, the model response will be streamed as it's generated using server-sent events.</small>
+        </div>
+
+        <div class="parameter-group">
+          <label for="reasoningEffortSelector">Reasoning Effort</label>
+          <select id="reasoningEffortSelector" class="select-input">
+            <option value="" selected>Model default (not sent)</option>
+            <option value="minimal">Minimal</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+          <small class="parameter-description">Reasoning models only. Sent as reasoning.effort on the Responses API and as reasoning_effort on Chat Completions. Leave on model default if your provider rejects it.</small>
+        </div>
+
+        <div class="parameter-group">
+          <label for="reasoningSummarySelector">Reasoning Summary</label>
+          <select id="reasoningSummarySelector" class="select-input">
+            <option value="auto" selected>Auto</option>
+            <option value="concise">Concise</option>
+            <option value="detailed">Detailed</option>
+            <option value="off">Off</option>
+          </select>
+          <small class="parameter-description">Responses API only. Reasoning models only reveal their thinking when a summary is requested, so this drives the collapsible reasoning panel in the sidebar.</small>
         </div>
       </section>
 
@@ -197,6 +224,15 @@
           <div class="form-group">
             <label for="providerBaseUrl">Base URL</label>
             <input type="url" id="providerBaseUrl" placeholder="https://api.example.com/v1" required>
+            <small class="parameter-description">Root URL without the endpoint path. The endpoint below is appended automatically.</small>
+          </div>
+          <div class="form-group">
+            <label for="providerApiType">API Type</label>
+            <select id="providerApiType" class="select-input">
+              <option value="chat" selected>Chat Completions &mdash; /chat/completions</option>
+              <option value="responses">Responses &mdash; /responses</option>
+            </select>
+            <small class="parameter-description">Chat Completions is the classic OpenAI-compatible endpoint. Responses is OpenAI's newer API - choose it for providers that expose /responses (reasoning summaries, instructions field).</small>
           </div>
           <div class="form-group">
             <label for="providerApiKey">API Key</label>
