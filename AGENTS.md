@@ -70,7 +70,8 @@ sidemind/
 │   ├── sidebar.html
 │   ├── sidebar.css
 │   ├── sidebar.js         # Core app logic
-│   └── marked.umd.js      # Markdown parser (vendor)
+│   ├── marked.umd.js      # Markdown parser (vendor)
+│   └── highlight.min.js   # Syntax highlighter (vendor)
 ├── options/               # Configuration page
 │   ├── options.html
 │   ├── options.css

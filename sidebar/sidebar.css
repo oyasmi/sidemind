@@ -60,6 +60,15 @@
   --error-text: #dc2626;
   --error-border: #fecaca;
 
+  /* Syntax highlighting */
+  --code-comment: #6a737d;
+  --code-keyword: #d73a49;
+  --code-string: #032f62;
+  --code-number: #005cc5;
+  --code-name: #6f42c1;
+  --code-builtin: #e36209;
+  --code-meta: #22863a;
+
   /* Effects */
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -94,6 +103,13 @@
   --error-bg: #450a0a;
   --error-text: #f87171;
   --error-border: #7f1d1d;
+  --code-comment: #8b949e;
+  --code-keyword: #ff7b72;
+  --code-string: #a5d6ff;
+  --code-number: #79c0ff;
+  --code-name: #d2a8ff;
+  --code-builtin: #ffa657;
+  --code-meta: #7ee787;
   --gradient: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
   --gradient-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
   --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
@@ -123,6 +139,13 @@
     --error-bg: #450a0a;
     --error-text: #f87171;
     --error-border: #7f1d1d;
+    --code-comment: #8b949e;
+    --code-keyword: #ff7b72;
+    --code-string: #a5d6ff;
+    --code-number: #79c0ff;
+    --code-name: #d2a8ff;
+    --code-builtin: #ffa657;
+    --code-meta: #7ee787;
     --gradient: linear-gradient(135deg, #FF8C42 0%, #FF6B35 100%);
     --gradient-hover: linear-gradient(135deg, #E55A2B 0%, #D67A1A 100%);
     --gradient-bg: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
@@ -499,6 +522,44 @@ button:disabled {
   max-width: 300px;
 }
 
+.welcome-action {
+  margin-top: 16px;
+  padding: 8px 18px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: var(--gradient);
+  color: white;
+  font-size: var(--font-size);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: var(--transition);
+}
+
+.welcome-action:hover {
+  background: var(--gradient-hover);
+  transform: translateY(-1px);
+}
+
+/* Marks where the conversation switched model */
+.model-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 4px;
+  color: var(--text-tertiary);
+  font-size: var(--font-xs);
+}
+
+.model-divider::before,
+.model-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background-color: var(--border-primary);
+}
+
 /* Messages */
 .message {
   margin-bottom: 8px;
@@ -720,6 +781,17 @@ button:disabled {
   animation: spin 1s linear infinite;
 }
 
+.message-actions .message-stats {
+  font-size: var(--font-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.message-actions .message-stats:empty {
+  display: none;
+}
+
 .message-actions .time-display {
   font-size: 11px;
   color: var(--text-tertiary);
@@ -779,6 +851,66 @@ button:disabled {
 /* Code block copy button */
 .message-content pre {
   position: relative;
+}
+
+/* highlight.js token classes, mapped onto the app's own palette rather than
+   pulling in one of its stylesheets */
+.hljs-comment,
+.hljs-quote { color: var(--code-comment); font-style: italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-type { color: var(--code-keyword); }
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string { color: var(--code-string); }
+
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-attr { color: var(--code-number); }
+
+.hljs-title,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-title.class_,
+.hljs-title.function_ { color: var(--code-name); }
+
+.hljs-built_in,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link { color: var(--code-builtin); }
+
+.hljs-meta,
+.hljs-meta .hljs-keyword { color: var(--code-meta); }
+
+.hljs-deletion { color: var(--error-text); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+.code-language {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+/* Leave room for the label above the first line */
+.message-content pre:has(.code-language) {
+  padding-top: 26px;
 }
 
 .code-copy-btn {

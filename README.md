@@ -103,13 +103,16 @@ mix both in the same install.
 - Thinking/reasoning display, including Responses API reasoning summaries
 - Configurable reasoning effort and summary detail
 - Markdown rendering
-- Code syntax highlighting
+- Syntax highlighting for 36 languages, with per-block copy buttons
+- Response time and token usage per message
 - Copy message content
 - System prompt customization
 
 ### User Experience
 - Clean, modern interface
-- Keyboard shortcuts (Enter to send, Shift+Enter for new line)
+- Keyboard shortcuts (Enter to send, Shift+Enter for new line, Esc to stop)
+- Unsent drafts are kept per chat
+- Undo for regenerating and for deleting a chat
 - Auto-resizing input field
 - Smooth animations and transitions
 - Responsive design for different sidebar widths

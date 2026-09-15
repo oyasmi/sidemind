@@ -149,8 +149,9 @@ Two request/response shapes are supported, selected **per provider** via `provid
 - **Debounced Saves**: 1-second debounce on `saveToStorage()` to reduce chrome.storage writes
 - **Auto-scroll Detection**: Only auto-scroll when user is at bottom (50px threshold);
   `scrollToBottom(true)` forces a smooth jump for the jump-to-latest button
-- **Code Blocks**: `decorateCodeBlocks()` adds per-block copy buttons, but only on the final
-  render — mid-stream the whole subtree is replaced on the next repaint anyway
+- **Code Blocks**: `decorateCodeBlocks()` highlights, labels and adds a copy button to each
+  block, but only on the final render — mid-stream the whole subtree is replaced on the next
+  repaint anyway. Unknown languages are labelled but left untouched (hljs throws on them).
 
 ### Streaming UI States
 An assistant message moves through four visible states, all driven by `updateMessageDisplay()`:
@@ -174,6 +175,14 @@ To support models with identical IDs from different providers, the extension use
 - **UI Display**: Models grouped by provider in `<optgroup>` elements
 - **API Request**: Extracts only `modelId` when building request body (sidebar.js:1140)
 - **Key Functions**: `updateModelSelector()`, `handleModelChange()`, `buildRequestBody()`
+
+### Token Usage
+`readUsage()` normalises the two namings (`prompt/completion_tokens` vs
+`input/output_tokens`) into `message.usage`. It is read wherever a provider offers it:
+`response.completed` on the Responses API, the final chunk on Chat Completions, and the
+body of any non-streaming response. `stream_options: {include_usage: true}` is deliberately
+**not** sent — OpenAI needs it for streamed Chat Completions usage, but compatible servers
+often reject the parameter, so a missing count is preferred over a failed request.
 
 ### Destructive Actions
 Regenerating from a message truncates everything after it, and deleting a chat
@@ -256,8 +265,9 @@ sidemind/
 ├── sidebar/                  # Main chat interface
 │   ├── sidebar.html          # Chat UI structure
 │   ├── sidebar.css           # Complete theming system
-│   ├── sidebar.js            # Core application logic (~800 lines)
-│   └── marked.umd.js         # Markdown parsing library
+│   ├── sidebar.js            # Core application logic
+│   ├── marked.umd.js         # Markdown parsing library (vendored)
+│   └── highlight.min.js      # Syntax highlighting (vendored)
 ├── options/                  # Configuration page
 │   ├── options.html          # Options UI
 │   ├── options.css           # Options styling
@@ -304,7 +314,10 @@ sidemind/
 
 ## External Dependencies
 
-- **marked.js**: Markdown parsing (sidebar/marked.umd.js) - local file, ~40KB
+- **marked.js** v17 (MIT): Markdown parsing (sidebar/marked.umd.js) - local file, ~40KB
+- **highlight.js** v11 (BSD-3-Clause): Syntax highlighting (sidebar/highlight.min.js) - the
+  "common" bundle, 36 languages, ~124KB. Token colours are defined in sidebar.css against the
+  app's own CSS variables rather than importing an hljs theme.
 - **FontAwesome 6**: Icon library (assets/) - self-hosted for offline use
 - No CDN dependencies - fully self-contained
 

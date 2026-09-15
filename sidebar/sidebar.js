@@ -195,6 +195,7 @@ function setupEventListeners() {
       updateModelSelector();
       updateSystemPromptSelector();
       updateInputState();
+      renderWelcomeMessage();
       applyFontSettings();
       applyTheme();
     }
@@ -511,15 +512,26 @@ function renderMessages() {
   hideWelcomeMessage();
   
   const fragment = document.createDocumentFragment();
-  
+  let lastModel = null;
+
   session.messages.forEach(message => {
+    // Mark where the conversation changed model, so a mixed transcript can be
+    // read for what it is
+    if (message.role === 'assistant' && message.modelUsed) {
+      if (lastModel && message.modelUsed !== lastModel) {
+        const divider = createModelDivider(message.modelUsed);
+        if (divider) fragment.appendChild(divider);
+      }
+      lastModel = message.modelUsed;
+    }
+
     let messageElement = messageElementCache.get(message.id);
-    
+
     if (!messageElement) {
       messageElement = createMessageElement(message);
       messageElementCache.set(message.id, messageElement);
     }
-    
+
     fragment.appendChild(messageElement);
   });
   
@@ -533,6 +545,20 @@ function renderMessages() {
 // something the model said
 const MESSAGE_ICONS = { user: 'user', assistant: 'robot', system: 'triangle-exclamation' };
 const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
+
+function createModelDivider(modelUsed) {
+  const [providerName, modelName] = describeModel(modelUsed);
+  if (!modelName) return null;
+
+  const divider = document.createElement('div');
+  divider.className = 'model-divider';
+
+  const label = document.createElement('span');
+  label.textContent = `${modelName} · ${providerName}`;
+  divider.appendChild(label);
+
+  return divider;
+}
 
 function createMessageElement(message) {
   const messageDiv = document.createElement('div');
@@ -720,11 +746,22 @@ function stopStreamTicker() {
   }
 }
 
-// Add a copy button to every code block - the most-used action in a coding
-// sidebar, and impossible to do by hand while the message is still streaming
+// Syntax highlighting, a language label and a copy button. Only ever called on
+// a finished message - mid-stream the whole subtree is replaced on the next
+// repaint, so any of this would be thrown away immediately.
 function decorateCodeBlocks(container) {
   container.querySelectorAll('pre').forEach(pre => {
     if (pre.querySelector('.code-copy-btn')) return;
+
+    const code = pre.querySelector('code');
+    const language = highlightCode(code);
+
+    if (language) {
+      const label = document.createElement('span');
+      label.className = 'code-language';
+      label.textContent = language;
+      pre.appendChild(label);
+    }
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -735,6 +772,27 @@ function decorateCodeBlocks(container) {
 
     pre.appendChild(button);
   });
+}
+
+// Returns the language actually used, or '' when the block was left alone
+function highlightCode(code) {
+  if (!code || typeof hljs === 'undefined') return '';
+
+  const declared = (code.className.match(/language-([\w+#-]+)/) || [])[1];
+  if (!declared || declared === 'plaintext') return declared === 'plaintext' ? 'text' : '';
+
+  // An unknown language would make hljs throw; leave those as plain text
+  if (!hljs.getLanguage(declared)) return declared;
+
+  try {
+    const result = hljs.highlight(code.textContent, { language: declared, ignoreIllegals: true });
+    code.innerHTML = result.value;
+    code.classList.add('hljs');
+    return declared;
+  } catch (error) {
+    console.warn('Highlight failed (ignored):', error.message);
+    return declared;
+  }
 }
 
 async function copyCode(pre, button) {
@@ -774,16 +832,45 @@ function createMessageActions(message) {
   regenBtn.innerHTML = '<i class="fas fa-redo"></i>';
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
   
+  // Cost of the turn: how long it took and what it burned
+  const stats = document.createElement('span');
+  stats.className = 'message-stats';
+  applyMessageStats(stats, message);
+
   // Time
   const time = document.createElement('span');
   time.className = 'time-display';
   time.textContent = formatTime(message.timestamp);
-  
+
   actions.appendChild(copyBtn);
   actions.appendChild(regenBtn);
+  actions.appendChild(stats);
   actions.appendChild(time);
-  
+
   return actions;
+}
+
+function formatTokens(count) {
+  return count >= 1000 ? `${(count / 1000).toFixed(1)}k` : String(count);
+}
+
+function applyMessageStats(element, message) {
+  if (message.role !== 'assistant') {
+    element.textContent = '';
+    return;
+  }
+
+  const parts = [];
+  if (message.durationMs) parts.push(formatDuration(message.durationMs));
+  if (message.usage) parts.push(`${formatTokens(message.usage.total)} tok`);
+
+  element.textContent = parts.join(' · ');
+
+  if (message.usage) {
+    const detail = [`${message.usage.input} in`, `${message.usage.output} out`];
+    if (message.usage.reasoning != null) detail.push(`${message.usage.reasoning} reasoning`);
+    element.title = detail.join(', ');
+  }
 }
 
 async function copyMessage(message, button) {
@@ -951,6 +1038,11 @@ function updateMessageDisplay(messageId) {
     indicator.hidden = !isAwaitingFirstToken(message);
   }
 
+  const stats = messageElement.querySelector('.message-stats');
+  if (stats && !streaming) {
+    applyMessageStats(stats, message);
+  }
+
   scrollToBottom();
 }
 
@@ -958,9 +1050,46 @@ function updateMessageDisplay(messageId) {
 // UI HELPERS
 // ========================================
 
+// The empty state used to tell everyone to "select a model and start chatting"
+// even when there was no provider to select one from, and nothing on screen was
+// clickable.
 function showWelcomeMessage() {
   elements.welcomeMessage?.classList.remove('hidden');
   elements.messagesList?.classList.add('hidden');
+  renderWelcomeMessage();
+}
+
+function renderWelcomeMessage() {
+  const container = elements.welcomeMessage;
+  if (!container) return;
+
+  const hasProviders = state.config.providers.length > 0;
+  const hasModel = Boolean(state.config.selectedProvider && state.config.selectedModel);
+
+  container.innerHTML = '';
+
+  const heading = document.createElement('h2');
+  heading.textContent = 'Welcome to SideMind';
+
+  const body = document.createElement('p');
+  container.appendChild(heading);
+  container.appendChild(body);
+
+  if (!hasProviders) {
+    body.textContent = 'No AI provider configured yet. Add one to start chatting.';
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'welcome-action';
+    action.textContent = 'Add a provider';
+    action.addEventListener('click', openOptions);
+    container.appendChild(action);
+    return;
+  }
+
+  body.textContent = hasModel
+    ? 'Ask anything, or pick a different model and system prompt above.'
+    : 'Choose a model from the selector above to start chatting.';
 }
 
 function hideWelcomeMessage() {
@@ -1119,6 +1248,7 @@ function handleModelChange(event) {
   state.config.selectedProvider = providerId;
   debouncedSave();
   updateInputState();
+  renderWelcomeMessage();
 }
 
 function handleSystemPromptChange(event) {
@@ -1346,6 +1476,7 @@ async function sendMessageToAPI(_userMessage) {
     reasoning: '',
     reasoningCollapsed: false,
     startedAt: Date.now(),
+    modelUsed: state.config.selectedModel,
     timestamp: new Date().toISOString()
   };
 
@@ -1506,6 +1637,13 @@ function applyChatStreamEvent(parsed, message) {
     throw new Error(`API Error: ${parsed.error.message || 'Unknown streaming error'}`);
   }
 
+  // Many providers volunteer usage on the final chunk; OpenAI only does when
+  // asked via stream_options, which compatible servers often reject - so read
+  // it when offered rather than requesting it.
+  if (parsed.usage) {
+    message.usage = readUsage(parsed.usage);
+  }
+
   const delta = parsed.choices?.[0]?.delta;
   if (!delta) return false;
 
@@ -1546,6 +1684,10 @@ function applyResponsesStreamEvent(parsed, message) {
       message.reasoning += '\n\n';
       return true;
 
+    case 'response.completed':
+      message.usage = readUsage(parsed.response?.usage);
+      return false;
+
     case 'response.failed': {
       const error = parsed.response?.error;
       throw new Error(`API Error: ${error?.message || 'Response failed'}`);
@@ -1575,6 +1717,8 @@ async function processNonStream(response, message, signal, adapter) {
 
 // Chat Completions: a single choices[0].message object
 function applyChatResponse(data, message) {
+  message.usage = readUsage(data.usage);
+
   const msg = data.choices?.[0]?.message;
   if (!msg) return;
 
@@ -1593,6 +1737,8 @@ function applyResponsesResponse(data, message) {
   if (data.error || data.status === 'failed') {
     throw new Error(`API Error: ${data.error?.message || 'Response failed'}`);
   }
+
+  message.usage = readUsage(data.usage);
 
   const contentParts = [];
   const reasoningParts = [];
@@ -1626,6 +1772,26 @@ function applyResponsesResponse(data, message) {
   if (data.status === 'incomplete') {
     console.warn('Response incomplete:', data.incomplete_details?.reason || 'unknown reason');
   }
+}
+
+// Chat Completions reports prompt/completion tokens, Responses reports
+// input/output tokens. Normalise to one shape, or null when absent.
+function readUsage(usage) {
+  if (!usage) return null;
+
+  const input = usage.input_tokens ?? usage.prompt_tokens;
+  const output = usage.output_tokens ?? usage.completion_tokens;
+  if (input == null && output == null) return null;
+
+  const reasoning = usage.output_tokens_details?.reasoning_tokens ??
+    usage.completion_tokens_details?.reasoning_tokens ?? null;
+
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    total: usage.total_tokens ?? ((input ?? 0) + (output ?? 0)),
+    reasoning
+  };
 }
 
 // Process think tags
