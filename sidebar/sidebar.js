@@ -470,6 +470,10 @@ async function deleteSession(sessionId) {
 // MESSAGE MANAGEMENT
 // ========================================
 
+function titleFromContent(content) {
+  return content.length > 50 ? content.substring(0, 50) + '...' : content;
+}
+
 function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
@@ -491,7 +495,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
   
   // Auto-generate title from first user message
   if (role === 'user' && session.messages.length === 1) {
-    session.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
+    session.title = titleFromContent(content);
   }
   
   debouncedSave();
@@ -503,6 +507,10 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 // ========================================
 
 function renderMessages() {
+  // Every caller either replaces the transcript or appends to it; neither is a
+  // state an open editor should survive
+  cancelEditing();
+
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
     showWelcomeMessage();
@@ -823,7 +831,21 @@ function createMessageActions(message) {
   copyBtn.setAttribute('aria-label', 'Copy message');
   copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
   copyBtn.addEventListener('click', () => copyMessage(message, copyBtn));
+  actions.appendChild(copyBtn);
   
+  // Edit button - user messages only. Rewriting an assistant reply would be
+  // putting words in the model's mouth, which is a different feature.
+  if (message.role === 'user') {
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'edit-btn';
+    editBtn.setAttribute('aria-label', 'Edit message');
+    editBtn.setAttribute('title', 'Edit message');
+    editBtn.innerHTML = '<i class="fas fa-pen"></i>';
+    editBtn.addEventListener('click', () => startEditing(message));
+    actions.appendChild(editBtn);
+  }
+
   // Regenerate button
   const regenBtn = document.createElement('button');
   regenBtn.className = 'regenerate-btn';
@@ -842,7 +864,6 @@ function createMessageActions(message) {
   time.className = 'time-display';
   time.textContent = formatTime(message.timestamp);
 
-  actions.appendChild(copyBtn);
   actions.appendChild(regenBtn);
   actions.appendChild(stats);
   actions.appendChild(time);
@@ -891,6 +912,141 @@ async function copyMessage(message, button) {
   } catch (error) {
     console.error('Copy failed:', error);
   }
+}
+
+// ----------------------------------------
+// Editing a user message
+// ----------------------------------------
+// Editing rewrites the turn and replays the conversation from there, which
+// means discarding everything that followed - so it goes through the same undo
+// bar as regenerating.
+let editingMessageId = null;
+
+function startEditing(message) {
+  if (state.isStreaming || editingMessageId) return;
+
+  const element = messageElementCache.get(message.id);
+  const bubble = element?.querySelector('.message-bubble');
+  const content = bubble?.querySelector('.message-content');
+  if (!content) return;
+
+  editingMessageId = message.id;
+  element.classList.add('editing');
+  content.hidden = true;
+
+  const editor = document.createElement('div');
+  editor.className = 'message-editor';
+
+  const input = document.createElement('textarea');
+  input.className = 'message-edit-input';
+  input.rows = 1;
+  input.value = message.content;
+  input.setAttribute('aria-label', 'Edit message');
+  input.addEventListener('input', () => resizeEditor(input));
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      submitEdit(message, input.value);
+    }
+  });
+
+  const controls = document.createElement('div');
+  controls.className = 'message-edit-actions';
+
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'edit-cancel-btn';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', cancelEditing);
+
+  const submit = document.createElement('button');
+  submit.type = 'button';
+  submit.className = 'edit-submit-btn';
+  submit.textContent = 'Send';
+  submit.addEventListener('click', () => submitEdit(message, input.value));
+
+  controls.appendChild(cancel);
+  controls.appendChild(submit);
+  editor.appendChild(input);
+  editor.appendChild(controls);
+  bubble.appendChild(editor);
+
+  resizeEditor(input);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function resizeEditor(input) {
+  input.style.height = 'auto';
+  input.style.height = Math.min(Math.max(input.scrollHeight, 24), 240) + 'px';
+}
+
+function cancelEditing() {
+  if (!editingMessageId) return;
+
+  const element = messageElementCache.get(editingMessageId);
+  editingMessageId = null;
+  if (!element) return;
+
+  element.classList.remove('editing');
+  element.querySelector('.message-editor')?.remove();
+
+  const content = element.querySelector('.message-content');
+  if (content) content.hidden = false;
+}
+
+async function submitEdit(message, rawText) {
+  const text = rawText.trim();
+  const session = state.sessions[state.currentSessionId];
+  const index = session ? session.messages.findIndex(m => m.id === message.id) : -1;
+
+  if (!text || index === -1) {
+    cancelEditing();
+    return;
+  }
+
+  const previousText = message.content;
+  const previousTitle = session.title;
+  const removed = session.messages.slice(index + 1);
+
+  cancelEditing();
+
+  if (text === previousText && removed.length === 0) return;
+
+  message.content = text;
+  message.timestamp = new Date().toISOString();
+  session.messages = session.messages.slice(0, index + 1);
+  session.timestamp = new Date().toISOString();
+
+  // The first user message is what names the chat
+  if (index === 0) session.title = titleFromContent(text);
+
+  saveToStorage();
+  renderMessages();
+  updateMessageDisplay(message.id);
+
+  const sessionId = state.currentSessionId;
+  offerUndo(describeEditUndo(removed.length), async () => {
+    await stopStreamingIfActive();
+
+    const target = state.sessions[sessionId];
+    if (!target) return;
+
+    message.content = previousText;
+    target.title = previousTitle;
+    target.messages = target.messages.slice(0, index + 1).concat(removed);
+
+    saveToStorage();
+    renderMessages();
+    updateMessageDisplay(message.id);
+  });
+
+  await sendMessageToAPI(text);
+}
+
+function describeEditUndo(removedCount) {
+  if (removedCount === 0) return 'Edited message';
+  return `Edited, removed ${removedCount} message${removedCount > 1 ? 's' : ''}`;
 }
 
 async function regenerateMessage(message, button) {
@@ -1275,6 +1431,12 @@ function handleInputKeydown(event) {
 // whatever is open
 function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return;
+
+  if (editingMessageId) {
+    event.preventDefault();
+    cancelEditing();
+    return;
+  }
 
   if (state.isStreaming) {
     event.preventDefault();

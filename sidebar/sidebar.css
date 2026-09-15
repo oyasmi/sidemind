@@ -754,6 +754,101 @@ button:disabled {
   background-color: rgba(52, 211, 153, 0.1);
 }
 
+.message-actions .edit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background-color: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 12px;
+}
+
+.message-actions .edit-btn:hover {
+  background-color: var(--focus-bg);
+  color: var(--focus-color);
+  transform: scale(1.05);
+}
+
+/* The bar is only for reading a finished message */
+.message.editing .message-actions {
+  display: none;
+}
+
+/* Inline editor */
+.message-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-edit-input {
+  width: 100%;
+  min-height: 24px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background-color: rgba(255, 255, 255, 0.16);
+  color: white;
+  font-family: inherit;
+  font-size: var(--font-size);
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  overflow-y: auto;
+}
+
+.message-edit-input::selection {
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+.message-edit-input:focus {
+  border-color: white;
+  background-color: rgba(255, 255, 255, 0.24);
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.edit-cancel-btn,
+.edit-submit-btn {
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  font-size: var(--font-sm);
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.edit-cancel-btn {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: transparent;
+  color: white;
+}
+
+.edit-cancel-btn:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.edit-submit-btn {
+  border: 1px solid white;
+  background-color: white;
+  color: var(--accent);
+}
+
+.edit-submit-btn:hover {
+  background-color: rgba(255, 255, 255, 0.88);
+}
+
 .message-actions .regenerate-btn {
   display: flex;
   align-items: center;

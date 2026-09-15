@@ -96,7 +96,8 @@ mix both in the same install.
 ### Chat Management
 - Multiple chat sessions with auto-titles
 - Chat history keep in local storage
-- Message regeneration and editing
+- Edit any message you sent and replay the conversation from there
+- Regenerate a response, with undo
 
 ### AI Capabilities
 - Real-time streaming responses (Chat Completions + Responses APIs)

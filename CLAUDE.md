@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **SideMind** is a production-ready Chrome Extension (Manifest V3) that provides a sidebar interface for chatting with Large Language Models (LLMs). It's built with vanilla HTML/CSS/JavaScript following the KISS principle - no frameworks, no build tools, just pure web technologies.
 
 ### Current Status
-- **Version**: 1.4.0 (Production Ready)
+- **Version**: 1.4.1 (Production Ready)
 - **Chrome Web Store**: Published and available for installation
 - **License**: Apache 2.0
 - **Total Development Time**: ~3-4 hours
@@ -184,9 +184,17 @@ body of any non-streaming response. `stream_options: {include_usage: true}` is d
 **not** sent — OpenAI needs it for streamed Chat Completions usage, but compatible servers
 often reject the parameter, so a missing count is preferred over a failed request.
 
+### Editing a User Message
+`startEditing()` swaps the bubble's rendered text for a textarea in place (Enter submits,
+Shift+Enter is a newline, Escape cancels); `submitEdit()` rewrites `message.content`,
+truncates the turns that followed, re-titles the chat when the first message changed, and
+replays from there. Only user messages are editable — rewriting an assistant reply is a
+different feature. `cancelEditing()` is called at the top of `renderMessages()`, so any
+re-render ends an open edit rather than leaving a stale editor behind.
+
 ### Destructive Actions
-Regenerating from a message truncates everything after it, and deleting a chat
-removes it outright. Both hand their removed content to `offerUndo(text, restore)`,
+Editing and regenerating both truncate everything after the message, and deleting a chat
+removes it outright. All of them hand their removed content to `offerUndo(text, restore)`,
 which shows the undo bar for `UNDO_TIMEOUT` (10s). `clearUndo()` is called whenever
 the transcript changes for another reason (sending, switching or creating a chat).
 Anything that swaps the transcript while a stream is running must first await
