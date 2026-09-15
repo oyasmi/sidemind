@@ -70,12 +70,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
       messages: [...],          // Chat history with reasoning content
       title: string,
       timestamp: string,
-      modelUsed: string,
+      modelUsed: string,        // Composite key "modelId - providerId"
       systemPromptId: string
     }
   },
-  currentSessionId: string
+  currentSessionId: string,
+  drafts: {
+    [sessionId]: string         // Unsent input; the side panel unloads on close
+  }
 }
+
+Assistant messages additionally carry streaming metadata: `startedAt`,
+`thinkingMs`, `durationMs`, `reasoningCollapsed` and `reasoningTouched`
+(set once the user opens or closes the reasoning panel by hand, which
+disables auto-collapse for that message).
 ```
 
 **Note**: Model selection uses a composite key format `"modelId - providerId"` to support models with the same ID from different providers. When making API requests, only the `modelId` portion is extracted and sent.
@@ -166,6 +174,15 @@ To support models with identical IDs from different providers, the extension use
 - **UI Display**: Models grouped by provider in `<optgroup>` elements
 - **API Request**: Extracts only `modelId` when building request body (sidebar.js:1140)
 - **Key Functions**: `updateModelSelector()`, `handleModelChange()`, `buildRequestBody()`
+
+### Destructive Actions
+Regenerating from a message truncates everything after it, and deleting a chat
+removes it outright. Both hand their removed content to `offerUndo(text, restore)`,
+which shows the undo bar for `UNDO_TIMEOUT` (10s). `clearUndo()` is called whenever
+the transcript changes for another reason (sending, switching or creating a chat).
+Anything that swaps the transcript while a stream is running must first await
+`stopStreamingIfActive()` - `createNewSession()` and `deleteSession()` used to skip
+this and left the request running against an abandoned session.
 
 ### Configuration Management
 - **Provider CRUD**: Full create/read/update/delete for LLM providers

@@ -8,6 +8,7 @@
 const state = {
   currentSessionId: null,
   sessions: {},
+  drafts: {},
   config: {
     providers: [],
     selectedProvider: null,
@@ -124,6 +125,9 @@ const elements = {
   chatHistoryList: null,
   scrollBottomBtn: null,
   srStatus: null,
+  undoBar: null,
+  undoText: null,
+  undoBtn: null,
 };
 
 // ========================================
@@ -158,6 +162,9 @@ function cacheElements() {
   elements.chatHistoryList = document.getElementById('chatHistoryList');
   elements.scrollBottomBtn = document.getElementById('scrollBottomBtn');
   elements.srStatus = document.getElementById('srStatus');
+  elements.undoBar = document.getElementById('undoBar');
+  elements.undoText = document.getElementById('undoText');
+  elements.undoBtn = document.getElementById('undoBtn');
 }
 
 // Setup Event Listeners
@@ -177,6 +184,9 @@ function setupEventListeners() {
   
   elements.messagesList.addEventListener('scroll', handleScroll);
   elements.scrollBottomBtn.addEventListener('click', () => scrollToBottom(true));
+  elements.undoBtn.addEventListener('click', applyUndo);
+
+  document.addEventListener('keydown', handleGlobalKeydown);
   
   // Listen for config changes
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -203,6 +213,7 @@ function setupEventListeners() {
 function initializeUI() {
   updateModelSelector();
   updateSystemPromptSelector();
+  restoreDraft();
   
   if (state.currentSessionId) {
     renderMessages();
@@ -235,10 +246,14 @@ async function loadFromStorage() {
       applyTheme();
     }
     
-    const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId']);
-    
+    const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId', 'drafts']);
+
     if (localResult.sessions) {
       state.sessions = localResult.sessions;
+    }
+
+    if (localResult.drafts) {
+      state.drafts = localResult.drafts;
     }
     
     if (localResult.currentSessionId) {
@@ -246,12 +261,12 @@ async function loadFromStorage() {
     }
     
     if (!state.currentSessionId) {
-      createNewSession();
+      await createNewSession();
     }
-    
+
   } catch (error) {
     console.error('Storage load error:', error);
-    createNewSession();
+    await createNewSession();
   }
 }
 
@@ -260,7 +275,8 @@ async function saveToStorage() {
     await chrome.storage.sync.set({ config: state.config });
     await chrome.storage.local.set({
       sessions: state.sessions,
-      currentSessionId: state.currentSessionId
+      currentSessionId: state.currentSessionId,
+      drafts: state.drafts
     });
   } catch (error) {
     console.error('Storage save error:', error);
@@ -274,11 +290,99 @@ function debouncedSave() {
   saveTimeout = setTimeout(() => saveToStorage(), 1000);
 }
 
+// ----------------------------------------
+// Drafts
+// ----------------------------------------
+// The side panel unloads the moment it is closed, so an unsent message is gone
+// unless it has been written out. Kept on a short leash of its own rather than
+// riding the 1s transcript debounce.
+const DRAFT_SAVE_DELAY = 300;
+let draftTimeout = null;
+
+function saveDraftSoon() {
+  const sessionId = state.currentSessionId;
+  if (!sessionId) return;
+
+  const text = elements.messageInput.value;
+  if (text.trim()) {
+    state.drafts[sessionId] = text;
+  } else {
+    delete state.drafts[sessionId];
+  }
+
+  if (draftTimeout) clearTimeout(draftTimeout);
+  draftTimeout = setTimeout(persistDrafts, DRAFT_SAVE_DELAY);
+}
+
+function persistDrafts() {
+  if (draftTimeout) {
+    clearTimeout(draftTimeout);
+    draftTimeout = null;
+  }
+
+  chrome.storage.local.set({ drafts: state.drafts })
+    .catch(error => console.error('Draft save error:', error));
+}
+
+function restoreDraft() {
+  elements.messageInput.value = state.drafts[state.currentSessionId] || '';
+  autoResizeTextarea();
+}
+
+function clearDraft() {
+  delete state.drafts[state.currentSessionId];
+  persistDrafts();
+}
+
+// ----------------------------------------
+// Undo
+// ----------------------------------------
+// Truncating a conversation and deleting a chat are both one misplaced click
+// away and neither used to be recoverable.
+const UNDO_TIMEOUT = 10000;
+let pendingUndo = null;
+
+function offerUndo(text, restore) {
+  clearUndo();
+
+  pendingUndo = { restore, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
+  elements.undoText.textContent = text;
+  elements.undoBar.classList.remove('hidden');
+}
+
+function clearUndo() {
+  if (pendingUndo?.timer) clearTimeout(pendingUndo.timer);
+  pendingUndo = null;
+  elements.undoBar?.classList.add('hidden');
+}
+
+async function applyUndo() {
+  const undo = pendingUndo;
+  clearUndo();
+  if (!undo) return;
+
+  await undo.restore();
+  announce('Undone.');
+}
+
 // ========================================
 // SESSION MANAGEMENT
 // ========================================
 
-function createNewSession() {
+// Anything that swaps the transcript out from under a running stream has to
+// stop it first - otherwise the request keeps burning tokens into a session
+// nobody is looking at, and cleanupStreaming can no longer find its message.
+async function stopStreamingIfActive() {
+  if (!state.isStreaming) return;
+
+  await handleStopGeneration();
+  // Give the abort time to propagate through the reader
+  await new Promise(resolve => setTimeout(resolve, 100));
+}
+
+async function createNewSession() {
+  await stopStreamingIfActive();
+
   const sessionId = Date.now().toString();
   state.sessions[sessionId] = {
     messages: [],
@@ -289,32 +393,38 @@ function createNewSession() {
   };
   state.currentSessionId = sessionId;
   state.userScrolledUp = false;
+  clearUndo();
 
   saveToStorage();
   renderMessages();
+  restoreDraft();
   updateInputState();
 }
 
 async function switchSession(sessionId) {
   if (!state.sessions[sessionId]) return;
-  
-  // Stop current streaming if any
-  if (state.isStreaming) {
-    await handleStopGeneration();
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  
+
+  await stopStreamingIfActive();
+
   clearOldCacheEntries();
   state.currentSessionId = sessionId;
   state.userScrolledUp = false;
+  clearUndo();
   saveToStorage();
   renderMessages();
+  restoreDraft();
   updateInputState();
   closeChatHistory();
 }
 
-function deleteSession(sessionId) {
+async function deleteSession(sessionId) {
   if (!state.sessions[sessionId]) return;
+
+  if (sessionId === state.currentSessionId) {
+    await stopStreamingIfActive();
+  }
+
+  const removed = state.sessions[sessionId];
   
   // Clear cache for this session
   if (state.sessions[sessionId].messages) {
@@ -324,24 +434,32 @@ function deleteSession(sessionId) {
   }
   
   delete state.sessions[sessionId];
-  
+  delete state.drafts[sessionId];
+
   // Switch to another session or create new
   if (state.currentSessionId === sessionId) {
     const remaining = Object.keys(state.sessions);
     if (remaining.length > 0) {
-      const recent = remaining.sort((a, b) => 
+      const recent = remaining.sort((a, b) =>
         new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
       )[0];
       state.currentSessionId = recent;
+      restoreDraft();
     } else {
-      createNewSession();
+      await createNewSession();
     }
   }
-  
+
   saveToStorage();
   renderMessages();
   updateInputState();
-  
+
+  offerUndo(`Deleted "${removed.title}"`, () => {
+    state.sessions[sessionId] = removed;
+    saveToStorage();
+    renderChatHistory();
+  });
+
   if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
     renderChatHistory();
   }
@@ -410,6 +528,12 @@ function renderMessages() {
   scrollToBottom();
 }
 
+// `system` is how failures are surfaced in the transcript - it used to borrow
+// the assistant's robot avatar and name, which made an API error look like
+// something the model said
+const MESSAGE_ICONS = { user: 'user', assistant: 'robot', system: 'triangle-exclamation' };
+const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
+
 function createMessageElement(message) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${message.role}`;
@@ -421,11 +545,11 @@ function createMessageElement(message) {
   
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
-  avatar.innerHTML = `<i class="fas fa-${message.role === 'user' ? 'user' : 'robot'}"></i>`;
-  
+  avatar.innerHTML = `<i class="fas fa-${MESSAGE_ICONS[message.role] || 'robot'}"></i>`;
+
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
-  senderName.textContent = message.role === 'user' ? 'You' : 'Assistant';
+  senderName.textContent = MESSAGE_LABELS[message.role] || 'Assistant';
   
   header.appendChild(avatar);
   header.appendChild(senderName);
@@ -645,7 +769,8 @@ function createMessageActions(message) {
   // Regenerate button
   const regenBtn = document.createElement('button');
   regenBtn.className = 'regenerate-btn';
-  regenBtn.setAttribute('aria-label', 'Regenerate response');
+  regenBtn.setAttribute('aria-label', message.role === 'system' ? 'Retry' : 'Regenerate response');
+  regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.innerHTML = '<i class="fas fa-redo"></i>';
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
   
@@ -693,17 +818,35 @@ async function regenerateMessage(message, button) {
   try {
     const index = session.messages.findIndex(m => m.id === message.id);
     if (index === -1) return;
-    
-    const keepMessages = message.role === 'user' 
-      ? session.messages.slice(0, index + 1)
-      : session.messages.slice(0, index);
-    
-    session.messages = keepMessages;
+
+    // Regenerating from a user message replays it; from an assistant or error
+    // message it replaces that message onwards
+    const cutFrom = message.role === 'user' ? index + 1 : index;
+    const removed = session.messages.slice(cutFrom);
+
+    session.messages = session.messages.slice(0, cutFrom);
     session.timestamp = new Date().toISOString();
-    
+
     saveToStorage();
     renderMessages();
-    
+
+    if (removed.length > 0) {
+      const sessionId = state.currentSessionId;
+      const count = removed.length;
+
+      offerUndo(`Removed ${count} message${count > 1 ? 's' : ''}`, async () => {
+        await stopStreamingIfActive();
+
+        const target = state.sessions[sessionId];
+        if (!target) return;
+
+        // Drop whatever the regeneration produced, then put the originals back
+        target.messages = target.messages.slice(0, cutFrom).concat(removed);
+        saveToStorage();
+        renderMessages();
+      });
+    }
+
     if (message.role === 'user') {
       await sendMessageToAPI(message.content);
     } else {
@@ -712,6 +855,7 @@ async function regenerateMessage(message, button) {
         await sendMessageToAPI(lastUser.content);
       }
     }
+
   } finally {
     button.classList.remove('regenerating');
     button.innerHTML = '<i class="fas fa-redo"></i>';
@@ -985,6 +1129,7 @@ function handleSystemPromptChange(event) {
 function handleInputChange() {
   updateInputState();
   autoResizeTextarea();
+  saveDraftSoon();
 }
 
 function handleInputKeydown(event) {
@@ -993,6 +1138,23 @@ function handleInputKeydown(event) {
     if (!elements.sendBtn.disabled) {
       handleSendMessage();
     }
+  }
+}
+
+// Escape works wherever the focus is: stop generation first, otherwise close
+// whatever is open
+function handleGlobalKeydown(event) {
+  if (event.key !== 'Escape') return;
+
+  if (state.isStreaming) {
+    event.preventDefault();
+    handleStopGeneration();
+    return;
+  }
+
+  if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
+    event.preventDefault();
+    closeChatHistory();
   }
 }
 
@@ -1012,9 +1174,11 @@ async function handleSendMessage() {
   
   state.userScrolledUp = false;
   
+  clearUndo();
   addMessage('user', message);
-  
+
   elements.messageInput.value = '';
+  clearDraft();
   autoResizeTextarea();
   updateInputState();
   
@@ -1058,6 +1222,24 @@ function closeChatHistory() {
   elements.chatHistoryDropdown.classList.add('hidden');
 }
 
+// `modelUsed` holds the composite "modelId - providerId" key. Matching it
+// against a bare model id never succeeded, so every history row fell back to
+// "Unknown".
+function describeModel(modelUsed) {
+  if (!modelUsed) return [];
+
+  const [modelId, providerId] = String(modelUsed).split(' - ');
+
+  const provider = providerId
+    ? state.config.providers.find(p => p.id === providerId)
+    // Sessions written before the composite key stored a bare model id
+    : state.config.providers.find(p => p.models.some(m => m.id === modelId));
+
+  const model = provider?.models.find(m => m.id === modelId);
+
+  return provider && model ? [provider.name, model.name] : [];
+}
+
 function renderChatHistory() {
   elements.chatHistoryList.innerHTML = '';
   
@@ -1096,24 +1278,22 @@ function renderChatHistory() {
     const date = new Date(session.timestamp);
     const dateStr = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
     
-    let metaInfo = [];
-    
-    if (session.modelUsed) {
-      for (const provider of state.config.providers) {
-        const model = provider.models.find(m => m.id === session.modelUsed);
-        if (model) {
-          metaInfo.push(provider.name, model.name);
-          break;
-        }
-      }
-    }
+    const metaInfo = describeModel(session.modelUsed);
     
     const systemPrompt = state.config.systemPrompts.find(p => p.id === (session.systemPromptId || state.config.selectedSystemPrompt));
     if (systemPrompt) {
       metaInfo.push(systemPrompt.name);
     }
     
-    meta.innerHTML = `<span>${dateStr}</span><span>${metaInfo.join(' • ') || 'Unknown'}</span>`;
+    // Built as text nodes: provider, model and prompt names are user-supplied
+    const dateSpan = document.createElement('span');
+    dateSpan.textContent = dateStr;
+
+    const infoSpan = document.createElement('span');
+    infoSpan.textContent = metaInfo.join(' • ') || 'Unknown';
+
+    meta.appendChild(dateSpan);
+    meta.appendChild(infoSpan);
     
     content.appendChild(title);
     content.appendChild(meta);
