@@ -1,294 +1,418 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SideMind Options</title>
-  <link rel="stylesheet" href="options.css">
-  <link rel="stylesheet" href="../assets/css/fontawesome.min.css">
-</head>
-<body>
-  <div class="options-container">
-    <!-- Project Header Section -->
-    <header class="project-header">
-      <div class="project-title-section">
-        <div class="project-icon">
-          <img src="../icons/icon128.png" alt="SideMind Logo">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SideMind Settings</title>
+    <link rel="stylesheet" href="../assets/css/ui.css" />
+    <link rel="stylesheet" href="../assets/css/fontawesome.min.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="settings-shell">
+      <header class="settings-header">
+        <a class="settings-brand" href="#providers"
+          ><img src="../icons/icon128.png" alt="" /><span
+            >SideMind <span class="brand-divider">/</span> Settings</span
+          ></a
+        >
+        <div class="save-feedback">
+          <span id="saveStatus" role="status" aria-live="polite">Changes save automatically</span
+          ><button id="saveBtn" class="btn btn-small hidden">Retry save</button>
         </div>
-        <div class="project-title">
-          <h1>SideMind - AI Chat Assistant in SideBar</h1>
-          <p class="project-subtitle">Your private AI companion that lives right in your browser sidebar</p>
-        </div>
+      </header>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <a href="#providers" aria-current="location"
+            ><i class="fas fa-plug" aria-hidden="true"></i>Services &amp; models</a
+          >
+          <a href="#roles"><i class="fas fa-comment" aria-hidden="true"></i>Assistant roles</a>
+          <a href="#conversation"><i class="fas fa-sliders" aria-hidden="true"></i>Conversation</a>
+          <a href="#appearance"><i class="fas fa-palette" aria-hidden="true"></i>Appearance</a>
+          <a href="#data"><i class="fas fa-folder" aria-hidden="true"></i>Data &amp; about</a>
+          <p class="nav-note">Your workspace.<br />Your choice of AI.</p>
+        </nav>
+        <main class="options-main">
+          <div class="page-intro">
+            <p class="eyebrow">MAKE IT YOURS</p>
+            <h1>A thoughtful setup.<br />A better conversation.</h1>
+            <p>Connect your models and make SideMind feel right for you.</p>
+          </div>
+          <section id="providers" class="section" aria-labelledby="providersHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="providersHeading">Services &amp; models</h2>
+                <p>Connect an AI provider using your own API key.</p>
+              </div>
+              <button id="addProviderBtn" class="btn btn-primary">
+                <i class="fas fa-plus" aria-hidden="true"></i>Add provider
+              </button>
+            </div>
+            <div id="providersList" class="providers-list"></div>
+          </section>
+          <section id="roles" class="section" aria-labelledby="rolesHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="rolesHeading">Assistant roles</h2>
+                <p>Reusable instructions for the way you like to work.</p>
+              </div>
+              <button id="addPromptBtn" class="btn btn-secondary">
+                <i class="fas fa-plus" aria-hidden="true"></i>Add role
+              </button>
+            </div>
+            <div id="promptsList" class="prompts-list"></div>
+          </section>
+          <section id="conversation" class="section" aria-labelledby="conversationHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="conversationHeading">Conversation</h2>
+                <p>Control how your assistant responds.</p>
+              </div>
+            </div>
+            <div class="parameter-group">
+              <label for="streamSelector">Stream Response</label>
+              <select id="streamSelector" class="select-input">
+                <option value="true" selected>Enabled (Streaming)</option>
+                <option value="false">Disabled (Complete Response)</option>
+              </select>
+              <small class="parameter-description"
+                >If enabled, the model response will be streamed as it's generated using server-sent
+                events.</small
+              >
+            </div>
+            <details class="advanced-settings">
+              <summary>Advanced model parameters<span>Optional · varies by model</span></summary>
+              <div class="advanced-content">
+                <div class="parameter-group">
+                  <label for="temperatureSlider"
+                    >Temperature: <span id="temperatureValue">0.7</span></label
+                  >
+                  <input
+                    type="range"
+                    id="temperatureSlider"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value="0.7"
+                    class="slider"
+                  />
+                  <label class="checkbox-label" for="temperatureDefaultToggle">
+                    <input type="checkbox" id="temperatureDefaultToggle" />
+                    Use model default (omit temperature)
+                  </label>
+                  <small class="parameter-description"
+                    >Controls randomness in responses. Higher values like 0.8 make output more
+                    random, while lower values like 0.2 make it more focused and deterministic. Some
+                    reasoning models reject this parameter; use model default for those.</small
+                  >
+                </div>
+
+                <div class="parameter-group">
+                  <label for="maxCompletionTokensInput">Max Completion Tokens</label>
+                  <input
+                    type="text"
+                    inputmode="numeric"
+                    id="maxCompletionTokensInput"
+                    aria-describedby="maxTokensHelp maxTokensError"
+                    placeholder="Leave empty to use model default"
+                    class="text-input"
+                  />
+                  <p id="maxTokensError" class="field-error hidden" role="alert"></p>
+                  <small id="maxTokensHelp" class="parameter-description"
+                    >Upper bound for visible output and reasoning tokens. Sent as
+                    max_completion_tokens for Chat Completions or max_output_tokens for Responses.
+                    Leave empty to use model default.</small
+                  >
+                </div>
+
+                <div class="parameter-group">
+                  <label for="reasoningEffortSelector">Reasoning Effort</label>
+                  <select id="reasoningEffortSelector" class="select-input">
+                    <option value="" selected>Model default (not sent)</option>
+                    <option value="minimal">Minimal</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                  <small class="parameter-description"
+                    >Reasoning models only. Sent as reasoning.effort on the Responses API and as
+                    reasoning_effort on Chat Completions. Leave on model default if your provider
+                    rejects it.</small
+                  >
+                </div>
+
+                <div class="parameter-group">
+                  <label for="reasoningSummarySelector">Reasoning Summary</label>
+                  <select id="reasoningSummarySelector" class="select-input">
+                    <option value="off" selected>Off (not sent)</option>
+                    <option value="auto">Auto</option>
+                    <option value="concise">Concise</option>
+                    <option value="detailed">Detailed</option>
+                  </select>
+                  <small class="parameter-description"
+                    >Responses API only. Select Auto, Concise, or Detailed to show a reasoning
+                    summary in the sidebar for models that support it. Raw reasoning tokens are not
+                    exposed.</small
+                  >
+                </div>
+              </div>
+            </details>
+          </section>
+          <section id="appearance" class="section" aria-labelledby="appearanceHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="appearanceHeading">Appearance</h2>
+                <p>A comfortable place to read and write.</p>
+              </div>
+            </div>
+            <div class="appearance-layout">
+              <div class="appearance-controls">
+                <div class="parameter-group">
+                  <label for="fontSizeSelector">Font Size</label>
+                  <select id="fontSizeSelector" class="select-input">
+                    <option value="13px">Small</option>
+                    <option value="14px" selected>Default</option>
+                    <option value="15px">Large</option>
+                    <option value="16px">Extra Large</option>
+                  </select>
+                  <small class="parameter-description"
+                    >Controls the base font size in the sidebar.</small
+                  >
+                </div>
+
+                <div class="parameter-group">
+                  <label for="fontFamilySelector">Font Family</label>
+                  <select id="fontFamilySelector" class="select-input">
+                    <option
+                      value='system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+                    >
+                      System Default
+                    </option>
+                    <option value='Georgia, "Times New Roman", Times, serif'>Serif</option>
+                    <option value='"Courier New", Courier, monospace'>Monospace</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input
+                    type="text"
+                    id="customFontFamilyInput"
+                    class="text-input hidden"
+                    placeholder="Enter custom font family (e.g., 'Arial', 'Times New Roman')"
+                  />
+                  <small class="parameter-description"
+                    >Controls the font family used in the sidebar.</small
+                  >
+                </div>
+
+                <div class="parameter-group">
+                  <label for="themeSelector">Theme</label>
+                  <select id="themeSelector" class="select-input">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="system">Follow System</option>
+                  </select>
+                  <small class="parameter-description"
+                    >Choose the color theme for the sidebar interface.</small
+                  >
+                </div>
+              </div>
+              <div class="appearance-preview" aria-label="Live conversation preview">
+                <p class="preview-label">LIVE PREVIEW</p>
+                <div id="fontPreview" class="font-preview">
+                  <div class="preview-user">Help me make this clearer.</div>
+                  <div class="preview-assistant">
+                    <span class="preview-name">SideMind</span>
+                    <p>A little clarity goes a long way.</p>
+                    <p>
+                      Keep the important details, give each idea room, and make the next step easy
+                      to find.
+                    </p>
+                  </div>
+                  <div class="preview-composer">Ask a question…<span>↑</span></div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="data" class="section" aria-labelledby="dataHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="dataHeading">Data &amp; about</h2>
+                <p>Take your setup with you.</p>
+              </div>
+            </div>
+            <div class="data-actions">
+              <div>
+                <h3>Configuration backup</h3>
+                <p class="help-text">
+                  Export providers, roles and preferences. Conversations are not included.
+                </p>
+                <label class="checkbox-label"
+                  ><input id="exportKeys" type="checkbox" />Include API keys in the exported
+                  file</label
+                >
+              </div>
+              <div class="actions">
+                <button id="exportBtn" class="btn btn-secondary">Export</button
+                ><button id="importBtn" class="btn btn-secondary">Import</button
+                ><input type="file" id="importFile" accept=".json,application/json" hidden />
+              </div>
+            </div>
+            <div class="about-details">
+              <img src="../icons/icon128.png" alt="" />
+              <div>
+                <h3>SideMind <span id="versionBadge" class="version-badge"></span></h3>
+                <p>
+                  Conversations stay in this browser. Configuration uses Chrome sync. Your messages
+                  are sent to the AI provider you choose.
+                </p>
+                <a
+                  href="https://github.com/oyasmi/sidemind"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >GitHub repository</a
+                ><span class="about-license">Apache 2.0 License</span>
+              </div>
+            </div>
+          </section>
+          <footer class="options-footer">SideMind · A little space to think.</footer>
+        </main>
       </div>
-    </header>
-
-    <!-- About Section -->
-    <section class="section about-section">
-      <div class="features-grid">
-        <div class="feature-item">
-          <div class="feature-icon">
-            <i class="fas fa-shield-alt"></i>
-          </div>
-          <h4>Privacy First</h4>
-          <p>All conversations stored locally, no tracking or data collection</p>
-        </div>
-
-        <div class="feature-item">
-          <div class="feature-icon">
-            <i class="fas fa-bolt"></i>
-          </div>
-          <h4>Real-time Streaming</h4>
-          <p>Watch AI responses appear instantly with smooth animations</p>
-        </div>
-
-        <div class="feature-item">
-          <div class="feature-icon">
-            <i class="fas fa-brain"></i>
-          </div>
-          <h4>Thinking Display</h4>
-          <p>See AI reasoning process with collapsible sections</p>
-        </div>
-
-        </div>
-
-      <div class="about-footer">
-        <div class="about-links">
-          <a href="https://github.com/oyasmi/sidemind" class="about-link" target="_blank" rel="noopener noreferrer">
-            <i class="fas fa-code-branch"></i>
-            GitHub Repository
-          </a>
-          <span class="version-badge">Version 1.3.0</span>
-        </div>
-        <div class="security-info">
-          <i class="fas fa-lock"></i>
-          <span>Open source • Apache 2.0 License</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- Configuration Section Header -->
-    <div class="config-section-header">
-      <h2>Configuration</h2>
-      <p>Customize your SideMind experience with the following settings</p>
     </div>
-
-    <main class="options-main">
-      <!-- Service Providers Section -->
-      <section class="section">
-        <h2>Service Providers</h2>
-        <div id="providersList" class="providers-list">
-          <!-- Providers will be added here -->
-        </div>
-        <div class="section-actions">
-          <button id="addProviderBtn" class="btn btn-secondary">
-            <i class="fas fa-plus btn-icon"></i>
-            Add Provider
+    <!-- Modals -->
+    <dialog id="providerModal" aria-labelledby="providerModalTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="providerModalTitle">Add Service Provider</h3>
+          <button class="modal-close-btn icon-btn" aria-label="Close">
+            <i class="fas fa-times"></i>
           </button>
         </div>
-      </section>
-
-      <!-- System Prompts Section -->
-      <section class="section">
-        <h2>System Prompts</h2>
-        <div id="promptsList" class="prompts-list">
-          <!-- Prompts will be added here -->
-        </div>
-        <div class="section-actions">
-          <button id="addPromptBtn" class="btn btn-secondary">
-            <i class="fas fa-plus btn-icon"></i>
-            Add Prompt
-          </button>
-        </div>
-      </section>
-
-      <!-- LLM Parameters Section -->
-      <section class="section">
-        <h2>LLM Parameters</h2>
-        <div class="parameter-group">
-          <label for="temperatureSlider">Temperature: <span id="temperatureValue">0.7</span></label>
-          <input type="range" id="temperatureSlider" min="0" max="2" step="0.1" value="0.7" class="slider">
-          <label class="checkbox-label" for="temperatureDefaultToggle">
-            <input type="checkbox" id="temperatureDefaultToggle">
-            Use model default (omit temperature)
-          </label>
-          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic. Some reasoning models reject this parameter; use model default for those.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="maxCompletionTokensInput">Max Completion Tokens</label>
-          <input type="text" id="maxCompletionTokensInput" placeholder="Leave empty to use model default" class="text-input">
-          <small class="parameter-description">Upper bound for visible output and reasoning tokens. Sent as max_completion_tokens for Chat Completions or max_output_tokens for Responses. Leave empty to use model default.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="streamSelector">Stream Response</label>
-          <select id="streamSelector" class="select-input">
-            <option value="true" selected>Enabled (Streaming)</option>
-            <option value="false">Disabled (Complete Response)</option>
-          </select>
-          <small class="parameter-description">If enabled, the model response will be streamed as it's generated using server-sent events.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="reasoningEffortSelector">Reasoning Effort</label>
-          <select id="reasoningEffortSelector" class="select-input">
-            <option value="" selected>Model default (not sent)</option>
-            <option value="minimal">Minimal</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-          <small class="parameter-description">Reasoning models only. Sent as reasoning.effort on the Responses API and as reasoning_effort on Chat Completions. Leave on model default if your provider rejects it.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="reasoningSummarySelector">Reasoning Summary</label>
-          <select id="reasoningSummarySelector" class="select-input">
-            <option value="off" selected>Off (not sent)</option>
-            <option value="auto">Auto</option>
-            <option value="concise">Concise</option>
-            <option value="detailed">Detailed</option>
-          </select>
-          <small class="parameter-description">Responses API only. Select Auto, Concise, or Detailed to show a reasoning summary in the sidebar for models that support it. Raw reasoning tokens are not exposed.</small>
-        </div>
-      </section>
-
-      <!-- Appearance Section -->
-      <section class="section">
-        <h2>Appearance</h2>
-        <div class="parameter-group">
-          <label for="fontSizeSelector">Font Size</label>
-          <select id="fontSizeSelector" class="select-input">
-            <option value="13px">Small</option>
-            <option value="14px" selected>Default</option>
-            <option value="15px">Large</option>
-            <option value="16px">Extra Large</option>
-          </select>
-          <small class="parameter-description">Controls the base font size in the sidebar.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="fontFamilySelector">Font Family</label>
-          <select id="fontFamilySelector" class="select-input">
-            <option value='system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'>System Default</option>
-            <option value='Georgia, "Times New Roman", Times, serif'>Serif</option>
-            <option value='"Courier New", Courier, monospace'>Monospace</option>
-            <option value="custom">Custom</option>
-          </select>
-          <input type="text" id="customFontFamilyInput" class="text-input hidden" placeholder="Enter custom font family (e.g., 'Arial', 'Times New Roman')">
-          <small class="parameter-description">Controls the font family used in the sidebar.</small>
-        </div>
-
-        <div class="parameter-group">
-          <label for="themeSelector">Theme</label>
-          <select id="themeSelector" class="select-input">
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="system">Follow System</option>
-          </select>
-          <small class="parameter-description">Choose the color theme for the sidebar interface.</small>
-        </div>
-      </section>
-    </main>
-
-    <footer class="options-footer">
-      <div class="actions">
-        <button id="exportBtn" class="btn btn-secondary">Export Config</button>
-        <button id="importBtn" class="btn btn-secondary">Import Config</button>
-        <input type="file" id="importFile" accept=".json" style="display: none;">
-      </div>
-      <button id="saveBtn" class="btn btn-primary">Save Configuration</button>
-    </footer>
-
-    <div class="copyright">
-      © cu.terminal@gmail.com 2025
-    </div>
-  </div>
-
-  <!-- Modals -->
-  <div id="providerModal" class="modal hidden">
-    <div class="modal-overlay"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h3 id="providerModalTitle">Add Service Provider</h3>
-        <button class="modal-close-btn" aria-label="Close">
-          <i class="fas fa-times"></i>
-        </button>
-      </div>
-      <div class="modal-body">
-        <form id="providerForm">
-          <div class="form-group">
-            <label for="providerName">Provider Name</label>
-            <input type="text" id="providerName" required>
-          </div>
-          <div class="form-group">
-            <label for="providerBaseUrl">Base URL</label>
-            <input type="url" id="providerBaseUrl" placeholder="https://api.example.com/v1" required>
-            <small class="parameter-description">Root URL without the endpoint path. The endpoint below is appended automatically.</small>
-          </div>
-          <div class="form-group">
-            <label for="providerApiType">API Type</label>
-            <select id="providerApiType" class="select-input">
-              <option value="chat" selected>Chat Completions &mdash; /chat/completions</option>
-              <option value="responses">Responses &mdash; /responses</option>
-            </select>
-            <small class="parameter-description">Chat Completions is the classic OpenAI-compatible endpoint. Responses is OpenAI's newer API - choose it for providers that expose /responses (reasoning summaries, instructions field).</small>
-          </div>
-          <div class="form-group">
-            <label for="providerApiKey">API Key</label>
-            <input type="password" id="providerApiKey" required>
-          </div>
-          <div class="form-group">
-            <label>Models</label>
-            <div id="modelsList" class="models-list">
-              <div class="model-item">
-                <input type="text" placeholder="Model Name" class="model-name" required>
-                <input type="text" placeholder="Model ID" class="model-id" required>
-                <button type="button" class="btn-remove-model" aria-label="Remove model">
-                  <i class="fas fa-trash-alt"></i>
+        <div class="modal-body">
+          <form id="providerForm">
+            <div class="form-group">
+              <label for="providerName">Provider Name</label>
+              <input type="text" id="providerName" required />
+            </div>
+            <div class="form-group">
+              <label for="providerBaseUrl">Base URL</label>
+              <input
+                type="url"
+                id="providerBaseUrl"
+                aria-describedby="endpointPreview"
+                placeholder="https://api.example.com/v1"
+                required
+              />
+              <small class="parameter-description"
+                >Enter your provider’s API root. The endpoint is added automatically.</small
+              ><small id="endpointPreview" class="endpoint-preview"></small>
+            </div>
+            <div class="form-group">
+              <label for="providerApiType">API Type</label>
+              <select id="providerApiType" class="select-input">
+                <option value="chat" selected>Chat Completions &mdash; /chat/completions</option>
+                <option value="responses">Responses &mdash; /responses</option>
+              </select>
+              <small class="parameter-description"
+                >Chat Completions is the classic OpenAI-compatible endpoint. Responses is OpenAI's
+                newer API - choose it for providers that expose /responses (reasoning summaries,
+                instructions field).</small
+              >
+            </div>
+            <div class="form-group">
+              <label for="providerApiKey">API Key</label>
+              <div class="key-input">
+                <input
+                  type="password"
+                  id="providerApiKey"
+                  autocomplete="off"
+                  spellcheck="false"
+                  required
+                /><button
+                  type="button"
+                  id="toggleApiKey"
+                  class="icon-btn"
+                  aria-label="Show API key"
+                  aria-pressed="false"
+                >
+                  <i class="fas fa-eye" aria-hidden="true"></i>
                 </button>
               </div>
             </div>
-            <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
-          </div>
-        </form>
+            <div class="form-group">
+              <label>Models</label
+              ><small class="parameter-description"
+                >Give each model a display name and the exact model ID required by your
+                provider.</small
+              >
+              <div id="modelsList" class="models-list">
+                <div class="model-item">
+                  <input type="text" placeholder="Model Name" class="model-name" required />
+                  <input type="text" placeholder="Model ID" class="model-id" required />
+                  <button type="button" class="btn-remove-model" aria-label="Remove model">
+                    <i class="fas fa-trash-alt"></i>
+                  </button>
+                </div>
+              </div>
+              <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
+            </div>
+          </form>
+        </div>
+        <p class="modal-error hidden" role="alert"></p>
+        <div class="modal-footer">
+          <button id="providerCancelBtn" class="btn btn-secondary">Cancel</button>
+          <button id="providerSaveBtn" class="btn btn-primary">Save provider</button>
+        </div>
       </div>
-      <div class="modal-footer">
-        <button id="providerCancelBtn" class="btn btn-secondary">Cancel</button>
-        <button id="providerSaveBtn" class="btn btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
+    </dialog>
 
-  <div id="promptModal" class="modal hidden">
-    <div class="modal-overlay"></div>
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h3 id="promptModalTitle">Add System Prompt</h3>
-        <button class="modal-close-btn" aria-label="Close">
-          <i class="fas fa-times"></i>
-        </button>
+    <dialog id="promptModal" aria-labelledby="promptModalTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="promptModalTitle">Add Assistant Role</h3>
+          <button class="modal-close-btn icon-btn" aria-label="Close">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="promptForm">
+            <div class="form-group">
+              <label for="promptName">Role name</label>
+              <input type="text" id="promptName" required />
+            </div>
+            <div class="form-group">
+              <label for="promptContent">Content</label>
+              <textarea
+                id="promptContent"
+                rows="6"
+                placeholder="Describe how this assistant should respond…"
+                required
+              ></textarea>
+            </div>
+          </form>
+        </div>
+        <p class="modal-error hidden" role="alert"></p>
+        <div class="modal-footer">
+          <button id="promptCancelBtn" class="btn btn-secondary">Cancel</button>
+          <button id="promptSaveBtn" class="btn btn-primary">Save role</button>
+        </div>
       </div>
-      <div class="modal-body">
-        <form id="promptForm">
-          <div class="form-group">
-            <label for="promptName">Prompt Name</label>
-            <input type="text" id="promptName" required>
-          </div>
-          <div class="form-group">
-            <label for="promptContent">Content</label>
-            <textarea id="promptContent" rows="6" placeholder="Enter the system prompt content..." required></textarea>
-          </div>
-        </form>
+    </dialog>
+    <dialog id="confirmModal" aria-labelledby="confirmTitle" aria-describedby="confirmDescription">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="confirmTitle"></h3>
+          <button class="modal-close-btn icon-btn" aria-label="Cancel">
+            <i class="fas fa-times" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="modal-body"><p id="confirmDescription"></p></div>
+        <div class="modal-footer">
+          <button id="confirmCancel" class="btn">Cancel</button
+          ><button id="confirmAccept" class="btn btn-primary">Continue</button>
+        </div>
       </div>
-      <div class="modal-footer">
-        <button id="promptCancelBtn" class="btn btn-secondary">Cancel</button>
-        <button id="promptSaveBtn" class="btn btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
-
-  
-  <script src="options.js"></script>
-</body>
+    </dialog>
+    <div id="notifications" class="notification-region" role="status" aria-live="polite"></div>
+    <script src="../assets/js/ui.js"></script>
+    <script src="options.js"></script>
+  </body>
 </html>

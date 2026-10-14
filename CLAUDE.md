@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **SideMind** is a production-ready Chrome Extension (Manifest V3) that provides a sidebar interface for chatting with Large Language Models (LLMs). It's built with vanilla HTML/CSS/JavaScript following the KISS principle - no frameworks, no build tools, just pure web technologies.
 
 ### Current Status
-- **Version**: 1.4.1 (Production Ready)
+- **Version**: 1.5.0 (Production Ready)
 - **Chrome Web Store**: Published and available for installation
 - **License**: Apache 2.0
 - **Total Development Time**: ~3-4 hours

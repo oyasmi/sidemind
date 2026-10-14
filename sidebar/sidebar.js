@@ -19,6 +19,7 @@ const state = {
     stream: true,
     reasoning_effort: '',
     reasoning_summary: 'off',
+    theme: 'light',
     systemPrompts: [
       {
         id: 'default',
@@ -32,7 +33,11 @@ const state = {
   currentStreamingMessage: null,
   userScrolledUp: false,
   abortController: null,
-  streamTicker: null
+  streamTicker: null,
+  followOutput: false,
+  readingResponse: false,
+  generationDone: null,
+  resolveGeneration: null
 };
 
 // ========================================
@@ -75,7 +80,7 @@ function flushMessageDisplays() {
 
   const ids = [...pendingDisplayUpdates];
   pendingDisplayUpdates.clear();
-  ids.forEach(id => updateMessageDisplay(id));
+  ids.forEach((id) => updateMessageDisplay(id));
 }
 
 // Simple cache cleanup
@@ -83,16 +88,16 @@ function clearOldCacheEntries() {
   // Clean message cache for non-current sessions
   if (state.currentSessionId && state.sessions[state.currentSessionId]) {
     const currentMessages = new Set(
-      state.sessions[state.currentSessionId].messages.map(m => m.id)
+      state.sessions[state.currentSessionId].messages.map((m) => m.id)
     );
-    
+
     for (const [messageId] of messageElementCache) {
       if (!currentMessages.has(messageId)) {
         messageElementCache.delete(messageId);
       }
     }
   }
-  
+
   // Simple size-based markdown cache eviction
   if (markdownCache.size > MAX_MARKDOWN_CACHE_SIZE) {
     const entriesToDelete = markdownCache.size - MAX_MARKDOWN_CACHE_SIZE + 10;
@@ -120,14 +125,13 @@ const elements = {
   messagesList: null,
   welcomeMessage: null,
   chatHistoryDropdown: null,
-  dropdownOverlay: null,
   closeBtn: null,
   chatHistoryList: null,
   scrollBottomBtn: null,
   srStatus: null,
   undoBar: null,
   undoText: null,
-  undoBtn: null,
+  undoBtn: null
 };
 
 // ========================================
@@ -136,12 +140,12 @@ const elements = {
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('SideMind initializing...');
-  
+
   cacheElements();
   await loadFromStorage();
   setupEventListeners();
   initializeUI();
-  
+
   console.log('SideMind initialized successfully');
 });
 
@@ -157,7 +161,6 @@ function cacheElements() {
   elements.messagesList = document.getElementById('messagesList');
   elements.welcomeMessage = document.getElementById('welcomeMessage');
   elements.chatHistoryDropdown = document.getElementById('chatHistoryDropdown');
-  elements.dropdownOverlay = document.querySelector('.dropdown-overlay');
   elements.closeBtn = document.querySelector('.close-btn');
   elements.chatHistoryList = document.getElementById('chatHistoryList');
   elements.scrollBottomBtn = document.getElementById('scrollBottomBtn');
@@ -165,6 +168,16 @@ function cacheElements() {
   elements.undoBar = document.getElementById('undoBar');
   elements.undoText = document.getElementById('undoText');
   elements.undoBtn = document.getElementById('undoBtn');
+  [
+    'generationStatus',
+    'historySearch',
+    'historyUndo',
+    'historyUndoText',
+    'historyUndoBtn',
+    'notifications'
+  ].forEach((id) => {
+    elements[id] = document.getElementById(id);
+  });
 }
 
 // Setup Event Listeners
@@ -174,24 +187,30 @@ function setupEventListeners() {
   elements.newChatBtn.addEventListener('click', createNewSession);
   elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
-  
+
   elements.messageInput.addEventListener('input', handleInputChange);
   elements.messageInput.addEventListener('keydown', handleInputKeydown);
-  
+
   elements.chatHistoryBtn.addEventListener('click', openChatHistory);
   elements.closeBtn.addEventListener('click', closeChatHistory);
-  elements.dropdownOverlay.addEventListener('click', closeChatHistory);
-  
+  elements.chatHistoryDropdown.addEventListener('click', handleHistoryBackdrop);
+  elements.chatHistoryDropdown.addEventListener('cancel', handleHistoryCancel);
+  elements.historySearch.addEventListener('input', renderChatHistory);
+  elements.historyUndoBtn.addEventListener('click', applyUndo);
+  document.addEventListener('selectionchange', resumeSelectedDisplays);
+  window.addEventListener('resize', autoResizeTextarea);
+  window.addEventListener('pagehide', flushSidebarSaves);
+
   elements.messagesList.addEventListener('scroll', handleScroll);
   elements.scrollBottomBtn.addEventListener('click', () => scrollToBottom(true));
   elements.undoBtn.addEventListener('click', applyUndo);
 
   document.addEventListener('keydown', handleGlobalKeydown);
-  
+
   // Listen for config changes
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes.config) {
-      state.config = { ...state.config, ...changes.config.newValue };
+      state.config = { ...state.config, ...changes.config.newValue, ...pendingConfigChanges };
       updateModelSelector();
       updateSystemPromptSelector();
       updateInputState();
@@ -200,28 +219,24 @@ function setupEventListeners() {
       applyTheme();
     }
   });
-  
-  // Network status monitoring
-  window.addEventListener('offline', () => {
-    if (state.isStreaming) {
-      handleStopGeneration();
-      showError('Network connection lost. Please try again.');
-    }
-  });
+
+  window.addEventListener('offline', handleOffline);
 }
 
 // Initialize UI
 function initializeUI() {
+  applyTheme();
+  applyFontSettings();
   updateModelSelector();
   updateSystemPromptSelector();
   restoreDraft();
-  
+
   if (state.currentSessionId) {
     renderMessages();
   } else {
     showWelcomeMessage();
   }
-  
+
   updateInputState();
 }
 
@@ -232,7 +247,7 @@ function initializeUI() {
 async function loadFromStorage() {
   try {
     const result = await chrome.storage.sync.get(['config']);
-    
+
     if (!result.config) {
       const localResult = await chrome.storage.local.get(['config']);
       if (localResult.config) {
@@ -240,13 +255,13 @@ async function loadFromStorage() {
         result.config = localResult.config;
       }
     }
-    
+
     if (result.config) {
       state.config = { ...state.config, ...result.config };
       applyFontSettings();
       applyTheme();
     }
-    
+
     const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId', 'drafts']);
 
     if (localResult.sessions) {
@@ -256,15 +271,14 @@ async function loadFromStorage() {
     if (localResult.drafts) {
       state.drafts = localResult.drafts;
     }
-    
+
     if (localResult.currentSessionId) {
       state.currentSessionId = localResult.currentSessionId;
     }
-    
+
     if (!state.currentSessionId) {
       await createNewSession();
     }
-
   } catch (error) {
     console.error('Storage load error:', error);
     await createNewSession();
@@ -273,7 +287,6 @@ async function loadFromStorage() {
 
 async function saveToStorage() {
   try {
-    await chrome.storage.sync.set({ config: state.config });
     await chrome.storage.local.set({
       sessions: state.sessions,
       currentSessionId: state.currentSessionId,
@@ -289,6 +302,42 @@ let saveTimeout = null;
 function debouncedSave() {
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => saveToStorage(), 1000);
+}
+
+// Configuration writes are separate from transcript writes: a sync quota or
+// connection failure must never prevent a local conversation from being saved.
+let configSaveTimer = null;
+let pendingConfigChanges = {};
+let configWriteQueue = Promise.resolve();
+function saveConfigSoon(changes) {
+  pendingConfigChanges = { ...pendingConfigChanges, ...changes };
+  clearTimeout(configSaveTimer);
+  configSaveTimer = setTimeout(persistConfig, 450);
+}
+
+function persistConfig() {
+  clearTimeout(configSaveTimer);
+  configSaveTimer = null;
+  const changes = { ...pendingConfigChanges };
+  configWriteQueue = configWriteQueue.then(async () => {
+    try {
+      const result = await chrome.storage.sync.get(['config']);
+      const config = { ...state.config, ...result.config, ...changes };
+      await chrome.storage.sync.set({ config });
+      Object.keys(changes).forEach((key) => {
+        if (pendingConfigChanges[key] === changes[key]) delete pendingConfigChanges[key];
+      });
+    } catch (error) {
+      console.error('Configuration save error:', error);
+      showNotification('Could not save your model selection. Select it again to retry.');
+    }
+  });
+}
+
+function flushSidebarSaves() {
+  clearTimeout(saveTimeout);
+  if (configSaveTimer !== null) persistConfig();
+  saveToStorage();
 }
 
 // ----------------------------------------
@@ -321,8 +370,9 @@ function persistDrafts() {
     draftTimeout = null;
   }
 
-  chrome.storage.local.set({ drafts: state.drafts })
-    .catch(error => console.error('Draft save error:', error));
+  chrome.storage.local
+    .set({ drafts: state.drafts })
+    .catch((error) => console.error('Draft save error:', error));
 }
 
 function restoreDraft() {
@@ -349,12 +399,15 @@ function offerUndo(text, restore) {
   pendingUndo = { restore, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
   elements.undoText.textContent = text;
   elements.undoBar.classList.remove('hidden');
+  elements.historyUndoText.textContent = text;
+  elements.historyUndo.classList.remove('hidden');
 }
 
 function clearUndo() {
   if (pendingUndo?.timer) clearTimeout(pendingUndo.timer);
   pendingUndo = null;
   elements.undoBar?.classList.add('hidden');
+  elements.historyUndo?.classList.add('hidden');
 }
 
 async function applyUndo() {
@@ -374,17 +427,13 @@ async function applyUndo() {
 // stop it first - otherwise the request keeps burning tokens into a session
 // nobody is looking at, and cleanupStreaming can no longer find its message.
 async function stopStreamingIfActive() {
-  if (!state.isStreaming) return;
-
-  await handleStopGeneration();
-  // Give the abort time to propagate through the reader
-  await new Promise(resolve => setTimeout(resolve, 100));
+  if (state.generationDone) await handleStopGeneration();
 }
 
 async function createNewSession() {
   await stopStreamingIfActive();
 
-  const sessionId = Date.now().toString();
+  const sessionId = crypto.randomUUID();
   state.sessions[sessionId] = {
     messages: [],
     title: 'New Chat',
@@ -394,6 +443,8 @@ async function createNewSession() {
   };
   state.currentSessionId = sessionId;
   state.userScrolledUp = false;
+  state.readingResponse = false;
+  state.followOutput = false;
   clearUndo();
 
   saveToStorage();
@@ -410,6 +461,8 @@ async function switchSession(sessionId) {
   clearOldCacheEntries();
   state.currentSessionId = sessionId;
   state.userScrolledUp = false;
+  state.readingResponse = false;
+  state.followOutput = false;
   clearUndo();
   saveToStorage();
   renderMessages();
@@ -426,14 +479,15 @@ async function deleteSession(sessionId) {
   }
 
   const removed = state.sessions[sessionId];
-  
+  const removedDraft = state.drafts[sessionId];
+
   // Clear cache for this session
   if (state.sessions[sessionId].messages) {
-    state.sessions[sessionId].messages.forEach(msg => {
+    state.sessions[sessionId].messages.forEach((msg) => {
       messageElementCache.delete(msg.id);
     });
   }
-  
+
   delete state.sessions[sessionId];
   delete state.drafts[sessionId];
 
@@ -441,8 +495,8 @@ async function deleteSession(sessionId) {
   if (state.currentSessionId === sessionId) {
     const remaining = Object.keys(state.sessions);
     if (remaining.length > 0) {
-      const recent = remaining.sort((a, b) =>
-        new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
+      const recent = remaining.sort(
+        (a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
       )[0];
       state.currentSessionId = recent;
       restoreDraft();
@@ -457,11 +511,12 @@ async function deleteSession(sessionId) {
 
   offerUndo(`Deleted "${removed.title}"`, () => {
     state.sessions[sessionId] = removed;
+    if (removedDraft) state.drafts[sessionId] = removedDraft;
     saveToStorage();
     renderChatHistory();
   });
 
-  if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
+  if (elements.chatHistoryDropdown.open) {
     renderChatHistory();
   }
 }
@@ -477,27 +532,27 @@ function titleFromContent(content) {
 function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
-  
+
   const message = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     role,
     content,
     reasoning,
     reasoningCollapsed,
     timestamp: new Date().toISOString()
   };
-  
+
   session.messages.push(message);
-  
+
   session.timestamp = new Date().toISOString();
   session.modelUsed = state.config.selectedModel;
   session.systemPromptId = state.config.selectedSystemPrompt;
-  
+
   // Auto-generate title from first user message
   if (role === 'user' && session.messages.length === 1) {
     session.title = titleFromContent(content);
   }
-  
+
   debouncedSave();
   renderMessages();
 }
@@ -509,20 +564,22 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 function renderMessages() {
   // Every caller either replaces the transcript or appends to it; neither is a
   // state an open editor should survive
-  cancelEditing();
+  cancelEditing(false);
 
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
     showWelcomeMessage();
     return;
   }
-  
+
   hideWelcomeMessage();
-  
+
+  const previousScroll = elements.messagesList.scrollTop;
   const fragment = document.createDocumentFragment();
   let lastModel = null;
+  const latestAssistant = session.messages.findLast((message) => message.role === 'assistant');
 
-  session.messages.forEach(message => {
+  session.messages.forEach((message) => {
     // Mark where the conversation changed model, so a mixed transcript can be
     // read for what it is
     if (message.role === 'assistant' && message.modelUsed) {
@@ -540,11 +597,12 @@ function renderMessages() {
       messageElementCache.set(message.id, messageElement);
     }
 
+    messageElement.classList.toggle('latest', message.id === latestAssistant?.id);
     fragment.appendChild(messageElement);
   });
-  
-  elements.messagesList.innerHTML = '';
-  elements.messagesList.appendChild(fragment);
+
+  elements.messagesList.replaceChildren(fragment);
+  elements.messagesList.scrollTop = previousScroll;
   scrollToBottom();
 }
 
@@ -572,76 +630,88 @@ function createMessageElement(message) {
   const messageDiv = document.createElement('div');
   messageDiv.className = `message ${message.role}`;
   messageDiv.setAttribute('data-message-id', message.id);
-  
+
   // Header
   const header = document.createElement('div');
   header.className = 'message-header';
-  
+
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
   avatar.innerHTML = `<i class="fas fa-${MESSAGE_ICONS[message.role] || 'robot'}"></i>`;
 
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
-  senderName.textContent = MESSAGE_LABELS[message.role] || 'Assistant';
-  
+  senderName.textContent =
+    message.role === 'assistant'
+      ? describeModel(message.modelUsed)[1] || 'Assistant'
+      : MESSAGE_LABELS[message.role] || 'Assistant';
+
   header.appendChild(avatar);
   header.appendChild(senderName);
-  
+
   // Wrapper
   const wrapper = document.createElement('div');
   wrapper.className = 'message-wrapper';
-  
+
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
-  
+
   // Reasoning section (if exists)
   if (message.reasoning && message.reasoning.trim()) {
     bubble.appendChild(createReasoningSection(message));
   }
-  
+
   // Content
   const content = document.createElement('div');
   content.className = 'message-content';
-  
+
   if (message.role === 'user') {
     content.textContent = message.content;
   } else {
     content.innerHTML = renderMarkdown(message.content);
-    decorateCodeBlocks(content);
+    decorateMarkdown(content, !isStreamingMessage(message.id));
   }
 
   bubble.appendChild(content);
+  const status = document.createElement('span');
+  status.className = 'response-status';
+  bubble.appendChild(status);
+  updateResponseStatus(messageDiv, message, status);
 
   // Waiting indicator - the only feedback between "sent" and the first token,
   // which with reasoning models can be half a minute away
   if (message.role === 'assistant') {
     bubble.appendChild(createTypingIndicator(message));
   }
-  
+
   // Actions
   const actions = createMessageActions(message);
-  
+
   wrapper.appendChild(bubble);
   wrapper.appendChild(actions);
   messageDiv.appendChild(header);
   messageDiv.appendChild(wrapper);
-  
+
   return messageDiv;
 }
 
 function createReasoningSection(message) {
   const section = document.createElement('div');
-  section.className = message.reasoningCollapsed ? 'reasoning-section' : 'reasoning-section expanded';
-  
-  const header = document.createElement('div');
+  section.className = message.reasoningCollapsed
+    ? 'reasoning-section'
+    : 'reasoning-section expanded';
+
+  const header = document.createElement('button');
+  header.type = 'button';
   header.className = 'reasoning-header';
-  
+  header.setAttribute('aria-expanded', String(!message.reasoningCollapsed));
+  header.setAttribute('aria-controls', `reasoning-${message.id}`);
+
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.classList.add('reasoning-icon');
   icon.setAttribute('viewBox', '0 0 24 24');
   icon.innerHTML = '<polyline points="9,18 15,12 9,6"></polyline>';
-  
+
   const title = document.createElement('span');
   title.className = 'reasoning-title';
   title.textContent = reasoningTitle(message);
@@ -651,6 +721,7 @@ function createReasoningSection(message) {
   header.addEventListener('click', () => {
     section.classList.toggle('expanded');
     message.reasoningCollapsed = !section.classList.contains('expanded');
+    header.setAttribute('aria-expanded', String(!message.reasoningCollapsed));
     // Once opened or closed by hand, stop auto-folding this one
     message.reasoningTouched = true;
     debouncedSave();
@@ -658,11 +729,12 @@ function createReasoningSection(message) {
 
   const content = document.createElement('div');
   content.className = 'reasoning-content';
+  content.id = `reasoning-${message.id}`;
   content.innerHTML = renderMarkdown(message.reasoning, !isStreamingMessage(message.id));
-  
+
   section.appendChild(header);
   section.appendChild(content);
-  
+
   return section;
 }
 
@@ -673,8 +745,9 @@ function announce(text) {
 function createTypingIndicator(message) {
   const indicator = document.createElement('div');
   indicator.className = 'typing-indicator';
-  indicator.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span>' +
-    '<span class="typing-dot"></span><span class="typing-elapsed"></span>';
+  indicator.innerHTML =
+    '<span class="typing-dot"></span><span class="typing-dot"></span>' +
+    '<span class="typing-dot"></span><span class="typing-label">Waiting for a response</span><span class="typing-elapsed"></span>';
   indicator.hidden = !isAwaitingFirstToken(message);
   return indicator;
 }
@@ -684,9 +757,7 @@ function isStreamingMessage(messageId) {
 }
 
 function isAwaitingFirstToken(message) {
-  return isStreamingMessage(message.id) &&
-    !message.content?.trim() &&
-    !message.reasoning?.trim();
+  return isStreamingMessage(message.id) && !message.content?.trim() && !message.reasoning?.trim();
 }
 
 function formatDuration(ms) {
@@ -697,14 +768,14 @@ function formatDuration(ms) {
 
 function reasoningTitle(message) {
   if (message.thinkingMs != null) {
-    return `🤔 Thought for ${formatDuration(message.thinkingMs)}`;
+    return `Reasoning · ${formatDuration(message.thinkingMs)}`;
   }
 
   if (isStreamingMessage(message.id) && message.startedAt) {
-    return `🤔 Thinking… ${formatDuration(Date.now() - message.startedAt)}`;
+    return `Reasoning… ${formatDuration(Date.now() - message.startedAt)}`;
   }
 
-  return '🤔 Thought process';
+  return 'Reasoning / summary';
 }
 
 // Reasoning is considered finished the moment the first visible token lands
@@ -715,7 +786,7 @@ function markStreamProgress(message) {
   message.thinkingMs = Date.now() - message.startedAt;
 
   // Fold the chain of thought away so the answer is not pushed off screen
-  if (!message.reasoningTouched) {
+  if (!message.reasoningTouched && !state.userScrolledUp && !state.readingResponse) {
     message.reasoningCollapsed = true;
   }
 }
@@ -758,7 +829,7 @@ function stopStreamTicker() {
 // a finished message - mid-stream the whole subtree is replaced on the next
 // repaint, so any of this would be thrown away immediately.
 function decorateCodeBlocks(container) {
-  container.querySelectorAll('pre').forEach(pre => {
+  container.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.code-copy-btn')) return;
 
     const code = pre.querySelector('code');
@@ -810,29 +881,37 @@ async function copyCode(pre, button) {
   try {
     await navigator.clipboard.writeText(text);
     button.classList.add('copied');
+    button.setAttribute('aria-label', 'Copied');
     button.innerHTML = '<i class="fas fa-check"></i>';
+    announce('Copied to clipboard.');
 
     setTimeout(() => {
       button.classList.remove('copied');
+      button.setAttribute(
+        'aria-label',
+        button.classList.contains('code-copy-btn') ? 'Copy code' : 'Copy message'
+      );
       button.innerHTML = '<i class="fas fa-copy"></i>';
     }, 2000);
   } catch (error) {
     console.error('Copy failed:', error);
+    showNotification('Could not copy. Please select and copy the text manually.');
   }
 }
 
 function createMessageActions(message) {
   const actions = document.createElement('div');
   actions.className = 'message-actions';
-  
+
   // Copy button
   const copyBtn = document.createElement('button');
   copyBtn.className = 'copy-btn';
   copyBtn.setAttribute('aria-label', 'Copy message');
+  copyBtn.title = 'Copy message';
   copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
   copyBtn.addEventListener('click', () => copyMessage(message, copyBtn));
   actions.appendChild(copyBtn);
-  
+
   // Edit button - user messages only. Rewriting an assistant reply would be
   // putting words in the model's mouth, which is a different feature.
   if (message.role === 'user') {
@@ -853,7 +932,7 @@ function createMessageActions(message) {
   regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.innerHTML = '<i class="fas fa-redo"></i>';
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
-  
+
   // Cost of the turn: how long it took and what it burned
   const stats = document.createElement('span');
   stats.className = 'message-stats';
@@ -864,7 +943,7 @@ function createMessageActions(message) {
   time.className = 'time-display';
   time.textContent = formatTime(message.timestamp);
 
-  actions.appendChild(regenBtn);
+  if (message.role !== 'user') actions.appendChild(regenBtn);
   actions.appendChild(stats);
   actions.appendChild(time);
 
@@ -896,21 +975,25 @@ function applyMessageStats(element, message) {
 
 async function copyMessage(message, button) {
   try {
-    let text = message.content;
-    if (message.role === 'assistant' && message.reasoning) {
-      text = `🤔 Thinking:\n${message.reasoning}\n\n${text}`;
-    }
-    
+    const text = message.content;
+
     await navigator.clipboard.writeText(text);
     button.classList.add('copied');
+    button.setAttribute('aria-label', 'Copied');
     button.innerHTML = '<i class="fas fa-check"></i>';
-    
+    announce('Copied to clipboard.');
+
     setTimeout(() => {
       button.classList.remove('copied');
+      button.setAttribute(
+        'aria-label',
+        button.classList.contains('code-copy-btn') ? 'Copy code' : 'Copy message'
+      );
       button.innerHTML = '<i class="fas fa-copy"></i>';
     }, 2000);
   } catch (error) {
     console.error('Copy failed:', error);
+    showNotification('Could not copy. Please select and copy the text manually.');
   }
 }
 
@@ -943,25 +1026,34 @@ function startEditing(message) {
   input.value = message.content;
   input.setAttribute('aria-label', 'Edit message');
   input.addEventListener('input', () => resizeEditor(input));
-  input.addEventListener('keydown', event => {
+  input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       submitEdit(message, input.value);
     }
   });
 
+  const remaining = state.sessions[state.currentSessionId].messages;
+  const laterCount = remaining.length - remaining.findIndex((item) => item.id === message.id) - 1;
+  if (laterCount > 0) {
+    const warning = document.createElement('p');
+    warning.className = 'edit-warning';
+    warning.textContent = `Sending this edit replaces ${laterCount} later message${laterCount === 1 ? '' : 's'}. You can undo it.`;
+    editor.appendChild(warning);
+  }
+
   const controls = document.createElement('div');
   controls.className = 'message-edit-actions';
 
   const cancel = document.createElement('button');
   cancel.type = 'button';
-  cancel.className = 'edit-cancel-btn';
+  cancel.className = 'btn btn-small edit-cancel-btn';
   cancel.textContent = 'Cancel';
   cancel.addEventListener('click', cancelEditing);
 
   const submit = document.createElement('button');
   submit.type = 'button';
-  submit.className = 'edit-submit-btn';
+  submit.className = 'btn btn-primary btn-small edit-submit-btn';
   submit.textContent = 'Send';
   submit.addEventListener('click', () => submitEdit(message, input.value));
 
@@ -981,7 +1073,7 @@ function resizeEditor(input) {
   input.style.height = Math.min(Math.max(input.scrollHeight, 24), 240) + 'px';
 }
 
-function cancelEditing() {
+function cancelEditing(restoreFocus = true) {
   if (!editingMessageId) return;
 
   const element = messageElementCache.get(editingMessageId);
@@ -993,12 +1085,16 @@ function cancelEditing() {
 
   const content = element.querySelector('.message-content');
   if (content) content.hidden = false;
+  if (restoreFocus) element.querySelector('.edit-btn')?.focus({ preventScroll: true });
 }
 
 async function submitEdit(message, rawText) {
   const text = rawText.trim();
+  state.userScrolledUp = false;
+  state.readingResponse = false;
+  state.followOutput = false;
   const session = state.sessions[state.currentSessionId];
-  const index = session ? session.messages.findIndex(m => m.id === message.id) : -1;
+  const index = session ? session.messages.findIndex((m) => m.id === message.id) : -1;
 
   if (!text || index === -1) {
     cancelEditing();
@@ -1009,9 +1105,9 @@ async function submitEdit(message, rawText) {
   const previousTitle = session.title;
   const removed = session.messages.slice(index + 1);
 
-  cancelEditing();
+  cancelEditing(false);
 
-  if (text === previousText && removed.length === 0) return;
+  if (text === previousText) return;
 
   message.content = text;
   message.timestamp = new Date().toISOString();
@@ -1041,6 +1137,7 @@ async function submitEdit(message, rawText) {
     updateMessageDisplay(message.id);
   });
 
+  elements.messageInput.focus({ preventScroll: true });
   await sendMessageToAPI(text);
 }
 
@@ -1050,16 +1147,19 @@ function describeEditUndo(removedCount) {
 }
 
 async function regenerateMessage(message, button) {
-  if (state.isStreaming) return;
-  
+  if (state.isStreaming || state.generationDone) return;
+  state.userScrolledUp = false;
+  state.readingResponse = false;
+  state.followOutput = false;
+
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
-  
+
   button.classList.add('regenerating');
   button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-  
+
   try {
-    const index = session.messages.findIndex(m => m.id === message.id);
+    const index = session.messages.findIndex((m) => m.id === message.id);
     if (index === -1) return;
 
     // Regenerating from a user message replays it; from an assistant or error
@@ -1093,12 +1193,14 @@ async function regenerateMessage(message, button) {
     if (message.role === 'user') {
       await sendMessageToAPI(message.content);
     } else {
-      const lastUser = session.messages.slice().reverse().find(m => m.role === 'user');
+      const lastUser = session.messages
+        .slice()
+        .reverse()
+        .find((m) => m.role === 'user');
       if (lastUser) {
         await sendMessageToAPI(lastUser.content);
       }
     }
-
   } finally {
     button.classList.remove('regenerating');
     button.innerHTML = '<i class="fas fa-redo"></i>';
@@ -1124,7 +1226,7 @@ function renderMarkdown(text, cache = true) {
   }
 
   try {
-    const html = marked.parse(text);
+    const html = sanitizeMarkdown(marked.parse(text));
 
     if (cache && text.length > 20 && markdownCache.size < MAX_MARKDOWN_CACHE_SIZE) {
       markdownCache.set(text, html);
@@ -1133,19 +1235,135 @@ function renderMarkdown(text, cache = true) {
     return html;
   } catch (error) {
     console.error('Markdown error:', error);
-    return text;
+    return text.replace(
+      /[&<>]/g,
+      (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[character]
+    );
   }
+}
+
+// Keep provider-generated markup inside the transcript: no forms, autofocus,
+// style overrides or executable URLs can become part of the surrounding UI.
+function sanitizeMarkdown(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const allowedTags = new Set([
+    'P',
+    'BR',
+    'STRONG',
+    'B',
+    'EM',
+    'I',
+    'DEL',
+    'S',
+    'BLOCKQUOTE',
+    'UL',
+    'OL',
+    'LI',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'PRE',
+    'CODE',
+    'A',
+    'HR',
+    'TABLE',
+    'THEAD',
+    'TBODY',
+    'TFOOT',
+    'TR',
+    'TH',
+    'TD',
+    'IMG',
+    'SUP',
+    'SUB',
+    'SPAN',
+    'DETAILS',
+    'SUMMARY'
+  ]);
+  template.content.querySelectorAll('*').forEach((node) => {
+    if (!allowedTags.has(node.tagName)) {
+      node.remove();
+      return;
+    }
+    Array.from(node.attributes).forEach((attribute) => {
+      const { name, value } = attribute;
+      const isText = name === 'title' || (node.tagName === 'IMG' && name === 'alt');
+      const isLanguage =
+        node.tagName === 'CODE' && name === 'class' && /^language-[\w+#-]+$/.test(value);
+      const isNumber = ['colspan', 'rowspan', 'start'].includes(name) && /^\d{1,3}$/.test(value);
+      let isUrl = false;
+      if ((node.tagName === 'A' && name === 'href') || (node.tagName === 'IMG' && name === 'src')) {
+        try {
+          const url = new URL(value, location.href);
+          isUrl =
+            ['https:', 'http:'].includes(url.protocol) ||
+            (node.tagName === 'A' && url.protocol === 'mailto:');
+        } catch {}
+      }
+      if (!isText && !isLanguage && !isNumber && !isUrl) node.removeAttribute(name);
+    });
+  });
+  return template.innerHTML;
+}
+
+const deferredDisplays = new Set();
+
+function resumeSelectedDisplays() {
+  if (!document.getSelection()?.isCollapsed) return;
+  deferredDisplays.forEach(scheduleMessageDisplay);
+  deferredDisplays.clear();
+}
+
+function decorateMarkdown(container, finished = true) {
+  container.querySelectorAll('table').forEach((table) => {
+    if (table.parentElement.classList.contains('table-scroll')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-scroll';
+    wrapper.tabIndex = 0;
+    wrapper.setAttribute('role', 'region');
+    wrapper.setAttribute('aria-label', 'Scrollable table');
+    table.replaceWith(wrapper);
+    wrapper.appendChild(table);
+  });
+  container.querySelectorAll('a').forEach((link) => {
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+  });
+  if (finished) decorateCodeBlocks(container);
+}
+
+function updateResponseStatus(
+  element,
+  message,
+  status = element.querySelector('.response-status')
+) {
+  element.classList.toggle('streaming', isStreamingMessage(message.id));
+  if (!status) return;
+  status.textContent =
+    message.error || (message.stopped ? 'Generation stopped · partial response' : '');
+  status.classList.toggle('error', Boolean(message.error));
+  status.hidden = !status.textContent;
 }
 
 function updateMessageDisplay(messageId) {
   const messageElement = messageElementCache.get(messageId);
   if (!messageElement) return;
 
-  const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
+  const message = state.sessions[state.currentSessionId]?.messages.find((m) => m.id === messageId);
   if (!message) return;
 
   const streaming = isStreamingMessage(messageId);
+  const selection = document.getSelection();
+  if (selection && !selection.isCollapsed && messageElement.contains(selection.anchorNode)) {
+    deferredDisplays.add(messageId);
+    return;
+  }
   markStreamProgress(message);
+  const scrollBefore = elements.messagesList.scrollTop;
 
   // Update content
   const contentEl = messageElement.querySelector('.message-content');
@@ -1156,7 +1374,7 @@ function updateMessageDisplay(messageId) {
       contentEl.innerHTML = renderMarkdown(message.content, !streaming);
       // Decorating mid-stream is wasted work: the next repaint replaces the
       // whole subtree anyway
-      if (!streaming) decorateCodeBlocks(contentEl);
+      decorateMarkdown(contentEl, !streaming);
     }
   }
 
@@ -1173,10 +1391,7 @@ function updateMessageDisplay(messageId) {
       if (reasoningContent) {
         reasoningContent.innerHTML = renderMarkdown(message.reasoning, !streaming);
 
-        // Follow the thinking as it is written
-        if (streaming && !message.reasoningCollapsed) {
-          reasoningContent.scrollTop = reasoningContent.scrollHeight;
-        }
+        // Keep the reading position inside expanded reasoning too.
       }
 
       const title = reasoningSection.querySelector('.reasoning-title');
@@ -1184,6 +1399,9 @@ function updateMessageDisplay(messageId) {
     }
 
     reasoningSection.classList.toggle('expanded', !message.reasoningCollapsed);
+    reasoningSection
+      .querySelector('.reasoning-header')
+      .setAttribute('aria-expanded', String(!message.reasoningCollapsed));
   } else if (reasoningSection) {
     reasoningSection.remove();
   }
@@ -1199,6 +1417,8 @@ function updateMessageDisplay(messageId) {
     applyMessageStats(stats, message);
   }
 
+  updateResponseStatus(messageElement, message);
+  if (state.userScrolledUp || state.readingResponse) elements.messagesList.scrollTop = scrollBefore;
   scrollToBottom();
 }
 
@@ -1218,34 +1438,54 @@ function showWelcomeMessage() {
 function renderWelcomeMessage() {
   const container = elements.welcomeMessage;
   if (!container) return;
-
-  const hasProviders = state.config.providers.length > 0;
-  const hasModel = Boolean(state.config.selectedProvider && state.config.selectedModel);
-
-  container.innerHTML = '';
-
+  const hasProviders = state.config.providers.some((provider) => provider.models?.length);
+  const provider = getCurrentProvider();
+  const needsKey = provider && !provider.apiKey?.trim();
+  const hasModel = Boolean(provider && state.config.selectedModel && !needsKey);
+  const mark = document.createElement('div');
+  mark.className = 'welcome-mark';
+  mark.innerHTML = '<i class="fas fa-comment" aria-hidden="true"></i>';
   const heading = document.createElement('h2');
-  heading.textContent = 'Welcome to SideMind';
-
+  heading.textContent = hasProviders ? 'A little space to think.' : 'Make room for your next idea.';
   const body = document.createElement('p');
-  container.appendChild(heading);
-  container.appendChild(body);
-
-  if (!hasProviders) {
-    body.textContent = 'No AI provider configured yet. Add one to start chatting.';
-
+  body.textContent = !hasProviders
+    ? 'Connect an AI provider to start your first conversation.'
+    : hasModel
+      ? 'Ask, explore, or work through something together.'
+      : 'Choose a model above to get started.';
+  container.replaceChildren(mark, heading, body);
+  if (!hasProviders || needsKey) {
+    if (needsKey)
+      body.textContent = 'Add an API key for this provider in Settings to start chatting.';
     const action = document.createElement('button');
-    action.type = 'button';
-    action.className = 'welcome-action';
-    action.textContent = 'Add a provider';
+    action.className = 'btn btn-primary welcome-action';
+    action.textContent = needsKey ? 'Open settings' : 'Connect a provider';
     action.addEventListener('click', openOptions);
     container.appendChild(action);
     return;
   }
-
-  body.textContent = hasModel
-    ? 'Ask anything, or pick a different model and system prompt above.'
-    : 'Choose a model from the selector above to start chatting.';
+  const suggestions = document.createElement('div');
+  suggestions.className = 'prompt-suggestions';
+  [
+    [
+      'Polish a piece of writing',
+      'Please help me polish this text, keeping its original meaning:\n\n'
+    ],
+    ['Translate a passage', 'Please translate this passage and explain any important nuances:\n\n'],
+    ['Explain some code', 'Please explain what this code does and suggest improvements:\n\n']
+  ].forEach(([label, prompt]) => {
+    const button = document.createElement('button');
+    button.className = 'prompt-suggestion';
+    button.textContent = label;
+    button.disabled = !hasModel;
+    button.addEventListener('click', () => {
+      elements.messageInput.value = prompt;
+      handleInputChange();
+      elements.messageInput.focus();
+    });
+    suggestions.appendChild(button);
+  });
+  container.appendChild(suggestions);
 }
 
 function hideWelcomeMessage() {
@@ -1254,20 +1494,34 @@ function hideWelcomeMessage() {
 }
 
 function scrollToBottom(force = false) {
-  if (!elements.messagesList) return;
-
+  const list = elements.messagesList;
+  if (!list) return;
   if (force) {
     state.userScrolledUp = false;
-    elements.messagesList.scrollTo({
-      top: elements.messagesList.scrollHeight,
-      behavior: 'smooth'
+    state.readingResponse = false;
+    state.followOutput = state.isStreaming;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    list.scrollTo({
+      top: list.scrollHeight,
+      behavior: state.isStreaming || reduceMotion ? 'instant' : 'smooth'
     });
-  } else if (!state.userScrolledUp) {
-    // Instant during streaming - smooth scrolling would fight itself when the
-    // target moves on every repaint
-    elements.messagesList.scrollTop = elements.messagesList.scrollHeight;
+  } else {
+    const selection = document.getSelection();
+    if (selection && !selection.isCollapsed && list.contains(selection.anchorNode)) {
+      state.readingResponse = true;
+    }
+    const answer = messageElementCache.get(state.currentStreamingMessage?.id);
+    // Let the beginning of a long answer stay in view instead of chasing tokens.
+    if (
+      state.isStreaming &&
+      !state.followOutput &&
+      answer &&
+      answer.offsetHeight > list.clientHeight - 48
+    ) {
+      state.readingResponse = true;
+    }
+    if (!state.userScrolledUp && !state.readingResponse) list.scrollTop = list.scrollHeight;
   }
-
   updateScrollButton();
 }
 
@@ -1276,55 +1530,78 @@ function updateScrollButton() {
   if (!button) return;
 
   const session = state.sessions[state.currentSessionId];
-  const show = state.userScrolledUp && session?.messages.length > 0;
+  const show = (state.userScrolledUp || state.readingResponse) && session?.messages.length > 0;
 
   button.classList.toggle('hidden', !show);
   button.classList.toggle('has-new', show && state.isStreaming);
+  button.querySelector('span').textContent = state.isStreaming ? 'Follow response' : 'View latest';
 }
 
 function autoResizeTextarea() {
   const textarea = elements.messageInput;
   if (!textarea) return;
-  
+
   requestAnimationFrame(() => {
     textarea.style.height = 'auto';
-    const newHeight = Math.min(Math.max(textarea.scrollHeight + 2, 44), 320);
+    const newHeight = Math.min(
+      Math.max(textarea.scrollHeight + 2, 62),
+      Math.min(240, window.innerHeight * 0.3)
+    );
     textarea.style.height = newHeight + 'px';
   });
 }
 
 function updateInputState() {
-  const hasConfig = state.config.selectedProvider && state.config.selectedModel;
+  const provider = getCurrentProvider();
+  const hasConfig =
+    provider?.apiKey?.trim() &&
+    provider.models.some((model) => `${model.id} - ${provider.id}` === state.config.selectedModel);
   const hasMessage = elements.messageInput.value.trim().length > 0;
   const canSend = hasConfig && hasMessage && !state.isStreaming;
-  
+
   elements.sendBtn.disabled = !canSend;
-  
+
   if (state.isStreaming) {
     elements.sendBtn.setAttribute('data-state', 'stop');
     elements.sendBtn.setAttribute('aria-label', 'Stop generation');
+    elements.sendBtn.title = 'Stop generation (Esc)';
     elements.sendBtn.disabled = false;
   } else {
     elements.sendBtn.setAttribute('data-state', 'send');
     elements.sendBtn.setAttribute('aria-label', 'Send message');
+    elements.sendBtn.title = 'Send message';
   }
+  elements.modelSelector.disabled = state.isStreaming;
+  elements.systemPromptSelector.disabled = state.isStreaming;
+  elements.messageInput.placeholder = state.isStreaming
+    ? 'Write your next message…'
+    : hasConfig
+      ? 'Ask a question…'
+      : 'Connect a provider and choose a model…';
+  elements.generationStatus.textContent = state.isStreaming
+    ? 'Generating · you can draft your next message'
+    : hasConfig
+      ? 'Ready when you are'
+      : provider && !provider.apiKey?.trim()
+        ? 'Add this provider’s API key in Settings'
+        : 'Choose a model to start chatting';
 }
 
 function applyFontSettings() {
-  if (state.config.fontSize) {
-    document.documentElement.style.setProperty('--font-size', state.config.fontSize);
-  }
+  document.documentElement.style.setProperty('--font-size', state.config.fontSize || '14px');
   if (state.config.fontFamily) {
     document.documentElement.style.setProperty('--font-family', state.config.fontFamily);
+  } else {
+    document.documentElement.style.removeProperty('--font-family');
   }
 }
 
 function applyTheme() {
   const theme = state.config.theme || 'light';
   const html = document.documentElement;
-  
+
   html.classList.remove('light-theme', 'dark-theme');
-  
+
   if (theme === 'light') {
     html.classList.add('light-theme');
   } else if (theme === 'dark') {
@@ -1335,14 +1612,13 @@ function applyTheme() {
 function updateModelSelector() {
   elements.modelSelector.innerHTML = '<option value="">Select Model...</option>';
 
-  state.config.providers.forEach(provider => {
+  state.config.providers.forEach((provider) => {
     const optgroup = document.createElement('optgroup');
     // 非默认接口在分组标题上标注，便于区分同名 provider
-    optgroup.label = getApiType(provider) === 'responses'
-      ? `${provider.name} · Responses`
-      : provider.name;
+    optgroup.label =
+      getApiType(provider) === 'responses' ? `${provider.name} · Responses` : provider.name;
 
-    provider.models.forEach(model => {
+    provider.models.forEach((model) => {
       const option = document.createElement('option');
       // 使用复合键: "modelId - providerId"
       option.value = `${model.id} - ${provider.id}`;
@@ -1363,16 +1639,16 @@ function updateModelSelector() {
 
 function updateSystemPromptSelector() {
   elements.systemPromptSelector.innerHTML = '';
-  
-  state.config.systemPrompts.forEach(prompt => {
+
+  state.config.systemPrompts.forEach((prompt) => {
     const option = document.createElement('option');
     option.value = prompt.id;
     option.textContent = prompt.name;
-    
+
     if (state.config.selectedSystemPrompt === prompt.id) {
       option.selected = true;
     }
-    
+
     elements.systemPromptSelector.appendChild(option);
   });
 }
@@ -1387,7 +1663,7 @@ function handleModelChange(event) {
   if (!selectedValue) {
     state.config.selectedModel = null;
     state.config.selectedProvider = null;
-    debouncedSave();
+    saveConfigSoon({ selectedModel: null, selectedProvider: null });
     updateInputState();
     return;
   }
@@ -1402,14 +1678,14 @@ function handleModelChange(event) {
 
   state.config.selectedModel = selectedValue; // 存储复合键
   state.config.selectedProvider = providerId;
-  debouncedSave();
+  saveConfigSoon({ selectedModel: selectedValue, selectedProvider: providerId });
   updateInputState();
   renderWelcomeMessage();
 }
 
 function handleSystemPromptChange(event) {
   state.config.selectedSystemPrompt = event.target.value;
-  debouncedSave();
+  saveConfigSoon({ selectedSystemPrompt: state.config.selectedSystemPrompt });
 }
 
 function handleInputChange() {
@@ -1421,17 +1697,17 @@ function handleInputChange() {
 function handleInputKeydown(event) {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    if (!elements.sendBtn.disabled) {
+    if (!state.isStreaming && !elements.sendBtn.disabled) {
       handleSendMessage();
     }
   }
 }
 
-// Escape works wherever the focus is: stop generation first, otherwise close
-// whatever is open
+// Escape dismisses the active surface first, then stops generation.
 function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return;
 
+  if (elements.chatHistoryDropdown.open) return;
   if (editingMessageId) {
     event.preventDefault();
     cancelEditing();
@@ -1441,12 +1717,6 @@ function handleGlobalKeydown(event) {
   if (state.isStreaming) {
     event.preventDefault();
     handleStopGeneration();
-    return;
-  }
-
-  if (!elements.chatHistoryDropdown.classList.contains('hidden')) {
-    event.preventDefault();
-    closeChatHistory();
   }
 }
 
@@ -1457,15 +1727,18 @@ function handleScroll() {
   const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
   state.userScrolledUp = distanceFromBottom > 50;
+  if (state.userScrolledUp) state.followOutput = false;
   updateScrollButton();
 }
 
 async function handleSendMessage() {
   const message = elements.messageInput.value.trim();
-  if (!message || elements.sendBtn.disabled) return;
-  
+  if (!message || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
+
   state.userScrolledUp = false;
-  
+  state.readingResponse = false;
+  state.followOutput = false;
+
   clearUndo();
   addMessage('user', message);
 
@@ -1473,24 +1746,18 @@ async function handleSendMessage() {
   clearDraft();
   autoResizeTextarea();
   updateInputState();
-  
+  elements.messageInput.focus();
+
   await sendMessageToAPI(message);
 }
 
 async function handleStopGeneration() {
-  if (!state.isStreaming || !state.abortController) return;
-  
-  console.log('Stopping generation...');
-  
-  // Mark as not streaming immediately
-  state.isStreaming = false;
-  updateInputState();
-  
-  // Abort the request
+  if (!state.abortController) return;
+  const done = state.generationDone;
   state.abortController.abort();
-  
-  // Give abort time to propagate
-  await new Promise(resolve => setTimeout(resolve, 100));
+  elements.sendBtn.disabled = true;
+  elements.generationStatus.textContent = 'Stopping…';
+  if (done) await done;
 }
 
 async function handleSendOrStop() {
@@ -1506,110 +1773,171 @@ function openOptions() {
 }
 
 function openChatHistory() {
-  elements.chatHistoryDropdown.classList.remove('hidden');
+  elements.historySearch.value = '';
   renderChatHistory();
+  elements.chatHistoryDropdown.showModal();
+  elements.historySearch.focus();
 }
 
 function closeChatHistory() {
-  elements.chatHistoryDropdown.classList.add('hidden');
+  elements.chatHistoryDropdown.close();
 }
 
-// `modelUsed` holds the composite "modelId - providerId" key. Matching it
-// against a bare model id never succeeded, so every history row fell back to
-// "Unknown".
+function handleHistoryCancel(event) {
+  event.preventDefault();
+  closeChatHistory();
+}
+
+function handleHistoryBackdrop(event) {
+  if (event.target !== elements.chatHistoryDropdown) return;
+  const bounds = elements.chatHistoryDropdown.getBoundingClientRect();
+  if (
+    event.clientX < bounds.left ||
+    event.clientX > bounds.right ||
+    event.clientY < bounds.top ||
+    event.clientY > bounds.bottom
+  )
+    closeChatHistory();
+}
+
+async function handleOffline() {
+  const message = state.currentStreamingMessage;
+  if (!message) return;
+  message.error =
+    'Connection lost. This response may be incomplete. Check your connection and retry.';
+  await handleStopGeneration();
+}
+
+function showNotification(text) {
+  const notification = document.createElement('div');
+  notification.className = 'notification';
+  notification.textContent = text;
+  elements.notifications.replaceChildren(notification);
+  setTimeout(() => notification.remove(), 5000);
+}
+
 function describeModel(modelUsed) {
   if (!modelUsed) return [];
 
   const [modelId, providerId] = String(modelUsed).split(' - ');
 
   const provider = providerId
-    ? state.config.providers.find(p => p.id === providerId)
-    // Sessions written before the composite key stored a bare model id
-    : state.config.providers.find(p => p.models.some(m => m.id === modelId));
+    ? state.config.providers.find((p) => p.id === providerId)
+    : // Sessions written before the composite key stored a bare model id
+      state.config.providers.find((p) => p.models.some((m) => m.id === modelId));
 
-  const model = provider?.models.find(m => m.id === modelId);
+  const model = provider?.models.find((m) => m.id === modelId);
 
   return provider && model ? [provider.name, model.name] : [];
 }
 
 function renderChatHistory() {
-  elements.chatHistoryList.innerHTML = '';
-  
-  const sessionIds = Object.keys(state.sessions).sort((a, b) => 
-    new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
-  );
-  
-  if (sessionIds.length === 0) {
-    const empty = document.createElement('div');
+  elements.chatHistoryList.replaceChildren();
+  const query = elements.historySearch.value.trim().toLocaleLowerCase();
+  const sessionIds = Object.keys(state.sessions)
+    .filter((id) => {
+      const session = state.sessions[id];
+      return (
+        !query ||
+        `${session.title} ${session.messages.map((message) => message.content).join(' ')}`
+          .toLocaleLowerCase()
+          .includes(query)
+      );
+    })
+    .sort((a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp));
+  if (!sessionIds.length) {
+    const empty = document.createElement('p');
     empty.className = 'chat-history-empty';
-    empty.textContent = 'No chat history yet';
-    empty.style.cssText = 'padding: 20px; text-align: center; color: var(--text-tertiary);';
+    empty.textContent = query
+      ? 'No matching conversations. Try another search.'
+      : 'Your conversations will appear here.';
     elements.chatHistoryList.appendChild(empty);
     return;
   }
-  
-  sessionIds.forEach(sessionId => {
+  let lastGroup = '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  sessionIds.forEach((sessionId) => {
     const session = state.sessions[sessionId];
-    const item = document.createElement('div');
-    item.className = 'chat-history-item';
-    
-    if (sessionId === state.currentSessionId) {
-      item.style.backgroundColor = 'var(--accent-light)';
+    const date = new Date(session.timestamp);
+    const days = Math.floor((today - date) / 86400000);
+    const group =
+      date >= today ? 'Today' : days < 1 ? 'Yesterday' : days < 7 ? 'Previous 7 days' : 'Earlier';
+    if (group !== lastGroup) {
+      const heading = document.createElement('h4');
+      heading.className = 'history-group';
+      heading.textContent = group;
+      elements.chatHistoryList.appendChild(heading);
+      lastGroup = group;
     }
-    
-    const content = document.createElement('div');
+    const item = document.createElement('div');
+    item.className = `chat-history-item${sessionId === state.currentSessionId ? ' active' : ''}`;
+    const content = document.createElement('button');
     content.className = 'chat-history-content';
-    
+    if (sessionId === state.currentSessionId) content.setAttribute('aria-current', 'true');
     const title = document.createElement('div');
     title.className = 'chat-history-title';
     title.textContent = session.title;
-    
     const meta = document.createElement('div');
     meta.className = 'chat-history-meta';
-    
-    const date = new Date(session.timestamp);
-    const dateStr = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-    
-    const metaInfo = describeModel(session.modelUsed);
-    
-    const systemPrompt = state.config.systemPrompts.find(p => p.id === (session.systemPromptId || state.config.selectedSystemPrompt));
-    if (systemPrompt) {
-      metaInfo.push(systemPrompt.name);
-    }
-    
-    // Built as text nodes: provider, model and prompt names are user-supplied
-    const dateSpan = document.createElement('span');
-    dateSpan.textContent = dateStr;
-
-    const infoSpan = document.createElement('span');
-    infoSpan.textContent = metaInfo.join(' • ') || 'Unknown';
-
-    meta.appendChild(dateSpan);
-    meta.appendChild(infoSpan);
-    
-    content.appendChild(title);
-    content.appendChild(meta);
-    
-    const deleteBtn = document.createElement('button');
-    deleteBtn.className = 'delete-chat-btn';
-    deleteBtn.setAttribute('aria-label', 'Delete chat');
-    deleteBtn.innerHTML = '<i class="fas fa-times"></i>';
-    deleteBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      deleteSession(sessionId);
+    meta.textContent = `${date.toLocaleDateString()} · ${describeModel(session.modelUsed).join(' / ') || 'No model'}`;
+    content.append(title, meta);
+    content.addEventListener('click', () => switchSession(sessionId));
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+    [
+      ['Rename chat', 'pen', () => renameSession(sessionId, item)],
+      ['Delete chat', 'trash-alt', () => deleteSession(sessionId)]
+    ].forEach(([label, icon, handler]) => {
+      const button = document.createElement('button');
+      button.className = `icon-btn${icon === 'trash-alt' ? ' delete-chat-btn' : ''}`;
+      button.setAttribute('aria-label', label);
+      button.title = label;
+      button.innerHTML = `<i class="fas fa-${icon}" aria-hidden="true"></i>`;
+      button.addEventListener('click', handler);
+      actions.appendChild(button);
     });
-    
-    item.appendChild(content);
-    item.appendChild(deleteBtn);
-    item.addEventListener('click', () => switchSession(sessionId));
-    
+    item.append(content, actions);
     elements.chatHistoryList.appendChild(item);
   });
 }
 
-// ========================================
-// SIMPLIFIED API COMMUNICATION
-// ========================================
+function renameSession(sessionId, item) {
+  const session = state.sessions[sessionId];
+  const input = document.createElement('input');
+  input.className = 'history-rename-input';
+  input.setAttribute('aria-label', 'Conversation title');
+  input.value = session.title;
+  input.maxLength = 100;
+  let cancelled = false;
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelled = true;
+      input.blur();
+    }
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      input.blur();
+    }
+  });
+  input.addEventListener(
+    'blur',
+    () => {
+      if (!cancelled && input.value.trim()) {
+        session.title = input.value.trim();
+        saveToStorage();
+      }
+      renderChatHistory();
+      elements.historySearch.focus();
+    },
+    { once: true }
+  );
+  item.replaceChildren(input);
+  input.focus();
+  input.select();
+}
 
 async function sendMessageToAPI(_userMessage) {
   const provider = getCurrentProvider();
@@ -1617,26 +1945,25 @@ async function sendMessageToAPI(_userMessage) {
     showError('No provider configured. Please configure in options.');
     return;
   }
-  
-  // Stop any existing stream
-  if (state.isStreaming) {
-    await handleStopGeneration();
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  
+
+  if (state.isStreaming || state.generationDone) return;
+  state.generationDone = new Promise((resolve) => {
+    state.resolveGeneration = resolve;
+  });
+
   // Initialize streaming state
   state.userScrolledUp = false;
   state.abortController = new AbortController();
   state.isStreaming = true;
   updateInputState();
-  
+
   // Create assistant message
   const assistantMessage = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     role: 'assistant',
     content: '',
     reasoning: '',
-    reasoningCollapsed: false,
+    reasoningCollapsed: true,
     startedAt: Date.now(),
     modelUsed: state.config.selectedModel,
     timestamp: new Date().toISOString()
@@ -1647,7 +1974,7 @@ async function sendMessageToAPI(_userMessage) {
   renderMessages();
   startStreamTicker();
   announce('Waiting for the assistant…');
-  
+
   try {
     await streamResponse(provider, assistantMessage, state.abortController.signal);
   } catch (error) {
@@ -1656,13 +1983,19 @@ async function sendMessageToAPI(_userMessage) {
       handleApiError(error);
     }
   } finally {
-    cleanupStreaming(assistantMessage.id);
+    try {
+      cleanupStreaming(assistantMessage.id);
+    } finally {
+      state.resolveGeneration?.();
+      state.resolveGeneration = null;
+      state.generationDone = null;
+    }
   }
 }
 
 function getCurrentProvider() {
   if (!state.config.selectedProvider) return null;
-  return state.config.providers.find(p => p.id === state.config.selectedProvider);
+  return state.config.providers.find((p) => p.id === state.config.selectedProvider);
 }
 
 // ========================================
@@ -1723,9 +2056,11 @@ async function streamResponse(provider, assistantMessage, signal) {
 
   if (assistantMessage.incompleteReason) {
     const reason = assistantMessage.incompleteReason;
-    showError(reason === 'max_output_tokens'
-      ? 'The response reached the output token limit. Increase Max Completion Tokens in options and try again.'
-      : `The response was incomplete (${reason}). Please try again.`);
+    showError(
+      reason === 'max_output_tokens'
+        ? 'The response reached the output token limit. Increase Max Completion Tokens in options and try again.'
+        : `The response was incomplete (${reason}). Please try again.`
+    );
   }
 }
 
@@ -1770,7 +2105,9 @@ async function processStream(response, message, signal, adapter) {
       }
     }
   } catch (error) {
-    try { await reader.cancel(); } catch (cancelError) {}
+    try {
+      await reader.cancel();
+    } catch (cancelError) {}
     throw error;
   } finally {
     reader.releaseLock();
@@ -1925,12 +2262,12 @@ function applyResponsesResponse(data, message) {
   const contentParts = [];
   const reasoningParts = [];
 
-  (data.output || []).forEach(item => {
+  (data.output || []).forEach((item) => {
     if (item?.type === 'reasoning') {
-      (item.summary || []).forEach(part => part?.text && reasoningParts.push(part.text));
-      (item.content || []).forEach(part => part?.text && reasoningParts.push(part.text));
+      (item.summary || []).forEach((part) => part?.text && reasoningParts.push(part.text));
+      (item.content || []).forEach((part) => part?.text && reasoningParts.push(part.text));
     } else if (item?.type === 'message') {
-      (item.content || []).forEach(part => {
+      (item.content || []).forEach((part) => {
         if (part?.type === 'output_text' && part.text) {
           contentParts.push(part.text);
         } else if (part?.type === 'refusal' && part.refusal) {
@@ -1965,13 +2302,15 @@ function readUsage(usage) {
   const output = usage.output_tokens ?? usage.completion_tokens;
   if (input == null && output == null) return null;
 
-  const reasoning = usage.output_tokens_details?.reasoning_tokens ??
-    usage.completion_tokens_details?.reasoning_tokens ?? null;
+  const reasoning =
+    usage.output_tokens_details?.reasoning_tokens ??
+    usage.completion_tokens_details?.reasoning_tokens ??
+    null;
 
   return {
     input: input ?? 0,
     output: output ?? 0,
-    total: usage.total_tokens ?? ((input ?? 0) + (output ?? 0)),
+    total: usage.total_tokens ?? (input ?? 0) + (output ?? 0),
     reasoning
   };
 }
@@ -1979,13 +2318,13 @@ function readUsage(usage) {
 // Process think tags
 function processThinkTags(message) {
   if (!message.content) return;
-  
+
   const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
   const matches = [...message.content.matchAll(thinkRegex)];
-  
+
   if (matches.length > 0) {
-    const extracted = matches.map(m => m[1]).join('\n\n');
-    
+    const extracted = matches.map((m) => m[1]).join('\n\n');
+
     if (extracted.trim()) {
       if (message.reasoning) {
         message.reasoning += '\n\n' + extracted;
@@ -1993,7 +2332,7 @@ function processThinkTags(message) {
         message.reasoning = extracted;
       }
     }
-    
+
     message.content = message.content.replace(thinkRegex, '').trim();
   }
 }
@@ -2003,7 +2342,7 @@ function processThinkTags(message) {
 // ========================================
 
 function getSystemPromptContent() {
-  const prompt = state.config.systemPrompts.find(p => p.id === state.config.selectedSystemPrompt);
+  const prompt = state.config.systemPrompts.find((p) => p.id === state.config.selectedSystemPrompt);
   return prompt?.content || '';
 }
 
@@ -2017,15 +2356,16 @@ function getTemperature() {
   const temperature = state.config.temperature;
   // null/'' means "use the model default" - required by reasoning models that
   // reject the parameter outright.
-  return (temperature == null || temperature === '') ? null : temperature;
+  return temperature == null || temperature === '' ? null : temperature;
 }
 
 function getMaxTokens() {
   const value = String(state.config.max_completion_tokens ?? '').trim();
   if (!value) return null;
 
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function getReasoningEffort() {
@@ -2039,9 +2379,9 @@ function buildHistory() {
   if (!session) return [];
 
   return session.messages
-    .filter(m => m.id !== state.currentStreamingMessage?.id)
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({ role: m.role, content: m.content || '' }));
+    .filter((m) => m.id !== state.currentStreamingMessage?.id)
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m) => ({ role: m.role, content: m.content || '' }));
 }
 
 function buildMessages() {
@@ -2139,33 +2479,35 @@ function buildEndpointUrl(provider, endpoint) {
 
 async function makeApiRequest(provider, endpoint, body, signal) {
   const url = buildEndpointUrl(provider, endpoint);
-  
+
   const timeoutId = setTimeout(() => {
     console.warn('Request timeout (360s)');
   }, 360000);
-  
+
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`
+        Authorization: `Bearer ${provider.apiKey}`
       },
       body: JSON.stringify(body),
       signal
     });
-    
+
     clearTimeout(timeoutId);
-    
+
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      throw new Error(`API Error (${response.status}): ${error.error?.message || response.statusText}`);
+      throw new Error(
+        `API Error (${response.status}): ${error.error?.message || response.statusText}`
+      );
     }
-    
+
     if (!response.body) {
       throw new Error('Response body is null');
     }
-    
+
     return response;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -2178,6 +2520,8 @@ async function makeApiRequest(provider, endpoint, body, signal) {
 
 function cleanupStreaming(messageId) {
   const wasAborted = state.abortController?.signal.aborted;
+  const session = state.sessions[state.currentSessionId];
+  const message = session?.messages.find((item) => item.id === messageId);
 
   stopStreamTicker();
   pendingDisplayUpdates.delete(messageId);
@@ -2186,36 +2530,51 @@ function cleanupStreaming(messageId) {
 
   if (wasAborted && messageId) {
     const session = state.sessions[state.currentSessionId];
-    const message = session?.messages.find(m => m.id === messageId);
-    
+    const message = session?.messages.find((m) => m.id === messageId);
+
     if (message) {
       const hasContent = message.content?.trim() || message.reasoning?.trim();
-      
+
       if (hasContent) {
         message.timestamp = new Date().toISOString();
+        message.stopped = !message.error;
       } else {
-        session.messages = session.messages.filter(m => m.id !== messageId);
+        if (!message.error) {
+          session.messages = session.messages.filter((m) => m.id !== messageId);
+          messageElementCache.get(messageId)?.remove();
+          messageElementCache.delete(messageId);
+        }
       }
     }
   }
-  
+
   state.isStreaming = false;
   state.currentStreamingMessage = null;
   state.abortController = null;
 
-  announce(wasAborted ? 'Generation stopped.' : 'Response complete.');
+  announce(
+    message?.error
+      ? 'Response failed. You can retry.'
+      : wasAborted
+        ? 'Generation stopped.'
+        : 'Response complete.'
+  );
 
   saveToStorage();
-  renderMessages();
   // Repaint once more now that the message counts as finished: final markdown
   // goes into the cache, code blocks get their copy buttons, the reasoning
   // header settles on its final duration.
   updateMessageDisplay(messageId);
   updateInputState();
+  elements.generationStatus.textContent = message?.error
+    ? 'Response interrupted · retry is available'
+    : wasAborted
+      ? 'Generation stopped'
+      : 'Response complete';
 }
 
 function finalizeTiming(messageId) {
-  const message = state.sessions[state.currentSessionId]?.messages.find(m => m.id === messageId);
+  const message = state.sessions[state.currentSessionId]?.messages.find((m) => m.id === messageId);
   if (!message?.startedAt) return;
 
   message.durationMs = Date.now() - message.startedAt;
@@ -2223,35 +2582,44 @@ function finalizeTiming(messageId) {
   // A reply that was nothing but reasoning still deserves a duration
   if (message.thinkingMs == null && message.reasoning?.trim()) {
     message.thinkingMs = message.durationMs;
-    if (!message.reasoningTouched) {
+    if (!message.reasoningTouched && !state.userScrolledUp && !state.readingResponse) {
       message.reasoningCollapsed = true;
     }
   }
 }
 
 function handleApiError(error) {
-  // Remove failed message
-  if (state.currentStreamingMessage) {
-    const session = state.sessions[state.currentSessionId];
-    session.messages = session.messages.filter(m => m.id !== state.currentStreamingMessage.id);
-    renderMessages();
+  const message = state.currentStreamingMessage;
+  if (message) {
+    message.error = getErrorMessage(error);
+    updateMessageDisplay(message.id);
+    announce(`Error: ${message.error}`);
+  } else {
+    showError(getErrorMessage(error));
   }
-  
-  // Show error
-  const message = getErrorMessage(error);
-  showError(message);
 }
 
 const ERROR_HANDLERS = [
-  { patterns: ['unsupported parameter', 'unsupported value', 'unknown parameter', 'unrecognized request argument'],
-    message: 'The provider rejected a request parameter. Check the API type, temperature and reasoning settings in options.' },
+  {
+    patterns: [
+      'unsupported parameter',
+      'unsupported value',
+      'unknown parameter',
+      'unrecognized request argument'
+    ],
+    message:
+      'The provider rejected a request parameter. Check the API type, temperature and reasoning settings in options.'
+  },
   { patterns: ['401', 'authentication'], message: 'Authentication failed. Check your API key.' },
   { patterns: ['404'], message: 'Model not found. Check your configuration.' },
   { patterns: ['429', 'rate limit'], message: 'Rate limit exceeded. Try again later.' },
-  { patterns: ['cors', 'blocked'], message: () => {
-    const provider = getCurrentProvider();
-    return `CORS error. Need permission to access ${provider?.baseUrl}. Reconfigure in options.`;
-  }},
+  {
+    patterns: ['cors', 'blocked'],
+    message: () => {
+      const provider = getCurrentProvider();
+      return `CORS error. Need permission to access ${provider?.baseUrl}. Reconfigure in options.`;
+    }
+  },
   { patterns: ['network', 'fetch'], message: 'Network error. Check your connection.' }
 ];
 
@@ -2259,26 +2627,28 @@ function getErrorMessage(error) {
   const msg = error.message.toLowerCase();
 
   for (const { patterns, message } of ERROR_HANDLERS) {
-    if (patterns.some(pattern => msg.includes(pattern))) {
+    if (patterns.some((pattern) => msg.includes(pattern))) {
       return typeof message === 'function' ? message() : message;
     }
   }
 
   // Surface the provider's own message - far more useful than a generic string
-  return error.message.startsWith('API Error') ? error.message : 'An error occurred. Please try again.';
+  return error.message.startsWith('API Error')
+    ? error.message
+    : 'An error occurred. Please try again.';
 }
 
 function showError(message) {
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
-  
+
   const errorMsg = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     role: 'system',
     content: message,
     timestamp: new Date().toISOString()
   };
-  
+
   session.messages.push(errorMsg);
   announce(`Error: ${message}`);
   renderMessages();

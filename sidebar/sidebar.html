@@ -1,113 +1,126 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SideMind</title>
-  <link rel="stylesheet" href="sidebar.css">
-  <link rel="stylesheet" href="../assets/css/fontawesome.min.css">
-</head>
-<body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="header">
-      <div class="header-left">
-        <div class="header-content">
-          <h1 class="app-title">SideMind</h1>
-          <div class="status-indicator"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SideMind</title>
+    <link rel="stylesheet" href="../assets/css/ui.css" />
+    <link rel="stylesheet" href="../assets/css/fontawesome.min.css" />
+    <link rel="stylesheet" href="sidebar.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="header">
+        <div class="brand"><img src="../icons/icon48.png" alt="" /><span>SideMind</span></div>
+        <div class="header-right">
+          <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat">
+            <i class="fas fa-plus" aria-hidden="true"></i>
+          </button>
+          <button
+            id="chatHistoryBtn"
+            class="icon-btn"
+            aria-label="Chat history"
+            title="Chat history"
+            aria-haspopup="dialog"
+          >
+            <i class="fas fa-clock" aria-hidden="true"></i>
+          </button>
+          <button id="optionsBtn" class="icon-btn" aria-label="Settings" title="Settings">
+            <i class="fas fa-cog" aria-hidden="true"></i>
+          </button>
         </div>
-      </div>
+        <div class="model-control">
+          <label for="modelSelector">Model</label>
+          <select id="modelSelector" class="model-selector">
+            <option value="">Choose a model</option>
+          </select>
+        </div>
+      </header>
 
-      <div class="header-center">
-        <select id="modelSelector" class="model-selector">
-          <option value="">Select Model...</option>
-        </select>
-        <select id="systemPromptSelector" class="system-prompt-selector">
-          <option value="default">Default</option>
-        </select>
-      </div>
-
-      <div class="header-right">
-        <button id="chatHistoryBtn" class="icon-btn" aria-label="Chat History">
-          <i class="fas fa-clock"></i>
+      <main class="chat-container">
+        <div id="messagesList" class="messages-list" role="region" aria-label="Conversation"></div>
+        <div id="welcomeMessage" class="welcome-message"></div>
+        <button
+          id="scrollBottomBtn"
+          class="scroll-bottom-btn hidden"
+          aria-label="View latest response"
+        >
+          <i class="fas fa-arrow-down" aria-hidden="true"></i><span>View latest</span>
         </button>
-        <button id="optionsBtn" class="icon-btn" aria-label="Options">
-          <i class="fas fa-cog"></i>
-        </button>
-      </div>
-    </header>
+        <div id="undoBar" class="undo-bar hidden" role="status">
+          <span id="undoText" class="undo-text"></span
+          ><button id="undoBtn" class="undo-btn" type="button">Undo</button>
+        </div>
+        <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
+      </main>
 
-    <!-- Chat Messages Area -->
-    <main class="chat-container">
-      <div id="messagesList" class="messages-list" role="log">
-        <!-- Messages will be dynamically added here -->
-      </div>
-
-      <!-- Welcome message when no messages -->
-      <div id="welcomeMessage" class="welcome-message">
-        <h2>Welcome to SideMind</h2>
-        <p>Select a model and start chatting with AI assistants in your sidebar.</p>
-      </div>
-
-      <button id="scrollBottomBtn" class="scroll-bottom-btn hidden" aria-label="Scroll to latest message">
-        <i class="fas fa-arrow-down"></i>
-      </button>
-
-      <div id="undoBar" class="undo-bar hidden">
-        <span id="undoText" class="undo-text"></span>
-        <button id="undoBtn" class="undo-btn" type="button">Undo</button>
-      </div>
-
-      <!-- Short status announcements. The transcript itself is not a live
-           region: its content is rewritten on every streaming repaint, which
-           would make a screen reader replay the whole answer each time. -->
-      <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
-    </main>
-
-    <!-- Input Area -->
-    <footer class="input-container">
-      <div class="input-wrapper">
-        <button id="newChatBtn" class="icon-btn new-chat-btn" aria-label="New Chat">
-          <i class="fas fa-plus"></i>
-        </button>
-
-        <div class="input-field-wrapper">
+      <footer class="input-container">
+        <div id="generationStatus" class="generation-status" role="status" aria-live="polite">
+          Ready when you are
+        </div>
+        <div class="composer">
+          <label for="messageInput" class="sr-only">Message</label>
           <textarea
             id="messageInput"
             class="message-input"
-            placeholder="Type your message..."
-            rows="1"
+            placeholder="Ask a question…"
+            rows="2"
+            aria-describedby="inputHint"
           ></textarea>
-          <button id="sendBtn" class="icon-btn send-btn" aria-label="Send Message" disabled data-state="send">
-            <i class="fas fa-paper-plane send-icon"></i>
-            <i class="fas fa-spinner stop-icon hidden"></i>
-          </button>
-        </div>
-      </div>
-    </footer>
-
-    <!-- Chat History Dropdown -->
-    <div id="chatHistoryDropdown" class="chat-history-dropdown hidden">
-      <div class="dropdown-overlay"></div>
-      <div class="dropdown-panel">
-        <div class="dropdown-header">
-          <h3>Chat History</h3>
-          <button class="close-btn" aria-label="Close">
-            <i class="fas fa-chevron-down"></i>
-          </button>
-        </div>
-        <div class="dropdown-content">
-          <div id="chatHistoryList" class="chat-history-list">
-            <!-- Chat history items will be added here -->
+          <div class="composer-toolbar">
+            <div class="role-control">
+              <label for="systemPromptSelector">Role</label
+              ><select id="systemPromptSelector" class="system-prompt-selector">
+                <option value="default">Default</option>
+              </select>
+            </div>
+            <button
+              id="sendBtn"
+              class="icon-btn send-btn"
+              aria-label="Send message"
+              title="Send message"
+              disabled
+              data-state="send"
+            >
+              <i class="fas fa-arrow-up send-icon" aria-hidden="true"></i
+              ><i class="fas fa-stop stop-icon" aria-hidden="true"></i>
+            </button>
           </div>
         </div>
-      </div>
+        <p id="inputHint" class="input-hint">Enter to send · Shift + Enter for a new line</p>
+      </footer>
     </div>
-  </div>
 
-  
-  <script src="marked.umd.js"></script>
-  <script src="highlight.min.js"></script>
-  <script src="sidebar.js"></script>
-</body>
+    <dialog id="chatHistoryDropdown" class="chat-history-dropdown" aria-labelledby="historyTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h3 id="historyTitle">Your conversations</h3>
+          <button class="close-btn icon-btn" aria-label="Close history">
+            <i class="fas fa-times" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="history-search">
+          <label for="historySearch" class="sr-only">Search conversations</label
+          ><input
+            id="historySearch"
+            type="search"
+            placeholder="Search titles and messages…"
+            autocomplete="off"
+          />
+        </div>
+        <div class="dropdown-content">
+          <div id="chatHistoryList" class="chat-history-list"></div>
+        </div>
+        <div id="historyUndo" class="history-undo hidden">
+          <span id="historyUndoText"></span
+          ><button id="historyUndoBtn" class="undo-btn">Undo</button>
+        </div>
+      </div>
+    </dialog>
+    <div id="notifications" class="notification-region" role="status" aria-live="polite"></div>
+    <script src="../assets/js/ui.js"></script>
+    <script src="marked.umd.js"></script>
+    <script src="highlight.min.js"></script>
+    <script src="sidebar.js"></script>
+  </body>
 </html>

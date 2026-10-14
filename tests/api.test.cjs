@@ -8,7 +8,7 @@ function loadScript(file, globals = {}) {
   const context = vm.createContext({
     console: { log() {}, warn() {}, error() {} },
     document: { addEventListener() {} },
-    URL, AbortController, DOMException, TextDecoder, setTimeout, clearTimeout,
+    URL, AbortController, DOMException, TextDecoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
     ...globals
   });
   vm.runInContext(readFileSync(resolve(__dirname, '..', file), 'utf8'), context);
@@ -263,6 +263,11 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     showNotification = () => {};
     renderProviders = () => {};
     renderModelsList = () => {};
+    openDialog = () => {};
+    setDialogBusy = () => {};
+    updateEndpointPreview = () => {};
+    showDialogError = () => {};
+    closeProviderModal = () => {};
     globalThis.app = { elements, saveProvider, loadConfig, openProviderModal, getConfig: () => config };
   `, context);
   const { app } = context;
@@ -272,6 +277,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     providerModal: { classList: { add() {}, remove() {} } },
     providerName: value('OpenAI'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
     providerApiKey: value('test-key'), providerApiType: value('responses'),
+    toggleApiKey: { setAttribute() {} },
     modelsList: { querySelectorAll: () => [{ querySelector: () => value('test-model') }] }
   });
   await app.saveProvider();

@@ -1,0 +1,304 @@
+/* ===== Shared design tokens ===== */
+:root {
+  color-scheme: light;
+  --font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-size: 14px;
+  --bg-primary: #f6f7f9;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f2f5;
+  --text-primary: #20242c;
+  --text-secondary: #596170;
+  --text-tertiary: #687182;
+  --border-primary: #dce0e6;
+  --border-secondary: #e9ecf1;
+  --accent: #b94317;
+  --accent-hover: #96330f;
+  --accent-light: #fff0e8;
+  --focus-color: var(--accent);
+  --focus-bg: #b943171a;
+  --success: #15734d;
+  --danger: #bc2938;
+  --error-bg: #fff1f2;
+  --error-text: #a61f30;
+  --error-border: #f0bac2;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 2px 8px #18203008;
+  --shadow-lg: 0 16px 60px #18203026;
+}
+
+:root.dark-theme {
+  color-scheme: dark;
+  --bg-primary: #17191e;
+  --bg-secondary: #1e2128;
+  --bg-tertiary: #292d36;
+  --text-primary: #edf0f5;
+  --text-secondary: #b3bac7;
+  --text-tertiary: #9da7b7;
+  --border-primary: #3c424e;
+  --border-secondary: #303641;
+  --accent: #ffac85;
+  --accent-hover: #ffc3a6;
+  --accent-light: #382b26;
+  --focus-bg: #ffac8520;
+  --success: #79d8aa;
+  --danger: #ffa4b0;
+  --error-bg: #38252b;
+  --error-text: #ffadb7;
+  --error-border: #78414b;
+  --shadow-lg: 0 16px 60px #00000066;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light-theme):not(.dark-theme) {
+    color-scheme: dark;
+    --bg-primary: #17191e;
+    --bg-secondary: #1e2128;
+    --bg-tertiary: #292d36;
+    --text-primary: #edf0f5;
+    --text-secondary: #b3bac7;
+    --text-tertiary: #9da7b7;
+    --border-primary: #3c424e;
+    --border-secondary: #303641;
+    --accent: #ffac85;
+    --accent-hover: #ffc3a6;
+    --accent-light: #382b26;
+    --focus-bg: #ffac8520;
+    --success: #79d8aa;
+    --danger: #ffa4b0;
+    --error-bg: #38252b;
+    --error-text: #ffadb7;
+    --error-border: #78414b;
+    --shadow-lg: 0 16px 60px #00000066;
+  }
+}
+
+/* ===== Base and controls ===== */
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+button,
+a,
+input,
+textarea,
+select,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 3px;
+}
+input,
+textarea,
+select {
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  padding: 9px 12px;
+  min-width: 0;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+.hidden,
+[hidden] {
+  display: none !important;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: transparent;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+.btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--bg-secondary);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.btn-danger {
+  color: var(--danger);
+}
+.btn-small {
+  min-height: 34px;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.help-text,
+.parameter-description {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.field-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 6px 0 0;
+}
+[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+/* ===== Native dialogs ===== */
+dialog {
+  padding: 0;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  width: min(600px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+}
+dialog::backdrop {
+  background: #10162266;
+}
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 42px);
+}
+.modal-header,
+.modal-footer {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.modal-header {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-secondary);
+}
+.modal-header h3 {
+  font-size: 17px;
+  margin: 0;
+}
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.modal-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-secondary);
+}
+.modal-error {
+  margin: 0 20px 16px;
+  padding: 10px 12px;
+  background: var(--error-bg);
+  color: var(--error-text);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.notification-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2000;
+  max-width: min(400px, calc(100vw - 40px));
+}
+.notification {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  margin-top: 8px;
+}
+.notification.error {
+  border-color: var(--error-border);
+  color: var(--error-text);
+}
+
+/* ===== Motion ===== */
+button,
+a {
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

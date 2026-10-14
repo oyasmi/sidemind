@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.3.0-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 
@@ -34,8 +34,8 @@
 
 SideMind is designed with your privacy as the top priority:
 
-- **🛡️ 100% Local Storage** - Your conversations never leave your browser
-- **🔑 Secure API Keys** - API keys stored securely in Chrome storage
+- **🛡️ Local History** - Conversation history is stored in this browser; messages are sent to your chosen AI provider for replies
+- **🔑 Your Configuration** - Providers, API keys and preferences use Chrome sync storage
 - **📊 No Analytics** - We don't track, collect, or analyze your usage
 - **🌐 No Servers** - Works completely offline (except for API calls)
 - **🔍 Open Source** - Fully transparent code you can review yourself
@@ -110,7 +110,7 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 
 ### Chat Management
 - Multiple chat sessions with auto-titles
-- Chat history keep in local storage
+- Chat history stays in local storage, with search and inline renaming
 - Edit any message you sent and replay the conversation from there
 - Regenerate a response, with undo
 
@@ -125,12 +125,16 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - System prompt customization
 
 ### User Experience
-- Clean, modern interface
+- Shared light, dark and system themes across chat and settings
+- Task-oriented settings with automatic save feedback and a live appearance preview
 - Keyboard shortcuts (Enter to send, Shift+Enter for new line, Esc to stop)
 - Unsent drafts are kept per chat
 - Undo for regenerating and for deleting a chat
 - Auto-resizing input field
-- Smooth animations and transitions
+- Long streaming answers preserve your reading position; follow the output when you choose
+- Failed requests retain partial answers and offer retry
+- Keyboard-accessible dialogs with focus restoration and reduced-motion support
+- Configuration backups omit API keys by default, with a preview before importing
 - Responsive design for different sidebar widths
 
 ## 🛠️ Technical Details
@@ -150,6 +154,22 @@ node --test tests/api.test.cjs
 
 The checks cover provider selection, request formats, multi-turn history, both
 response modes, SSE chunk boundaries, cancellation, errors, and incomplete output.
+Browser interaction checks use optional Playwright tooling installed outside the
+extension (no runtime dependencies or build step):
+
+```bash
+npm install --prefix /tmp/sidemind-browser-tests playwright
+/tmp/sidemind-browser-tests/node_modules/.bin/playwright install chromium
+PLAYWRIGHT_MODULE=/tmp/sidemind-browser-tests/node_modules/playwright \
+  node --test tests/ui.test.cjs
+```
+
+Set `CHROMIUM_PATH` to an existing Chromium executable to use it instead of the
+Playwright download. Set `UI_SCREENSHOTS` to an existing directory to save visual
+previews. These checks exercise draft preservation, stream reading, stop/retry,
+selection, history, modal focus, configuration save failures and import previews.
+The suite uses fixture providers and makes no real AI requests.
+
 Build the extension package with `./build.sh`.
 
 ## 📄 License
