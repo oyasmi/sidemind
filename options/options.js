@@ -11,7 +11,7 @@ let config = {
   max_completion_tokens: '', // API standard naming
   stream: true,
   reasoning_effort: '', // '' = not sent; minimal | low | medium | high
-  reasoning_summary: 'auto', // Responses API only; 'off' disables it
+  reasoning_summary: 'off', // Responses API only; opt in for supported models
   systemPrompts: [
     {
       id: 'default',
@@ -404,7 +404,7 @@ function renderParameters() {
   elements.maxCompletionTokensInput.value = config.max_completion_tokens; // API standard naming
   elements.streamSelector.value = config.stream.toString();
   elements.reasoningEffortSelector.value = config.reasoning_effort || '';
-  elements.reasoningSummarySelector.value = config.reasoning_summary || 'auto';
+  elements.reasoningSummarySelector.value = config.reasoning_summary || 'off';
 
   // Load font settings
   elements.fontSizeSelector.value = config.fontSize || '14px';

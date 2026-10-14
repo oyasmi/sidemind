@@ -111,13 +111,13 @@
             <input type="checkbox" id="temperatureDefaultToggle">
             Use model default (omit temperature)
           </label>
-          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic. Reasoning models such as GPT-5 reject this parameter - omit it for those.</small>
+          <small class="parameter-description">Controls randomness in responses. Higher values like 0.8 make output more random, while lower values like 0.2 make it more focused and deterministic. Some reasoning models reject this parameter; use model default for those.</small>
         </div>
 
         <div class="parameter-group">
           <label for="maxCompletionTokensInput">Max Completion Tokens</label>
           <input type="text" id="maxCompletionTokensInput" placeholder="Leave empty to use model default" class="text-input">
-          <small class="parameter-description">Upper bound for the number of tokens that can be generated, including visible output and reasoning tokens. Leave empty to use model default.</small>
+          <small class="parameter-description">Upper bound for visible output and reasoning tokens. Sent as max_completion_tokens for Chat Completions or max_output_tokens for Responses. Leave empty to use model default.</small>
         </div>
 
         <div class="parameter-group">
@@ -144,12 +144,12 @@
         <div class="parameter-group">
           <label for="reasoningSummarySelector">Reasoning Summary</label>
           <select id="reasoningSummarySelector" class="select-input">
-            <option value="auto" selected>Auto</option>
+            <option value="off" selected>Off (not sent)</option>
+            <option value="auto">Auto</option>
             <option value="concise">Concise</option>
             <option value="detailed">Detailed</option>
-            <option value="off">Off</option>
           </select>
-          <small class="parameter-description">Responses API only. Reasoning models only reveal their thinking when a summary is requested, so this drives the collapsible reasoning panel in the sidebar.</small>
+          <small class="parameter-description">Responses API only. Select Auto, Concise, or Detailed to show a reasoning summary in the sidebar for models that support it. Raw reasoning tokens are not exposed.</small>
         </div>
       </section>
 

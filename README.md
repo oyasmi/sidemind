@@ -83,6 +83,21 @@ SideMind works with any OpenAI-compatible LLM API - both the classic **Chat Comp
 endpoint and OpenAI's newer **Responses** API. The API type is chosen per provider, so you can
 mix both in the same install.
 
+For OpenAI Responses, open **Options → Add Provider** (or edit an existing provider),
+set **Base URL** to `https://api.openai.com/v1`, and choose **API Type → Responses**.
+Save the provider, then select one of its models in the sidebar. Providers without an
+API type continue to use Chat Completions. You can configure the same service twice
+to keep both API types available in the model selector.
+
+Both APIs support streaming and complete responses, system prompts, and local
+conversation history. Responses requests use `instructions`, `input`, and
+`max_output_tokens`, with `store: false` and the local history sent on each turn.
+For models that reject temperature, enable **Use model default**. Reasoning summaries
+are off by default; enable **Reasoning Summary → Auto** for models that support them.
+If a response reaches its output limit, SideMind keeps the partial answer and
+shows a message explaining how to increase the limit.
+See the [official OpenAI Responses API documentation](https://developers.openai.com/api/reference/responses/overview).
+
 - **OpenAI** - GPT-3/4/5 (Chat Completions or Responses)
 - **Anthropic Claude** - Claude family
 - **Google Gemini** - Gemini Pro models
@@ -126,6 +141,16 @@ mix both in the same install.
 - **Chrome Storage API** for secure local data persistence
 - **Server-Sent Events** for real-time streaming
 - **Content Security Policy** compliant
+
+Run the API regression checks with Node.js 18+ (no dependencies or API key needed):
+
+```bash
+node --test tests/api.test.cjs
+```
+
+The checks cover provider selection, request formats, multi-turn history, both
+response modes, SSE chunk boundaries, cancellation, errors, and incomplete output.
+Build the extension package with `./build.sh`.
 
 ## 📄 License
 

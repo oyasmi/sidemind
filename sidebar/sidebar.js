@@ -18,7 +18,7 @@ const state = {
     max_completion_tokens: '',
     stream: true,
     reasoning_effort: '',
-    reasoning_summary: 'auto',
+    reasoning_summary: 'off',
     systemPrompts: [
       {
         id: 'default',
@@ -1720,12 +1720,20 @@ async function streamResponse(provider, assistantMessage, signal) {
   flushMessageDisplays();
   processThinkTags(assistantMessage);
   updateMessageDisplay(assistantMessage.id);
+
+  if (assistantMessage.incompleteReason) {
+    const reason = assistantMessage.incompleteReason;
+    showError(reason === 'max_output_tokens'
+      ? 'The response reached the output token limit. Increase Max Completion Tokens in options and try again.'
+      : `The response was incomplete (${reason}). Please try again.`);
+  }
 }
 
-// Simple stream processing
+// SSE events end at a blank line. Network chunks can split an event anywhere,
+// and a single event can contain multiple data lines.
 async function processStream(response, message, signal, adapter) {
   const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8', { stream: true });
+  const decoder = new TextDecoder('utf-8');
   let buffer = '';
 
   try {
@@ -1736,47 +1744,51 @@ async function processStream(response, message, signal, adapter) {
       }
 
       const { done, value } = await reader.read();
+      if (signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
 
       if (done) {
-        // Process any remaining buffer
+        buffer += decoder.decode();
+        // Tolerate providers that omit the final blank line.
         if (buffer.trim()) {
-          processStreamLine(buffer, message, adapter);
+          processStreamEvent(buffer, message, adapter);
         }
         break;
       }
 
-      // Decode chunk
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = (buffer + chunk).split('\n');
+      const events = (buffer + decoder.decode(value, { stream: true })).split(/\r?\n\r?\n/);
 
-      // Keep last incomplete line in buffer
-      buffer = lines.pop() || '';
+      buffer = events.pop() || '';
 
-      // Process complete lines
-      for (const line of lines) {
+      for (const event of events) {
         if (signal.aborted) {
           await reader.cancel();
           throw new DOMException('Aborted', 'AbortError');
         }
-        processStreamLine(line, message, adapter);
+        processStreamEvent(event, message, adapter);
       }
     }
   } catch (error) {
-    if (error.name === 'AbortError') {
-      try { await reader.cancel(); } catch (e) {}
-    }
+    try { await reader.cancel(); } catch (cancelError) {}
     throw error;
+  } finally {
+    reader.releaseLock();
   }
 }
 
-// Process single stream line
-function processStreamLine(line, message, adapter) {
-  line = line.trim();
-  // Ignore SSE framing lines (`event:`, `id:`, `retry:`, comments) - both APIs
-  // carry everything we need inside the `data:` payload itself.
-  if (!line || !line.startsWith('data:')) return;
+function processStreamEvent(event, message, adapter) {
+  const dataLines = [];
+  let eventType = '';
+  for (const line of event.split(/\r?\n/)) {
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).replace(/^ /, ''));
+    } else if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+    }
+  }
 
-  const data = line.slice(5).trim();
+  const data = dataLines.join('\n').trim();
   if (!data || data === '[DONE]') return;
 
   let parsed;
@@ -1787,6 +1799,8 @@ function processStreamLine(line, message, adapter) {
     console.warn('Parse error (ignored):', error.message);
     return;
   }
+
+  if (!parsed.type && eventType) parsed.type = eventType;
 
   if (adapter.applyStreamEvent(parsed, message)) {
     scheduleMessageDisplay(message.id);
@@ -1827,6 +1841,10 @@ function applyChatStreamEvent(parsed, message) {
 // Responses API: semantic events, each payload carries its own `type`.
 // Only text/reasoning deltas and terminal events are meaningful here.
 function applyResponsesStreamEvent(parsed, message) {
+  if (parsed.error) {
+    throw new Error(`API Error: ${parsed.error.message || 'Unknown streaming error'}`);
+  }
+
   switch (parsed.type) {
     case 'response.output_text.delta':
     case 'response.refusal.delta':
@@ -1847,17 +1865,19 @@ function applyResponsesStreamEvent(parsed, message) {
       return true;
 
     case 'response.completed':
-      message.usage = readUsage(parsed.response?.usage);
-      return false;
+    case 'response.incomplete':
+      // The terminal response is authoritative and may contain text or usage
+      // that was not included in deltas. Replace rather than append it.
+      applyResponsesResponse(parsed.response || {}, message);
+      if (parsed.type === 'response.incomplete') {
+        message.incompleteReason = parsed.response?.incomplete_details?.reason || 'unknown reason';
+      }
+      return true;
 
     case 'response.failed': {
       const error = parsed.response?.error;
       throw new Error(`API Error: ${error?.message || 'Response failed'}`);
     }
-
-    case 'response.incomplete':
-      console.warn('Response incomplete:', parsed.response?.incomplete_details?.reason || 'unknown reason');
-      return false;
 
     case 'error':
       throw new Error(`API Error: ${parsed.message || 'Unknown streaming error'}`);
@@ -1932,7 +1952,7 @@ function applyResponsesResponse(data, message) {
   }
 
   if (data.status === 'incomplete') {
-    console.warn('Response incomplete:', data.incomplete_details?.reason || 'unknown reason');
+    message.incompleteReason = data.incomplete_details?.reason || 'unknown reason';
   }
 }
 
@@ -2061,14 +2081,13 @@ function buildChatRequestBody() {
   return body;
 }
 
-// https://platform.openai.com/docs/api-reference/responses/create
+// https://developers.openai.com/api/reference/responses/overview
 function buildResponsesRequestBody() {
   const body = {
     model: getSelectedModelId(),
     input: buildHistory(),
     stream: state.config.stream !== false,
-    // Stateless by design: full history is replayed on every turn, nothing is
-    // retained server-side.
+    // Replay local history rather than relying on stored response IDs.
     store: false
   };
 
@@ -2095,8 +2114,7 @@ function buildResponsesRequestBody() {
     reasoning.effort = effort;
   }
 
-  // Reasoning models only emit a visible chain of thought when a summary is
-  // requested, so 'auto' is the default.
+  // Summaries are opt-in because not every model supports reasoning options.
   const summary = state.config.reasoning_summary;
   if (summary && summary !== 'off') {
     reasoning.summary = summary;
