@@ -8,9 +8,10 @@ function loadScript(file, globals = {}) {
   const context = vm.createContext({
     console: { log() {}, warn() {}, error() {} },
     document: { addEventListener() {} },
-    URL, AbortController, DOMException, TextDecoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
+    URL, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
     ...globals
   });
+  vm.runInContext(readFileSync(resolve(__dirname, '..', 'assets/js/ui.js'), 'utf8'), context);
   vm.runInContext(readFileSync(resolve(__dirname, '..', file), 'utf8'), context);
   return context;
 }
@@ -29,7 +30,8 @@ function sidebar() {
     globalThis.app = {
       state, getAdapter, buildChatRequestBody, buildResponsesRequestBody,
       buildEndpointUrl, streamResponse, processStream, processNonStream,
-      applyChatStreamEvent, applyResponsesStreamEvent, applyResponsesResponse
+      applyChatStreamEvent, applyResponsesStreamEvent, applyResponsesResponse,
+      createRequestWatchdog, responseCompletionNotice
     };
   `, context);
   const { app } = context;
@@ -245,7 +247,7 @@ for (const stream of [false, true]) {
     assert.equal(message.content, 'Partial');
     assert.equal(message.usage.total, 18);
     assert.equal(message.incompleteReason, 'max_output_tokens');
-    assert.match(context.errors[0], /Increase Max Completion Tokens/);
+    assert.match(app.responseCompletionNotice(message), /Increase Max Completion Tokens/);
   });
 }
 
@@ -296,4 +298,113 @@ test('provider API selection survives save, reload, edit and legacy configuratio
   assert.equal(app.elements.providerApiType.value, 'chat');
   app.openProviderModal();
   assert.equal(app.elements.providerApiType.value, 'chat');
+});
+
+test('Chat output limits are preserved in streaming and complete responses', async () => {
+  for (const stream of [false, true]) {
+    const context = sidebar();
+    const { app } = context;
+    app.state.config.stream = stream;
+    const choice = { delta: { content: 'Partial' }, message: { content: 'Partial' }, finish_reason: 'length' };
+    context.fetch = async () => stream ? sseResponse([{ choices: [choice] }]) : Response.json({ choices: [choice] });
+    const message = { id: 'pending' };
+    await app.streamResponse({ baseUrl: 'https://example.com/v1' }, message, new AbortController().signal);
+    assert.equal(message.content, 'Partial');
+    assert.equal(message.incompleteReason, 'max_output_tokens');
+    assert.match(app.responseCompletionNotice(message), /partial response/);
+  }
+});
+
+test('EOF without a completion marker is distinguished from a confirmed answer', async () => {
+  const { app } = sidebar();
+  for (const apiType of ['chat', 'responses']) {
+    const event = apiType === 'chat'
+      ? { choices: [{ delta: { content: 'Partial' } }] }
+      : { type: 'response.output_text.delta', delta: 'Partial' };
+    const message = {};
+    await app.processStream(new Response(`data: ${JSON.stringify(event)}\n\n`), message,
+      new AbortController().signal, app.getAdapter({ apiType }));
+    assert.equal(message.content, 'Partial');
+    assert.equal(message.completionUnconfirmed, true);
+    assert.match(app.responseCompletionNotice(message), /not confirmed/);
+  }
+});
+
+test('terminal events release an HTTP stream that stays open', async () => {
+  const { app } = sidebar();
+  for (const apiType of ['chat', 'responses']) {
+    let cancelled = false;
+    const terminal = apiType === 'chat' ? '[DONE]' : JSON.stringify({ type: 'response.completed', response: output() });
+    const response = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${terminal}\n\n`)); },
+      cancel() { cancelled = true; }
+    }));
+    const message = {};
+    await app.processStream(response, message, new AbortController().signal, app.getAdapter({ apiType }));
+    assert.equal(cancelled, true);
+    assert.equal(message.streamComplete, true);
+    assert.equal(message.completionUnconfirmed, undefined);
+    assert.equal(response.body.locked, false);
+  }
+});
+
+function fakeWatchdogTimers(context) {
+  const timers = new Map();
+  let id = 0;
+  context.setTimeout = (callback) => { timers.set(++id, callback); return id; };
+  context.clearTimeout = (timer) => timers.delete(timer);
+  return {
+    expire() { assert.equal(timers.size, 1); [...timers.values()][0](); },
+    get size() { return timers.size; }
+  };
+}
+
+test('a stalled request times out without becoming a user cancellation', async () => {
+  const context = sidebar();
+  const timers = fakeWatchdogTimers(context);
+  let requestSignal;
+  context.fetch = (_, { signal }) => {
+    requestSignal = signal;
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  };
+  const user = new AbortController();
+  const result = context.app.streamResponse({ baseUrl: 'https://example.com/v1' }, {}, user.signal);
+  timers.expire();
+  await assert.rejects(result, { name: 'TimeoutError' });
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(user.signal.aborted, false);
+  assert.equal(timers.size, 0);
+});
+
+test('a stream stalled after headers keeps its partial answer on timeout', async () => {
+  const context = sidebar();
+  const timers = fakeWatchdogTimers(context);
+  context.fetch = async (_, { signal }) => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n'));
+      signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+    }
+  }));
+  const message = {};
+  const result = context.app.streamResponse({ baseUrl: 'https://example.com/v1' }, message, new AbortController().signal);
+  await new Promise(setImmediate);
+  assert.equal(message.content, 'Partial');
+  timers.expire();
+  await assert.rejects(result, { name: 'TimeoutError' });
+  assert.equal(message.content, 'Partial');
+  assert.equal(timers.size, 0);
+});
+
+test('watchdog resets on progress and releases timers on user stop', () => {
+  const context = sidebar();
+  const timers = fakeWatchdogTimers(context);
+  const user = new AbortController();
+  const watchdog = context.app.createRequestWatchdog(user.signal);
+  watchdog.touch();
+  watchdog.touch();
+  assert.equal(timers.size, 1);
+  user.abort();
+  assert.equal(watchdog.signal.reason.name, 'AbortError');
+  watchdog.dispose();
+  assert.equal(timers.size, 0);
 });

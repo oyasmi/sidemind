@@ -86,16 +86,20 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}) {
       const listeners = [];
       window.__writes = [];
       window.__failSave = false;
-      window.__storage = { sync: { config: initialConfig }, local: initialLocal };
+      window.__failLocalSave = false;
+      window.__storage = { sync: { config: initialConfig }, local: initialLocal, session: {} };
       const storageArea = (area) => ({
-        get: async (keys) =>
-          Object.fromEntries(
+        get: async (keys) => {
+          if (area === 'local' && window.__storage.local.__failLoad) throw new Error('Fixture read failure');
+          return Object.fromEntries(
             keys
               .filter((key) => key in window.__storage[area])
               .map((key) => [key, structuredClone(window.__storage[area][key])])
-          ),
+          );
+        },
         set: async (data) => {
           if (window.__failSave && area === 'sync') throw new Error('Fixture storage failure');
+          if (window.__failLocalSave && area === 'local') throw new Error('Fixture local storage failure');
           const changes = {};
           for (const [key, value] of Object.entries(data)) {
             changes[key] = {
@@ -115,9 +119,11 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}) {
         storage: {
           sync: storageArea('sync'),
           local: storageArea('local'),
+          session: storageArea('session'),
           onChanged: { addListener: (listener) => listeners.push(listener) }
         },
         permissions: { contains: async () => true, request: async () => true },
+        windows: { getCurrent: async () => ({ id: 1 }) },
         runtime: {
           getManifest: () => ({ version }),
           openOptionsPage: () => {
@@ -130,6 +136,9 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}) {
       window.fetch = async (url, options) => {
         if (!String(url).startsWith('https://provider.test')) return originalFetch(url, options);
         window.__fetchCalls.push(JSON.parse(options.body));
+        if (window.__httpFailure) {
+          return Response.json({ error: { message: window.__httpFailure.message } }, { status: window.__httpFailure.status });
+        }
         let controller;
         const stream = new ReadableStream({
           start(value) {
@@ -167,7 +176,11 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}) {
                 `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: content } }] })}\n\n`
               )
             ),
-          complete: close,
+          complete: () => {
+            controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+            close();
+          },
+          unconfirmed: close,
           fail: () => fail(new Error('Network error'))
         };
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
@@ -409,6 +422,7 @@ browserTest(
       true
     );
     await page.locator('#historySearch').fill('pineapple');
+    await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
     assert.equal(await page.locator('.chat-history-item').count(), 1);
     await page.getByRole('button', { name: 'Rename chat' }).click();
     await page.getByRole('textbox', { name: 'Conversation title' }).fill('Fruit discussion');
@@ -434,7 +448,7 @@ browserTest(
   'settings autosave is debounced and invalid token limits do not overwrite saved values',
   async () => {
     const { page, errors } = await openPage('options');
-    await page.locator('.advanced-settings summary').click();
+    await page.locator('#conversation .advanced-settings summary').click();
     for (const value of ['1', '12', '120'])
       await page.locator('#maxCompletionTokensInput').fill(value);
     await page.waitForFunction(() => window.__storage.sync.config.max_completion_tokens === '120');
@@ -790,6 +804,18 @@ browserTest(
       await chat.waitForFunction(
         () => document.querySelector('#messageInput').value === 'Persistent local draft'
       );
+      await chat.evaluate(async () => {
+        const currentWindow = await chrome.windows.getCurrent();
+        await chrome.storage.session.set({
+          [`selection:${currentWindow.id}`]: { text: 'A page excerpt', title: 'Source article', url: 'https://example.com/article' }
+        });
+      });
+      await chat.waitForFunction(() => document.querySelector('#messageInput').value.includes('A page excerpt'));
+      assert.match(await chat.locator('#messageInput').inputValue(), /^Persistent local draft/);
+      await chat.waitForFunction(async () => {
+        const currentWindow = await chrome.windows.getCurrent();
+        return !(await chrome.storage.session.get([`selection:${currentWindow.id}`]))[`selection:${currentWindow.id}`];
+      });
       assert.deepEqual(errors, []);
     } finally {
       await context?.close();
@@ -840,6 +866,233 @@ browserTest('a pending sidebar model selection survives incoming appearance sett
     () => window.__storage.sync.config.selectedModel === 'other - provider'
   );
   assert.equal(await page.evaluate(() => window.__storage.sync.config.theme), 'dark');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('unsaved drafts remain visible and retry persists the complete current chat', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(() => { window.__failLocalSave = true; });
+  await page.locator('#messageInput').fill('A draft that must not disappear');
+  await page.evaluate(() => persistDrafts());
+  assert.equal(await page.locator('#storageStatus').isVisible(), true);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'A draft that must not disappear');
+  await page.evaluate(() => { window.__failLocalSave = false; });
+  await page.locator('#retryStorageBtn').click();
+  await page.waitForFunction(() => document.querySelector('#storageStatus').classList.contains('hidden'));
+  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), 'A draft that must not disappear');
+  assert.equal(await page.evaluate(() => Boolean(window.__storage.local.sessions[state.currentSessionId])), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a failed transcript load never overwrites existing history', async () => {
+  const existing = { old: { title: 'Keep this chat', timestamp: new Date().toISOString(), messages: [] } };
+  const { page, errors } = await openPage('sidebar', fixtureConfig, { sessions: existing, __failLoad: true });
+  assert.equal(await page.locator('#storageStatus').isVisible(), true);
+  assert.equal(await page.locator('#retryStorageBtn').textContent(), 'Reload');
+  await page.locator('#messageInput').fill('New draft');
+  await page.evaluate(() => saveToStorage());
+  assert.deepEqual(await page.evaluate(() => window.__storage.local.sessions), existing);
+  assert.equal(await page.evaluate(() => window.__writes.filter((write) => write.area === 'local').length), 0);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('folded reasoning skips parsing and catches up immediately on expansion', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  await page.evaluate(() => {
+    const parse = renderMarkdown;
+    window.__parseCalls = 0;
+    renderMarkdown = (...args) => { window.__parseCalls++; return parse(...args); };
+    for (let i = 0; i < 30; i++) {
+      state.currentStreamingMessage.reasoning = `**Reasoning ${i}**\n\n` + 'Detailed explanation. '.repeat(4000);
+      updateMessageDisplay(state.currentStreamingMessage.id);
+    }
+  });
+  assert.equal(await page.evaluate(() => window.__parseCalls), 0);
+  await page.locator('.reasoning-header').click();
+  assert.match(await page.locator('.reasoning-content').textContent(), /Reasoning 29/);
+  assert.equal(await page.evaluate(() => window.__parseCalls), 1);
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('long code can expand and copy completely after horizontal scrolling', async () => {
+  const { page, errors } = await openPage();
+  await page.setViewportSize({ width: 320, height: 640 });
+  const code = Array.from({ length: 40 }, (_, i) => `const line${i} = '${'long text '.repeat(30)}';`).join('\n');
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, 'writeText', { value: async (text) => { window.__copiedText = text; } });
+  });
+  await startResponse(page);
+  await page.evaluate((code) => { window.__stream.delta(`\`\`\`javascript\n${code}\n\`\`\``); window.__stream.complete(); }, code);
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.code-expand-btn').getAttribute('aria-expanded'), 'false');
+  await page.locator('.code-expand-btn').click();
+  assert.equal(await page.locator('.code-expand-btn').getAttribute('aria-expanded'), 'true');
+  await page.locator('.code-block pre').evaluate((pre) => { pre.scrollLeft = pre.scrollWidth; });
+  await page.locator('.code-copy-btn').click();
+  assert.equal((await page.evaluate(() => window.__copiedText)).trimEnd(), code);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.evaluate(() => updateMessageDisplay(state.sessions[state.currentSessionId].messages.at(-1).id));
+  assert.equal(await page.locator('.code-expand-btn').getAttribute('aria-expanded'), 'true');
+  if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/code-block.png` });
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('an unconfirmed completion stays visible in the transcript and Markdown export', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page, 'A useful discussion');
+  await delta(page, 'Partial answer');
+  await page.evaluate(() => window.__stream.unconfirmed());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.match(await page.locator('.message.assistant .response-status').textContent(), /Completion not confirmed/);
+  assert.equal(await page.locator('#sessionTitle').textContent(), 'A useful discussion');
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.locator('#chatHistoryBtn').click();
+  assert.equal(await page.evaluate(() => document.querySelector('#chatHistoryDropdown').scrollWidth <= document.querySelector('#chatHistoryDropdown').clientWidth), true);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export chat' }).click();
+  const file = await download;
+  const markdown = readFileSync(await file.path(), 'utf8');
+  assert.equal(file.suggestedFilename(), 'A useful discussion.md');
+  assert.match(markdown, /Partial answer/);
+  assert.match(markdown, /Completion not confirmed/);
+  assert.match(markdown, /Test provider \/ Test model/);
+  assert.equal(markdown.includes('fixture-key'), false);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('keyboard shortcuts focus input and preserve drafts across new chats', async () => {
+  const { page, errors } = await openPage();
+  const first = await page.evaluate(() => state.currentSessionId);
+  await page.locator('#messageInput').fill('Keep my first draft');
+  await page.locator('#newChatBtn').focus();
+  await page.keyboard.press('Shift+Escape');
+  assert.equal(await page.locator('#messageInput').evaluate((input) => input === document.activeElement), true);
+  await page.keyboard.press('Control+Shift+O');
+  await page.waitForFunction((first) => state.currentSessionId !== first, first);
+  assert.equal(await page.locator('#messageInput').inputValue(), '');
+  await page.evaluate((first) => switchSession(first), first);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep my first draft');
+  await page.locator('#chatHistoryBtn').click();
+  const current = await page.evaluate(() => state.currentSessionId);
+  await page.keyboard.press('Control+Shift+O');
+  assert.equal(await page.evaluate(() => state.currentSessionId), current);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('selected text and source append to a draft once and never auto-send', async () => {
+  const { page, errors } = await openPage();
+  await page.locator('#messageInput').fill('My existing question');
+  await page.evaluate(async () => {
+    await chrome.storage.session.set({ 'selection:2': { text: 'Another window' } });
+    await chrome.storage.session.set({ 'selection:1': { text: 'Quoted passage', title: 'Example article', url: 'https://example.com/article' } });
+    await selectionImportQueue;
+    await importSelectedText();
+  });
+  const draft = await page.locator('#messageInput').inputValue();
+  assert.match(draft, /^My existing question/);
+  assert.match(draft, /> Quoted passage/);
+  assert.match(draft, /Source: Example article\nhttps:\/\/example.com\/article/);
+  assert.equal(draft.split('Quoted passage').length, 2);
+  assert.equal(draft.includes('Another window'), false);
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), draft);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('UTF-8 sync quota errors keep role edits available for correction', async () => {
+  const { page, errors } = await openPage('options');
+  await page.locator('#addPromptBtn').click();
+  await page.locator('#promptName').fill('Large role');
+  await page.locator('#promptContent').fill('中文'.repeat(2500));
+  await page.locator('#promptSaveBtn').click();
+  await page.waitForFunction(() => document.querySelector('#promptModal .modal-error').textContent.includes('8 KB'));
+  assert.equal(await page.locator('#promptModal').evaluate((dialog) => dialog.open), true);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.systemPrompts.length), 1);
+  await page.locator('#promptContent').fill('A concise role');
+  await page.locator('#promptSaveBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#promptModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.systemPrompts.length), 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('idle timeout keeps the partial answer and the next draft usable', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(() => {
+    const schedule = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => schedule(callback,
+      delay === REQUEST_TIMEOUT_MS || delay === STREAM_IDLE_TIMEOUT_MS ? 500 : delay, ...args);
+  });
+  await startResponse(page);
+  await delta(page, 'Keep this partial reply');
+  await page.locator('#messageInput').fill('My next question');
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.match(await page.locator('.message.assistant .response-status').textContent(), /stopped arriving/);
+  assert.match(await page.locator('.message.assistant .message-content').textContent(), /Keep this partial reply/);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'My next question');
+  assert.equal(await page.locator('#sendBtn').isEnabled(), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('HTTP failures offer the relevant action and redact credentials from details', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(() => { window.__httpFailure = { status: 401, message: 'Invalid API key fixture-key' }; });
+  await page.locator('#messageInput').fill('A question');
+  await page.locator('#messageInput').press('Enter');
+  await page.waitForFunction(() => document.querySelector('.message.assistant .response-status.error'));
+  assert.match(await page.locator('.message.assistant .response-status').textContent(), /Access denied/);
+  await page.getByRole('button', { name: 'Open settings', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__openedOptions), true);
+  await page.locator('.response-details summary').click();
+  assert.match(await page.locator('.response-details pre').textContent(), /\[redacted\]/);
+  assert.equal(await page.evaluate(() => sessionMarkdown(state.sessions[state.currentSessionId]).includes('fixture-key')), false);
+  await page.evaluate(() => { window.__httpFailure = { status: 400, message: 'context_length_exceeded' }; });
+  await page.getByRole('button', { name: 'Retry response' }).click();
+  await page.waitForFunction(() => document.querySelector('.message.assistant .response-status')?.textContent.includes('context limit'));
+  await page.getByRole('button', { name: 'Start new chat' }).click();
+  await page.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 0);
+  assert.equal(await page.evaluate(() => Object.keys(state.sessions).length), 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('queued local writes preserve the latest draft when an earlier write is delayed', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(async () => {
+    await storageWriteQueue;
+    const set = chrome.storage.local.set;
+    let first = true;
+    chrome.storage.local.set = async (data) => {
+      if (first) {
+        first = false;
+        await new Promise((resolve) => { window.__releaseWrite = resolve; });
+      }
+      return set(data);
+    };
+  });
+  await page.locator('#messageInput').fill('Earlier draft');
+  await page.evaluate(() => { window.__firstWrite = persistDrafts(); });
+  await page.waitForFunction(() => Boolean(window.__releaseWrite));
+  await page.locator('#messageInput').fill('Latest draft');
+  await page.evaluate(async () => {
+    const latest = saveToStorage();
+    window.__releaseWrite();
+    await window.__firstWrite;
+    await latest;
+  });
+  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), 'Latest draft');
   assert.deepEqual(errors, []);
   await page.close();
 });

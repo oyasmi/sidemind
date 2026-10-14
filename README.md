@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 
@@ -111,6 +111,7 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 ### Chat Management
 - Multiple chat sessions with auto-titles
 - Chat history stays in local storage, with search and inline renaming
+- Export any conversation as Markdown, including reasoning, model details and partial-response notices
 - Edit any message you sent and replay the conversation from there
 - Regenerate a response, with undo
 
@@ -120,6 +121,7 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Configurable reasoning effort and summary detail
 - Markdown rendering
 - Syntax highlighting for 36 languages, with per-block copy buttons
+- Code toolbars stay visible during horizontal scrolling; long completed blocks can expand or collapse
 - Response time and token usage per message
 - Copy message content
 - System prompt customization
@@ -128,14 +130,36 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Shared light, dark and system themes across chat and settings
 - Task-oriented settings with automatic save feedback and a live appearance preview
 - Keyboard shortcuts (Enter to send, Shift+Enter for new line, Esc to stop)
+- Open the sidebar with Alt+Shift+S, start a chat with Ctrl/Cmd+Shift+O, and focus the input with Shift+Esc
+- Right-click selected webpage text to add it and its source to your current draft; review and send when ready
+- Current conversation titles and provider names remain visible while chatting
 - Unsent drafts are kept per chat
 - Undo for regenerating and for deleting a chat
 - Auto-resizing input field
 - Long streaming answers preserve your reading position; follow the output when you choose
 - Failed requests retain partial answers and offer retry
+- Request and stream-idle timeouts restore the input; output limits and unconfirmed completion remain visible in history
+- Local save failures offer retry without losing the in-memory draft; failed history loads cannot overwrite stored conversations
+- Oversized sync settings receive an actionable size warning while keeping edits available
 - Keyboard-accessible dialogs with focus restoration and reduced-motion support
 - Configuration backups omit API keys by default, with a preview before importing
 - Responsive design for different sidebar widths
+
+The selection context menu uses Chrome's `contextMenus` permission and only receives
+text you explicitly select. It does not extract the whole page or send a request
+automatically. Chrome 116+ is required. The opening shortcut can be changed at
+`chrome://extensions/shortcuts`; in-panel shortcuts leave dialogs and IME input alone.
+
+Streaming uses a two-minute request timeout and a three-minute idle timeout after
+headers arrive. Incoming stream chunks, including heartbeats, reset the idle timer.
+Compatible providers that omit completion markers still display their answer, with
+a notice that completion could not be confirmed. API calls are never automatically
+retried.
+
+Rendering skips folded reasoning until expansion and preserves unchanged Markdown
+subtrees. History search is debounced and caches searchable text; the Markdown cache
+is bounded by both entry count and text size. Storage stays on Chrome's existing
+sync/local APIs, without a database or new runtime dependencies.
 
 ## 🛠️ Technical Details
 
@@ -149,11 +173,12 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 Run the API regression checks with Node.js 18+ (no dependencies or API key needed):
 
 ```bash
-node --test tests/api.test.cjs
+node --test tests/api.test.cjs tests/background.test.cjs
 ```
 
 The checks cover provider selection, request formats, multi-turn history, both
-response modes, SSE chunk boundaries, cancellation, errors, and incomplete output.
+response modes, SSE chunk boundaries, cancellation, request and idle timeouts,
+terminal events, output limits, and the selection context menu.
 Browser interaction checks use optional Playwright tooling installed outside the
 extension (no runtime dependencies or build step):
 
@@ -167,7 +192,8 @@ PLAYWRIGHT_MODULE=/tmp/sidemind-browser-tests/node_modules/playwright \
 Set `CHROMIUM_PATH` to an existing Chromium executable to use it instead of the
 Playwright download. Set `UI_SCREENSHOTS` to an existing directory to save visual
 previews. These checks exercise draft preservation, stream reading, stop/retry,
-selection, history, modal focus, configuration save failures and import previews.
+selection, history, modal focus, local save recovery, configuration size limits,
+code expansion/copy, Markdown exports, shortcuts and import previews.
 The suite uses fixture providers and makes no real AI requests.
 
 Build the extension package with `./build.sh`.

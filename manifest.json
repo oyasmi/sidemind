@@ -1,11 +1,13 @@
 {
   "manifest_version": 3,
   "name": "SideMind",
-  "version": "1.5.0",
+  "version": "1.6.0",
+  "minimum_chrome_version": "116",
   "description": "AI Chat Assistant in Your Browser Sidebar",
   "permissions": [
     "storage",
     "sidePanel",
+    "contextMenus",
     "activeTab"
   ],
   "host_permissions": [
@@ -15,6 +17,13 @@
   ],
   "action": {
     "default_title": "Open SideMind"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      }
+    }
   },
   "background": {
     "service_worker": "background.js"

@@ -50,6 +50,11 @@ const messageElementCache = new Map();
 // Simplified markdown cache with automatic size control
 const markdownCache = new Map();
 const MAX_MARKDOWN_CACHE_SIZE = 100;
+const MAX_MARKDOWN_CACHE_CHARS = 1000000;
+let markdownCacheChars = 0;
+const renderedMarkdown = new WeakMap();
+const sessionSearchCache = new Map();
+let historySearchTimer = null;
 
 // ----------------------------------------
 // Throttled streaming updates
@@ -61,6 +66,7 @@ const pendingDisplayUpdates = new Set();
 let streamRenderTimer = null;
 
 function scheduleMessageDisplay(messageId) {
+  sessionSearchCache.delete(state.currentSessionId);
   pendingDisplayUpdates.add(messageId);
   if (streamRenderTimer !== null) return;
 
@@ -95,17 +101,6 @@ function clearOldCacheEntries() {
       if (!currentMessages.has(messageId)) {
         messageElementCache.delete(messageId);
       }
-    }
-  }
-
-  // Simple size-based markdown cache eviction
-  if (markdownCache.size > MAX_MARKDOWN_CACHE_SIZE) {
-    const entriesToDelete = markdownCache.size - MAX_MARKDOWN_CACHE_SIZE + 10;
-    let deleted = 0;
-    for (const [key] of markdownCache) {
-      if (deleted >= entriesToDelete) break;
-      markdownCache.delete(key);
-      deleted++;
     }
   }
 }
@@ -145,6 +140,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadFromStorage();
   setupEventListeners();
   initializeUI();
+  await initializeSelectionImport();
 
   console.log('SideMind initialized successfully');
 });
@@ -174,7 +170,11 @@ function cacheElements() {
     'historyUndo',
     'historyUndoText',
     'historyUndoBtn',
-    'notifications'
+    'notifications',
+    'sessionTitle',
+    'storageStatus',
+    'storageStatusText',
+    'retryStorageBtn'
   ].forEach((id) => {
     elements[id] = document.getElementById(id);
   });
@@ -195,7 +195,8 @@ function setupEventListeners() {
   elements.closeBtn.addEventListener('click', closeChatHistory);
   elements.chatHistoryDropdown.addEventListener('click', handleHistoryBackdrop);
   elements.chatHistoryDropdown.addEventListener('cancel', handleHistoryCancel);
-  elements.historySearch.addEventListener('input', renderChatHistory);
+  elements.historySearch.addEventListener('input', scheduleHistorySearch);
+  elements.retryStorageBtn.addEventListener('click', retryStorageSave);
   elements.historyUndoBtn.addEventListener('click', applyUndo);
   document.addEventListener('selectionchange', resumeSelectedDisplays);
   window.addEventListener('resize', autoResizeTextarea);
@@ -217,6 +218,9 @@ function setupEventListeners() {
       renderWelcomeMessage();
       applyFontSettings();
       applyTheme();
+    }
+    if (areaName === 'session' && selectionStorageKey && changes[selectionStorageKey]?.newValue) {
+      importSelectedText();
     }
   });
 
@@ -251,8 +255,13 @@ async function loadFromStorage() {
     if (!result.config) {
       const localResult = await chrome.storage.local.get(['config']);
       if (localResult.config) {
-        await chrome.storage.sync.set({ config: localResult.config });
         result.config = localResult.config;
+        try {
+          assertConfigFitsSync(localResult.config);
+          await chrome.storage.sync.set({ config: localResult.config });
+        } catch (error) {
+          showNotification(error.name === 'SyncQuotaError' ? error.message : 'Could not sync your settings. Your local settings are still available.');
+        }
       }
     }
 
@@ -261,7 +270,11 @@ async function loadFromStorage() {
       applyFontSettings();
       applyTheme();
     }
-
+  } catch (error) {
+    console.error('Configuration load error:', error);
+    showNotification('Could not load settings. Reload SideMind to try again.');
+  }
+  try {
     const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId', 'drafts']);
 
     if (localResult.sessions) {
@@ -276,30 +289,72 @@ async function loadFromStorage() {
       state.currentSessionId = localResult.currentSessionId;
     }
 
-    if (!state.currentSessionId) {
+    if (!state.sessions[state.currentSessionId]) {
       await createNewSession();
     }
   } catch (error) {
     console.error('Storage load error:', error);
+    storageLoadFailed = true;
+    showStorageFailure();
     await createNewSession();
   }
 }
 
-async function saveToStorage() {
-  try {
-    await chrome.storage.local.set({
-      sessions: state.sessions,
-      currentSessionId: state.currentSessionId,
-      drafts: state.drafts
-    });
-  } catch (error) {
-    console.error('Storage save error:', error);
+let storageWriteQueue = Promise.resolve();
+let storageLoadFailed = false;
+
+function showStorageFailure() {
+  elements.storageStatus.classList.remove('hidden');
+  elements.storageStatusText.textContent = storageLoadFailed
+    ? 'Could not load conversations. Reload before saving new messages.'
+    : 'Changes are not saved. Retry, or export chats and free space in history.';
+  elements.retryStorageBtn.textContent = storageLoadFailed ? 'Reload' : 'Retry save';
+}
+
+function retryStorageSave() {
+  if (storageLoadFailed) {
+    window.location.reload();
+    return;
   }
+  saveToStorage();
+}
+
+// Draft and transcript writes share one queue. Take the snapshot when each
+// write starts, so rapid switches and retries cannot write older drafts last.
+function queueLocalSave(includeSessions) {
+  if (storageLoadFailed) return Promise.resolve(false);
+  storageWriteQueue = storageWriteQueue.then(async () => {
+    elements.retryStorageBtn.disabled = true;
+    try {
+      const data = { drafts: structuredClone(state.drafts) };
+      if (includeSessions) {
+        data.sessions = structuredClone(state.sessions);
+        data.currentSessionId = state.currentSessionId;
+      }
+      await chrome.storage.local.set(data);
+      if (includeSessions) elements.storageStatus.classList.add('hidden');
+      return true;
+    } catch (error) {
+      console.error('Conversation save error:', error);
+      showStorageFailure();
+      return false;
+    } finally {
+      elements.retryStorageBtn.disabled = false;
+    }
+  });
+  return storageWriteQueue;
+}
+
+function saveToStorage() {
+  clearTimeout(saveTimeout);
+  sessionSearchCache.clear();
+  return queueLocalSave(true);
 }
 
 // Debounced save
 let saveTimeout = null;
 function debouncedSave() {
+  sessionSearchCache.clear();
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => saveToStorage(), 1000);
 }
@@ -323,13 +378,14 @@ function persistConfig() {
     try {
       const result = await chrome.storage.sync.get(['config']);
       const config = { ...state.config, ...result.config, ...changes };
+      assertConfigFitsSync(config);
       await chrome.storage.sync.set({ config });
       Object.keys(changes).forEach((key) => {
         if (pendingConfigChanges[key] === changes[key]) delete pendingConfigChanges[key];
       });
     } catch (error) {
       console.error('Configuration save error:', error);
-      showNotification('Could not save your model selection. Select it again to retry.');
+      showNotification(error.name === 'SyncQuotaError' ? error.message : 'Could not save your selection. Select it again to retry.');
     }
   });
 }
@@ -370,9 +426,7 @@ function persistDrafts() {
     draftTimeout = null;
   }
 
-  chrome.storage.local
-    .set({ drafts: state.drafts })
-    .catch((error) => console.error('Draft save error:', error));
+  return queueLocalSave(false);
 }
 
 function restoreDraft() {
@@ -383,6 +437,48 @@ function restoreDraft() {
 function clearDraft() {
   delete state.drafts[state.currentSessionId];
   persistDrafts();
+}
+
+// A selection is staged locally by the context menu. Import into the current
+// draft only; the user reviews the source and explicitly sends the request.
+let selectionStorageKey = null;
+let selectionImportQueue = Promise.resolve();
+
+async function initializeSelectionImport() {
+  try {
+    const window = await chrome.windows.getCurrent();
+    selectionStorageKey = `selection:${window.id}`;
+    await importSelectedText();
+  } catch (error) {
+    console.error('Selection import initialization:', error);
+  }
+}
+
+function importSelectedText() {
+  selectionImportQueue = selectionImportQueue.then(async () => {
+    try {
+      const result = await chrome.storage.session.get([selectionStorageKey]);
+      const selection = result[selectionStorageKey];
+      if (!selection?.text || storageLoadFailed) return;
+      const quote = selection.text.split('\n').map((line) => `> ${line}`).join('\n');
+      const source = selection.url ? `\n\nSource: ${selection.title || selection.url}\n${selection.url}` : '';
+      const current = elements.messageInput.value;
+      elements.messageInput.value = `${current}${current.trim() ? '\n\n' : ''}Help me understand this passage:\n\n${quote}${source}\n\n`;
+      handleInputChange();
+      // Consume once in this window. Failed disk saves remain visible with a
+      // retry action, rather than appending the same quote a second time.
+      await chrome.storage.session.remove([selectionStorageKey]);
+      await persistDrafts();
+      elements.messageInput.focus();
+      showNotification(selection.truncated
+        ? 'Selected text added to your draft (first 20,000 characters). Review it before sending.'
+        : 'Selected text and source added to your draft. Review it before sending.');
+    } catch (error) {
+      console.error('Selection import:', error);
+      showNotification('Could not import selected text. Try the context menu again.');
+    }
+  });
+  return selectionImportQueue;
 }
 
 // ----------------------------------------
@@ -442,6 +538,7 @@ async function createNewSession() {
     systemPromptId: state.config.selectedSystemPrompt
   };
   state.currentSessionId = sessionId;
+  clearOldCacheEntries();
   state.userScrolledUp = false;
   state.readingResponse = false;
   state.followOutput = false;
@@ -458,8 +555,8 @@ async function switchSession(sessionId) {
 
   await stopStreamingIfActive();
 
-  clearOldCacheEntries();
   state.currentSessionId = sessionId;
+  clearOldCacheEntries();
   state.userScrolledUp = false;
   state.readingResponse = false;
   state.followOutput = false;
@@ -562,6 +659,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 // ========================================
 
 function renderMessages() {
+  updateSessionTitle();
   // Every caller either replaces the transcript or appends to it; neither is a
   // state an open editor should survive
   cancelEditing(false);
@@ -668,8 +766,7 @@ function createMessageElement(message) {
   if (message.role === 'user') {
     content.textContent = message.content;
   } else {
-    content.innerHTML = renderMarkdown(message.content);
-    decorateMarkdown(content, !isStreamingMessage(message.id));
+    renderMessageMarkdown(content, message.content, !isStreamingMessage(message.id));
   }
 
   bubble.appendChild(content);
@@ -724,13 +821,20 @@ function createReasoningSection(message) {
     header.setAttribute('aria-expanded', String(!message.reasoningCollapsed));
     // Once opened or closed by hand, stop auto-folding this one
     message.reasoningTouched = true;
+    content.hidden = message.reasoningCollapsed;
+    if (!message.reasoningCollapsed) {
+      renderMessageMarkdown(content, message.reasoning, !isStreamingMessage(message.id));
+    }
     debouncedSave();
   });
 
   const content = document.createElement('div');
   content.className = 'reasoning-content';
   content.id = `reasoning-${message.id}`;
-  content.innerHTML = renderMarkdown(message.reasoning, !isStreamingMessage(message.id));
+  content.hidden = Boolean(message.reasoningCollapsed);
+  if (!message.reasoningCollapsed) {
+    renderMessageMarkdown(content, message.reasoning, !isStreamingMessage(message.id));
+  }
 
   section.appendChild(header);
   section.appendChild(content);
@@ -830,17 +934,19 @@ function stopStreamTicker() {
 // repaint, so any of this would be thrown away immediately.
 function decorateCodeBlocks(container) {
   container.querySelectorAll('pre').forEach((pre) => {
-    if (pre.querySelector('.code-copy-btn')) return;
+    if (pre.parentElement.classList.contains('code-block')) return;
 
     const code = pre.querySelector('code');
+    if (!code) return;
     const language = highlightCode(code);
-
-    if (language) {
-      const label = document.createElement('span');
-      label.className = 'code-language';
-      label.textContent = language;
-      pre.appendChild(label);
-    }
+    const card = document.createElement('div');
+    card.className = 'code-block';
+    const toolbar = document.createElement('div');
+    toolbar.className = 'code-toolbar';
+    const label = document.createElement('span');
+    label.className = 'code-language';
+    label.textContent = language || 'Code';
+    toolbar.appendChild(label);
 
     const button = document.createElement('button');
     button.type = 'button';
@@ -849,7 +955,27 @@ function decorateCodeBlocks(container) {
     button.innerHTML = '<i class="fas fa-copy"></i>';
     button.addEventListener('click', () => copyCode(pre, button));
 
-    pre.appendChild(button);
+    toolbar.appendChild(button);
+    pre.replaceWith(card);
+    card.append(toolbar, pre);
+
+    const lines = code.textContent.trimEnd().split('\n').length;
+    if (lines > 24) {
+      pre.id = `code-${crypto.randomUUID()}`;
+      card.classList.add('collapsed');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'code-expand-btn';
+      toggle.setAttribute('aria-controls', pre.id);
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = `Show all ${lines} lines`;
+      toggle.addEventListener('click', () => {
+        const collapsed = card.classList.toggle('collapsed');
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.textContent = collapsed ? `Show all ${lines} lines` : 'Show fewer lines';
+      });
+      card.appendChild(toggle);
+    }
   });
 }
 
@@ -1228,8 +1354,15 @@ function renderMarkdown(text, cache = true) {
   try {
     const html = sanitizeMarkdown(marked.parse(text));
 
-    if (cache && text.length > 20 && markdownCache.size < MAX_MARKDOWN_CACHE_SIZE) {
+    const chars = text.length + html.length;
+    if (cache && text.length > 20 && chars <= MAX_MARKDOWN_CACHE_CHARS / 4) {
+      while (markdownCache.size >= MAX_MARKDOWN_CACHE_SIZE || markdownCacheChars + chars > MAX_MARKDOWN_CACHE_CHARS) {
+        const oldest = markdownCache.keys().next().value;
+        markdownCacheChars -= oldest.length + markdownCache.get(oldest).length;
+        markdownCache.delete(oldest);
+      }
       markdownCache.set(text, html);
+      markdownCacheChars += chars;
     }
 
     return html;
@@ -1312,6 +1445,16 @@ function sanitizeMarkdown(html) {
 
 const deferredDisplays = new Set();
 
+// Preserve finished subtrees (including expanded code) and avoid parsing an
+// unchanged answer while only reasoning deltas are arriving.
+function renderMessageMarkdown(container, text, finished) {
+  const previous = renderedMarkdown.get(container);
+  if (previous?.text === text && previous.finished === finished) return;
+  container.innerHTML = renderMarkdown(text, finished);
+  decorateMarkdown(container, finished);
+  renderedMarkdown.set(container, { text, finished });
+}
+
 function resumeSelectedDisplays() {
   if (!document.getSelection()?.isCollapsed) return;
   deferredDisplays.forEach(scheduleMessageDisplay);
@@ -1343,10 +1486,49 @@ function updateResponseStatus(
 ) {
   element.classList.toggle('streaming', isStreamingMessage(message.id));
   if (!status) return;
-  status.textContent =
-    message.error || (message.stopped ? 'Generation stopped · partial response' : '');
+  status.textContent = message.error || responseCompletionNotice(message);
   status.classList.toggle('error', Boolean(message.error));
   status.hidden = !status.textContent;
+  if ((message.error && message.errorAction) || message.incompleteReason === 'max_output_tokens') {
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'undo-btn';
+    const needsNewChat = message.errorAction === 'new-chat';
+    action.textContent = needsNewChat ? 'Start new chat' : 'Open settings';
+    action.addEventListener('click', needsNewChat ? createNewSession : openOptions);
+    status.appendChild(action);
+  }
+  const retry = element.querySelector('.regenerate-btn');
+  if (retry) {
+    const label = message.error || message.incompleteReason || message.completionUnconfirmed ? 'Retry response' : 'Regenerate response';
+    retry.setAttribute('aria-label', label);
+    retry.title = label;
+  }
+  let details = element.querySelector('.response-details');
+  if (message.errorDetail) {
+    if (!details) {
+      details = document.createElement('details');
+      details.className = 'response-details';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Technical details';
+      details.append(summary, document.createElement('pre'));
+      status.after(details);
+    }
+    details.querySelector('pre').textContent = message.errorDetail;
+  } else {
+    details?.remove();
+  }
+}
+
+function responseCompletionNotice(message) {
+  if (message.stopped) return 'Generation stopped · partial response';
+  if (message.incompleteReason === 'max_output_tokens') {
+    return 'Output limit reached · partial response. Increase Max Completion Tokens in Settings to retry.';
+  }
+  if (message.incompleteReason === 'content_filter') return 'The provider filtered this response · it may be incomplete.';
+  if (message.incompleteReason) return 'The provider returned an incomplete response. You can retry.';
+  if (message.completionUnconfirmed) return 'Completion not confirmed by the provider · this response may be incomplete.';
+  return '';
 }
 
 function updateMessageDisplay(messageId) {
@@ -1371,10 +1553,7 @@ function updateMessageDisplay(messageId) {
     if (message.role === 'user') {
       contentEl.textContent = message.content;
     } else {
-      contentEl.innerHTML = renderMarkdown(message.content, !streaming);
-      // Decorating mid-stream is wasted work: the next repaint replaces the
-      // whole subtree anyway
-      decorateMarkdown(contentEl, !streaming);
+      renderMessageMarkdown(contentEl, message.content, !streaming);
     }
   }
 
@@ -1388,10 +1567,8 @@ function updateMessageDisplay(messageId) {
       bubble.insertBefore(reasoningSection, bubble.firstChild);
     } else {
       const reasoningContent = reasoningSection.querySelector('.reasoning-content');
-      if (reasoningContent) {
-        reasoningContent.innerHTML = renderMarkdown(message.reasoning, !streaming);
-
-        // Keep the reading position inside expanded reasoning too.
+      if (reasoningContent && !message.reasoningCollapsed) {
+        renderMessageMarkdown(reasoningContent, message.reasoning, !streaming);
       }
 
       const title = reasoningSection.querySelector('.reasoning-title');
@@ -1399,6 +1576,7 @@ function updateMessageDisplay(messageId) {
     }
 
     reasoningSection.classList.toggle('expanded', !message.reasoningCollapsed);
+    reasoningSection.querySelector('.reasoning-content').hidden = Boolean(message.reasoningCollapsed);
     reasoningSection
       .querySelector('.reasoning-header')
       .setAttribute('aria-expanded', String(!message.reasoningCollapsed));
@@ -1622,8 +1800,8 @@ function updateModelSelector() {
       const option = document.createElement('option');
       // 使用复合键: "modelId - providerId"
       option.value = `${model.id} - ${provider.id}`;
-      // UI显示: 只显示模型名称，provider已由optgroup显示
-      option.textContent = model.name;
+      // Include the provider in the selected label, where optgroups are hidden.
+      option.textContent = `${model.name} · ${provider.name}`;
 
       // 检查是否匹配当前的选中项
       if (state.config.selectedModel === `${model.id} - ${provider.id}`) {
@@ -1705,6 +1883,18 @@ function handleInputKeydown(event) {
 
 // Escape dismisses the active surface first, then stops generation.
 function handleGlobalKeydown(event) {
+  if (event.isComposing || document.querySelector('dialog[open]')) return;
+  const shortcut = event.ctrlKey || event.metaKey;
+  if (shortcut && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o') {
+    event.preventDefault();
+    createNewSession();
+    return;
+  }
+  if (event.shiftKey && !shortcut && !event.altKey && event.key === 'Escape') {
+    event.preventDefault();
+    elements.messageInput.focus();
+    return;
+  }
   if (event.key !== 'Escape') return;
 
   if (elements.chatHistoryDropdown.open) return;
@@ -1773,6 +1963,7 @@ function openOptions() {
 }
 
 function openChatHistory() {
+  clearTimeout(historySearchTimer);
   elements.historySearch.value = '';
   renderChatHistory();
   elements.chatHistoryDropdown.showModal();
@@ -1831,18 +2022,33 @@ function describeModel(modelUsed) {
   return provider && model ? [provider.name, model.name] : [];
 }
 
+function updateSessionTitle() {
+  const session = state.sessions[state.currentSessionId];
+  const title = session?.title || 'New Chat';
+  elements.sessionTitle.textContent = session?.messages.length ? title : 'SideMind';
+  elements.sessionTitle.title = title;
+  document.title = `${title} · SideMind`;
+}
+
+function scheduleHistorySearch() {
+  clearTimeout(historySearchTimer);
+  historySearchTimer = setTimeout(renderChatHistory, 150);
+}
+
+function sessionSearchText(id) {
+  if (!sessionSearchCache.has(id)) {
+    const session = state.sessions[id];
+    sessionSearchCache.set(id, `${session.title} ${session.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase());
+  }
+  return sessionSearchCache.get(id);
+}
+
 function renderChatHistory() {
   elements.chatHistoryList.replaceChildren();
   const query = elements.historySearch.value.trim().toLocaleLowerCase();
   const sessionIds = Object.keys(state.sessions)
     .filter((id) => {
-      const session = state.sessions[id];
-      return (
-        !query ||
-        `${session.title} ${session.messages.map((message) => message.content).join(' ')}`
-          .toLocaleLowerCase()
-          .includes(query)
-      );
+      return !query || sessionSearchText(id).includes(query);
     })
     .sort((a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp));
   if (!sessionIds.length) {
@@ -1887,6 +2093,7 @@ function renderChatHistory() {
     actions.className = 'history-actions';
     [
       ['Rename chat', 'pen', () => renameSession(sessionId, item)],
+      ['Export chat', 'download', () => exportSession(sessionId)],
       ['Delete chat', 'trash-alt', () => deleteSession(sessionId)]
     ].forEach(([label, icon, handler]) => {
       const button = document.createElement('button');
@@ -1927,6 +2134,7 @@ function renameSession(sessionId, item) {
     () => {
       if (!cancelled && input.value.trim()) {
         session.title = input.value.trim();
+        updateSessionTitle();
         saveToStorage();
       }
       renderChatHistory();
@@ -1937,6 +2145,35 @@ function renameSession(sessionId, item) {
   item.replaceChildren(input);
   input.focus();
   input.select();
+}
+
+function sessionMarkdown(session) {
+  const title = session.title.replace(/\s+/g, ' ');
+  const parts = [`# ${title}`, `Updated: ${session.timestamp}`];
+  session.messages.forEach((message) => {
+    const model = describeModel(message.modelUsed).join(' / ') || message.modelUsed || '';
+    parts.push(`## ${MESSAGE_LABELS[message.role] || message.role}${model ? ` · ${model}` : ''}`, message.timestamp || '');
+    if (message.reasoning?.trim()) parts.push('### Reasoning / summary', message.reasoning);
+    if (message.content) parts.push(message.content);
+    const notice = message.error || responseCompletionNotice(message);
+    if (notice) parts.push(`Status: ${notice}`);
+    if (isStreamingMessage(message.id)) parts.push('Status: Generation still in progress · partial response');
+  });
+  return parts.join('\n\n') + '\n';
+}
+
+function exportSession(sessionId) {
+  const session = state.sessions[sessionId];
+  if (!session) return;
+  const blob = new Blob([sessionMarkdown(session)], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const filename = session.title.replace(/[\x00-\x1f<>:"/\\|?*]/g, '').trim().slice(0, 80) || 'conversation';
+  link.href = url;
+  link.download = `${filename}.md`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showNotification('Conversation exported as Markdown.');
 }
 
 async function sendMessageToAPI(_userMessage) {
@@ -1979,7 +2216,7 @@ async function sendMessageToAPI(_userMessage) {
     await streamResponse(provider, assistantMessage, state.abortController.signal);
   } catch (error) {
     if (error.name !== 'AbortError') {
-      console.error('API Error:', error);
+      console.error('API request failed:', error.name);
       handleApiError(error);
     }
   } finally {
@@ -2036,16 +2273,22 @@ function getAdapter(provider) {
 async function streamResponse(provider, assistantMessage, signal) {
   const adapter = getAdapter(provider);
   const body = adapter.buildRequestBody();
-
-  // Make API request
-  const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
-  if (!response) return; // Aborted
-
-  // Handle streaming or non-streaming
-  if (body.stream) {
-    await processStream(response, assistantMessage, signal, adapter);
-  } else {
-    await processNonStream(response, assistantMessage, signal, adapter);
+  const watchdog = createRequestWatchdog(signal);
+  try {
+    const response = await makeApiRequest(provider, adapter.endpoint, body, watchdog.signal);
+    if (!response) return;
+    watchdog.touch();
+    if (body.stream) {
+      await processStream(response, assistantMessage, watchdog.signal, adapter, watchdog.touch);
+    } else {
+      await processNonStream(response, assistantMessage, watchdog.signal, adapter);
+    }
+    if (watchdog.signal.aborted) throw watchdog.signal.reason;
+  } catch (error) {
+    if (watchdog.signal.reason?.name === 'TimeoutError') throw watchdog.signal.reason;
+    throw error;
+  } finally {
+    watchdog.dispose();
   }
 
   // Final processing
@@ -2053,20 +2296,42 @@ async function streamResponse(provider, assistantMessage, signal) {
   flushMessageDisplays();
   processThinkTags(assistantMessage);
   updateMessageDisplay(assistantMessage.id);
+}
 
-  if (assistantMessage.incompleteReason) {
-    const reason = assistantMessage.incompleteReason;
-    showError(
-      reason === 'max_output_tokens'
-        ? 'The response reached the output token limit. Increase Max Completion Tokens in options and try again.'
-        : `The response was incomplete (${reason}). Please try again.`
-    );
-  }
+const REQUEST_TIMEOUT_MS = 120000;
+const STREAM_IDLE_TIMEOUT_MS = 180000;
+
+// The watchdog lasts through body consumption, not just the response headers.
+// A local controller preserves the distinction between timeout and user stop.
+function createRequestWatchdog(signal) {
+  const controller = new AbortController();
+  let timer = null;
+  const stop = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', stop, { once: true });
+  if (signal.aborted) stop();
+  const arm = (delay, message) => {
+    clearTimeout(timer);
+    if (controller.signal.aborted) return;
+    timer = setTimeout(() => {
+      const error = new Error(message);
+      error.name = 'TimeoutError';
+      controller.abort(error);
+    }, delay);
+  };
+  arm(REQUEST_TIMEOUT_MS, 'The provider did not respond in time. Check your connection and retry.');
+  return {
+    signal: controller.signal,
+    touch: () => arm(STREAM_IDLE_TIMEOUT_MS, 'The response stopped arriving. Your partial answer is kept; you can retry.'),
+    dispose: () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', stop);
+    }
+  };
 }
 
 // SSE events end at a blank line. Network chunks can split an event anywhere,
 // and a single event can contain multiple data lines.
-async function processStream(response, message, signal, adapter) {
+async function processStream(response, message, signal, adapter, onProgress = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
@@ -2089,8 +2354,10 @@ async function processStream(response, message, signal, adapter) {
         if (buffer.trim()) {
           processStreamEvent(buffer, message, adapter);
         }
+        if (!message.streamComplete) message.completionUnconfirmed = true;
         break;
       }
+      onProgress();
 
       const events = (buffer + decoder.decode(value, { stream: true })).split(/\r?\n\r?\n/);
 
@@ -2102,6 +2369,12 @@ async function processStream(response, message, signal, adapter) {
           throw new DOMException('Aborted', 'AbortError');
         }
         processStreamEvent(event, message, adapter);
+      }
+      // [DONE] and Responses terminal events end the request even if a proxy
+      // leaves the HTTP connection open. Chat finish_reason can precede usage.
+      if (message.streamEnded) {
+        await reader.cancel();
+        break;
       }
     }
   } catch (error) {
@@ -2126,7 +2399,12 @@ function processStreamEvent(event, message, adapter) {
   }
 
   const data = dataLines.join('\n').trim();
-  if (!data || data === '[DONE]') return;
+  if (!data) return;
+  if (data === '[DONE]') {
+    message.streamComplete = true;
+    message.streamEnded = true;
+    return;
+  }
 
   let parsed;
   try {
@@ -2155,6 +2433,13 @@ function applyChatStreamEvent(parsed, message) {
   // it when offered rather than requesting it.
   if (parsed.usage) {
     message.usage = readUsage(parsed.usage);
+  }
+
+  const choice = parsed.choices?.[0];
+  if (choice?.finish_reason) {
+    message.streamComplete = true;
+    if (choice.finish_reason === 'length') message.incompleteReason = 'max_output_tokens';
+    else if (choice.finish_reason === 'content_filter') message.incompleteReason = 'content_filter';
   }
 
   const delta = parsed.choices?.[0]?.delta;
@@ -2203,6 +2488,8 @@ function applyResponsesStreamEvent(parsed, message) {
 
     case 'response.completed':
     case 'response.incomplete':
+      message.streamComplete = true;
+      message.streamEnded = true;
       // The terminal response is authoritative and may contain text or usage
       // that was not included in deltas. Replace rather than append it.
       applyResponsesResponse(parsed.response || {}, message);
@@ -2239,7 +2526,10 @@ function applyChatResponse(data, message) {
   message.usage = readUsage(data.usage);
 
   const msg = data.choices?.[0]?.message;
-  if (!msg) return;
+  if (!msg) throw new Error('The provider returned no answer. Check the API type in Settings and retry.');
+  const reason = data.choices[0].finish_reason;
+  if (reason === 'length') message.incompleteReason = 'max_output_tokens';
+  else if (reason === 'content_filter') message.incompleteReason = 'content_filter';
 
   if (msg.reasoning_content) {
     message.reasoning = msg.reasoning_content;
@@ -2480,10 +2770,6 @@ function buildEndpointUrl(provider, endpoint) {
 async function makeApiRequest(provider, endpoint, body, signal) {
   const url = buildEndpointUrl(provider, endpoint);
 
-  const timeoutId = setTimeout(() => {
-    console.warn('Request timeout (360s)');
-  }, 360000);
-
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -2495,13 +2781,16 @@ async function makeApiRequest(provider, endpoint, body, signal) {
       signal
     });
 
-    clearTimeout(timeoutId);
-
     if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(
-        `API Error (${response.status}): ${error.error?.message || response.statusText}`
-      );
+      const payload = await response.json().catch(() => ({}));
+      const detail = String(payload?.error?.message || response.statusText || 'Request failed');
+      const error = new Error(`API Error (${response.status}): ${detail}`);
+      error.status = response.status;
+      // Provider errors occasionally echo credentials. Never store that key in
+      // a transcript or its Markdown export.
+      error.details = provider.apiKey ? error.message.split(provider.apiKey).join('[redacted]') : error.message;
+      error.message = error.details;
+      throw error;
     }
 
     if (!response.body) {
@@ -2510,7 +2799,7 @@ async function makeApiRequest(provider, endpoint, body, signal) {
 
     return response;
   } catch (error) {
-    clearTimeout(timeoutId);
+    if (signal.aborted && signal.reason?.name === 'TimeoutError') throw signal.reason;
     if (error.name === 'AbortError') {
       return null;
     }
@@ -2557,7 +2846,7 @@ function cleanupStreaming(messageId) {
       ? 'Response failed. You can retry.'
       : wasAborted
         ? 'Generation stopped.'
-        : 'Response complete.'
+        : responseCompletionNotice(message || {}) || 'Response complete.'
   );
 
   saveToStorage();
@@ -2570,7 +2859,11 @@ function cleanupStreaming(messageId) {
     ? 'Response interrupted · retry is available'
     : wasAborted
       ? 'Generation stopped'
-      : 'Response complete';
+      : message?.incompleteReason
+        ? 'Response incomplete · partial answer kept'
+        : message?.completionUnconfirmed
+          ? 'Response received · completion unconfirmed'
+          : 'Response complete';
 }
 
 function finalizeTiming(messageId) {
@@ -2589,13 +2882,24 @@ function finalizeTiming(messageId) {
 }
 
 function handleApiError(error) {
+  const key = getCurrentProvider()?.apiKey;
+  const redact = (text) => key ? text.split(key).join('[redacted]') : text;
+  const safeError = {
+    name: error.name,
+    status: error.status,
+    message: redact(error.message)
+  };
   const message = state.currentStreamingMessage;
   if (message) {
-    message.error = getErrorMessage(error);
+    message.error = getErrorMessage(safeError);
+    message.errorDetail = redact(error.details || error.message).slice(0, 2000);
+    message.errorAction = isContextLimitError(safeError)
+      ? 'new-chat'
+      : [400, 401, 403, 404].includes(error.status) ? 'settings' : null;
     updateMessageDisplay(message.id);
     announce(`Error: ${message.error}`);
   } else {
-    showError(getErrorMessage(error));
+    showError(getErrorMessage(safeError));
   }
 }
 
@@ -2623,7 +2927,18 @@ const ERROR_HANDLERS = [
   { patterns: ['network', 'fetch'], message: 'Network error. Check your connection.' }
 ];
 
+function isContextLimitError(error) {
+  return /context_length_exceeded|maximum context length|prompt is too long|input token limit/i.test(error.message);
+}
+
 function getErrorMessage(error) {
+  if (error.name === 'TimeoutError') return error.message;
+  if (isContextLimitError(error)) return 'This conversation exceeds the model’s context limit. Start a new chat or shorten your messages before retrying.';
+  if (error.status === 400) return 'The provider rejected this request. Check the model, API type and parameters in Settings.';
+  if (error.status === 401 || error.status === 403) return 'Access denied. Check your API key and model access in Settings.';
+  if (error.status === 404) return 'Endpoint or model not found. Check the Base URL, API type and model in Settings.';
+  if (error.status === 429) return 'The provider is limiting requests or your quota is exhausted. Check your quota, or wait before retrying.';
+  if (error.status >= 500) return 'The provider is temporarily unavailable. Wait a moment and retry.';
   const msg = error.message.toLowerCase();
 
   for (const { patterns, message } of ERROR_HANDLERS) {

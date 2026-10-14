@@ -24,6 +24,12 @@ body {
   gap: 8px;
   font-weight: 650;
   letter-spacing: -0.3px;
+  min-width: 0;
+}
+.brand span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .brand img {
   width: 24px;
@@ -347,7 +353,7 @@ body {
   background: var(--bg-primary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
-  padding: 40px 12px 12px;
+  padding: 12px;
   margin: 14px 0;
   overflow-x: auto;
   line-height: 1.6;
@@ -360,16 +366,48 @@ body {
   overflow-wrap: normal;
 }
 .code-language {
-  position: absolute;
-  top: 10px;
-  left: 12px;
   font-size: 11px;
   color: var(--text-secondary);
 }
+.code-block {
+  min-width: 0;
+  margin: 14px 0;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 6px 3px 12px;
+  border-bottom: 1px solid var(--border-secondary);
+}
+.code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.code-block.collapsed pre {
+  max-height: 288px;
+  overflow-y: hidden;
+}
+.code-expand-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 0;
+  border-top: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.code-expand-btn:hover {
+  color: var(--accent);
+  background: var(--bg-tertiary);
+}
 .code-copy-btn {
-  position: absolute;
-  top: 4px;
-  right: 6px;
   width: 32px;
   height: 32px;
   background: var(--bg-primary);
@@ -382,6 +420,43 @@ body {
 }
 .code-copy-btn.copied {
   color: var(--success);
+}
+
+/* ===== Save and request feedback ===== */
+.storage-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius-sm);
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-size: 12px;
+}
+.storage-status span {
+  flex: 1;
+}
+.storage-status button {
+  flex-shrink: 0;
+}
+.response-status .undo-btn {
+  margin-left: 8px;
+}
+.response-details {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.response-details summary {
+  cursor: pointer;
+}
+.response-details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow-y: auto;
 }
 .table-scroll {
   width: 100%;

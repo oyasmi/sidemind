@@ -177,13 +177,14 @@ async function loadConfig() {
       const local = await chrome.storage.local.get(['config']);
       if (local.config) {
         config = { ...structuredClone(DEFAULT_CONFIG), ...local.config };
+        assertConfigFitsSync(config);
         await chrome.storage.sync.set({ config });
         await chrome.storage.local.remove(['config']);
       }
     }
   } catch (error) {
     console.error('Loading configuration:', error);
-    showNotification('Could not load settings. Reload this page to try again.', 'error');
+    showNotification(error.name === 'SyncQuotaError' ? error.message : 'Could not load settings. Reload this page to try again.', 'error');
   }
 }
 
@@ -215,7 +216,10 @@ async function saveCurrentConfig() {
   await saveConfig();
 }
 
+let lastSaveError = '';
+
 async function saveConfig(candidate = config, replace = false) {
+  lastSaveError = '';
   clearTimeout(saveTimer);
   saveTimer = null;
   const snapshot = structuredClone(candidate);
@@ -239,6 +243,7 @@ async function saveConfig(candidate = config, replace = false) {
       written[key] = snapshot[key];
     });
     repairSelection(written);
+    assertConfigFitsSync(written);
     await chrome.storage.sync.set({ config: written });
   });
   saveQueue = write.catch(() => {});
@@ -256,7 +261,10 @@ async function saveConfig(candidate = config, replace = false) {
     return true;
   } catch (error) {
     console.error('Saving configuration:', error);
-    if (revision === saveRevision) setSaveStatus('Could not save changes', 'error');
+    lastSaveError = error.name === 'SyncQuotaError' ? error.message : '';
+    if (revision === saveRevision) {
+      setSaveStatus(error.name === 'SyncQuotaError' ? error.message : 'Could not save changes', 'error');
+    }
     return false;
   }
 }
@@ -652,7 +660,7 @@ async function saveProvider() {
     if (!(await saveConfig(candidate))) {
       showDialogError(
         elements.providerModal,
-        'Could not save this provider. Your edits are still here; try saving again.'
+        lastSaveError || 'Could not save this provider. Your edits are still here; try saving again.'
       );
       return;
     }
@@ -738,7 +746,7 @@ async function savePrompt() {
     if (!(await saveConfig(candidate))) {
       showDialogError(
         elements.promptModal,
-        'Could not save this role. Your edits are still here; try again.'
+        lastSaveError || 'Could not save this role. Your edits are still here; try again.'
       );
       return;
     }
@@ -897,7 +905,7 @@ async function importConfig(event) {
     if (!accepted) return;
     if (!(await saveConfig(candidate, true))) {
       showNotification(
-        'Import could not be saved. Your current configuration is unchanged.',
+        lastSaveError || 'Import could not be saved. Your current configuration is unchanged.',
         'error'
       );
       return;

@@ -11,9 +11,9 @@
   <body>
     <div class="app-container">
       <header class="header">
-        <div class="brand"><img src="../icons/icon48.png" alt="" /><span>SideMind</span></div>
+        <div class="brand"><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
         <div class="header-right">
-          <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat">
+          <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat (Ctrl/⌘ + Shift + O)">
             <i class="fas fa-plus" aria-hidden="true"></i>
           </button>
           <button
@@ -55,6 +55,9 @@
       </main>
 
       <footer class="input-container">
+        <div id="storageStatus" class="storage-status hidden" role="status">
+          <span id="storageStatusText"></span><button id="retryStorageBtn" class="undo-btn" type="button">Retry save</button>
+        </div>
         <div id="generationStatus" class="generation-status" role="status" aria-live="polite">
           Ready when you are
         </div>

@@ -383,6 +383,25 @@ html {
 }
 
 /* ===== Data and about ===== */
+.keyboard-help {
+  margin-top: 24px;
+}
+.shortcut-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  font-size: 12px;
+}
+.shortcut-list dd {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.save-feedback {
+  min-width: 0;
+}
+.save-feedback [data-state='error'] {
+  max-width: 420px;
+}
 .data-actions {
   display: flex;
   align-items: flex-start;

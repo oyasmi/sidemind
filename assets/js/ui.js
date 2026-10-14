@@ -3,6 +3,18 @@
 // wrapping keeps Tab within the dialog rather than visiting browser chrome.
 document.addEventListener('keydown', handleDialogTab);
 
+// Both pages write the same sync item. Check its byte limit before committing
+// edits so a long role or model list gets an actionable error.
+function assertConfigFitsSync(config) {
+  const limit = chrome.storage.sync.QUOTA_BYTES_PER_ITEM || 8192;
+  const size = new TextEncoder().encode(JSON.stringify(config)).length + 'config'.length;
+  if (size > limit) {
+    const error = new Error('Settings exceed the sync size limit (8 KB). Shorten roles or remove unused models, then retry.');
+    error.name = 'SyncQuotaError';
+    throw error;
+  }
+}
+
 function handleDialogTab(event) {
   if (event.key !== 'Tab') return;
   const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
