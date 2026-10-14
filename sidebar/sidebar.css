@@ -336,6 +336,18 @@ body {
   height: auto;
   border-radius: var(--radius-sm);
 }
+.remote-image-btn {
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.9em;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
 .message-content a {
   text-decoration: underline;
 }

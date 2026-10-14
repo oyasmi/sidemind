@@ -11,6 +11,7 @@ function loadScript(file, globals = {}) {
     URL, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
     ...globals
   });
+  vm.runInContext(readFileSync(resolve(__dirname, '..', 'sidebar/marked.umd.js'), 'utf8'), context);
   vm.runInContext(readFileSync(resolve(__dirname, '..', 'assets/js/ui.js'), 'utf8'), context);
   vm.runInContext(readFileSync(resolve(__dirname, '..', file), 'utf8'), context);
   return context;
@@ -31,7 +32,7 @@ function sidebar() {
       state, getAdapter, buildChatRequestBody, buildResponsesRequestBody,
       buildEndpointUrl, streamResponse, processStream, processNonStream,
       applyChatStreamEvent, applyResponsesStreamEvent, applyResponsesResponse,
-      createRequestWatchdog, responseCompletionNotice
+      createRequestWatchdog, responseCompletionNotice, processThinkTags
     };
   `, context);
   const { app } = context;
@@ -178,6 +179,101 @@ test('non-streaming Responses reads all text, refusals, summaries and usage', as
   assert.equal(message.usage.reasoning, 3);
   app.applyResponsesResponse({ output_text: 'Compatible server' }, message);
   assert.equal(message.content, 'Compatible server');
+});
+
+test('non-streaming Responses rejects payloads it cannot recognise', async () => {
+  const { app } = sidebar();
+  const adapter = app.getAdapter({ apiType: 'responses' });
+  for (const data of [{}, { choices: [{ message: { content: 'Wrong API type' } }] }]) {
+    await assert.rejects(
+      app.processNonStream(Response.json(data), {}, new AbortController().signal, adapter),
+      /no answer.*API type/
+    );
+  }
+  const message = {};
+  await app.processNonStream(Response.json({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }), message, new AbortController().signal, adapter);
+  assert.equal(message.incompleteReason, 'max_output_tokens');
+});
+
+test('think tags in code stay in the answer while real reasoning is extracted', () => {
+  const { app } = sidebar();
+  const code = 'Use:\n\n```html\n<think>literal example</think>\n```\n\nOr `<think>inline</think>`.';
+  const kept = { content: code };
+  app.processThinkTags(kept);
+  assert.equal(kept.content, code);
+  assert.equal(kept.reasoning, undefined);
+
+  const mixed = { content: '<think>plan `x`</think>Answer\n```\n<thinking>demo</thinking>\n```' };
+  app.processThinkTags(mixed);
+  assert.equal(mixed.reasoning, 'plan `x`');
+  assert.equal(mixed.content, 'Answer\n```\n<thinking>demo</thinking>\n```');
+
+  const unclosed = { content: '```\n<think>never closed' };
+  app.processThinkTags(unclosed);
+  assert.equal(unclosed.content, '```\n<think>never closed');
+});
+
+test('think tags survive longer fences with nested fences and indented code', () => {
+  const { app } = sidebar();
+  const nested = 'Example:\n\n````md\n```html\n<think>literal example</think>\n```\n````\n\nDone.';
+  const indented = 'Example:\n\n    <think>indented example</think>\n\nDone.';
+  for (const content of [nested, indented]) {
+    const message = { content };
+    app.processThinkTags(message);
+    assert.equal(message.content, content);
+    assert.equal(message.reasoning, undefined);
+  }
+});
+
+test('think tags stay in code inside tables, quotes and lists, but plain tags are still extracted', () => {
+  const { app } = sidebar();
+  const cases = [
+    '| Tag |\n| --- |\n| `<think>literal example</think>` |',
+    '> Quote:\n>\n> ```html\n> <think>literal example</think>\n> ```',
+    '- Item:\n\n  ```html\n  <think>literal example</think>\n  ```',
+    '1. Item\n\n       <think>literal example</think>'
+  ];
+  for (const content of cases) {
+    const message = { content };
+    app.processThinkTags(message);
+    assert.equal(message.content, content);
+    assert.equal(message.reasoning, undefined);
+  }
+  const message = { content: '<think>plan</think>Answer with `code` and\n\n| a |\n| - |\n| `<think>kept</think>` |' };
+  app.processThinkTags(message);
+  assert.equal(message.reasoning, 'plan');
+  assert.equal(message.content, 'Answer with `code` and\n\n| a |\n| - |\n| `<think>kept</think>` |');
+});
+
+test('masking never confuses answer text containing NUL characters with code', () => {
+  const { app } = sidebar();
+  const content = 'Keep \u00000\u0000 literal `<think>code</think>` and \u0000\u0000 too.<think>plan</think>';
+  const message = { content };
+  app.processThinkTags(message);
+  assert.equal(message.reasoning, 'plan');
+  assert.equal(message.content, 'Keep \u00000\u0000 literal `<think>code</think>` and \u0000\u0000 too.');
+});
+
+test('removing think tags can never assemble a mask-like marker from answer text', () => {
+  const { app } = sidebar();
+  const message = { content: '`example`\n\n\u0000<think>a</think>\u00000\u0000<think>b</think>\u0000' };
+  app.processThinkTags(message);
+  assert.equal(message.content, '`example`\n\n\u0000\u00000\u0000\u0000');
+  assert.equal(message.reasoning, 'a\n\nb');
+});
+
+test('CRLF answers still have plain think tags extracted and keep code examples', () => {
+  const { app } = sidebar();
+  const plain = { content: '<think>plan</think>\r\nAnswer' };
+  app.processThinkTags(plain);
+  assert.equal(plain.reasoning, 'plan');
+  assert.equal(plain.content, 'Answer');
+
+  const code = 'Use:\r\n\r\n```html\r\n<think>literal</think>\r\n```\r\n\r\n    <think>indented</think>\r\n';
+  const mixed = { content: `<think>plan</think>${code}` };
+  app.processThinkTags(mixed);
+  assert.equal(mixed.reasoning, 'plan');
+  assert.equal(mixed.content, code.trim());
 });
 
 test('refusal deltas are displayed', () => {
@@ -407,4 +503,201 @@ test('watchdog resets on progress and releases timers on user stop', () => {
   assert.equal(watchdog.signal.reason.name, 'AbortError');
   watchdog.dispose();
   assert.equal(timers.size, 0);
+});
+
+function storageContext() {
+  const context = sidebar();
+  const data = {};
+  const hooks = { afterGet: null, failRemove: 0 };
+  context.chrome = {
+    storage: {
+      local: {
+        async get() {
+          const value = structuredClone(data);
+          await hooks.afterGet?.(value);
+          return value;
+        },
+        async set(values) { Object.assign(data, structuredClone(values)); },
+        async remove(keys) {
+          if (hooks.failRemove > 0) { hooks.failRemove -= 1; throw new Error('remove failed'); }
+          [].concat(keys).forEach(key => delete data[key]);
+        }
+      }
+    }
+  };
+  vm.runInContext(`globalThis.store = { writeLocalChanges, stashChangesOnUnload, applyChanges, state };`, context);
+  return { store: context.store, data, hooks };
+}
+
+const pendingKeys = data => Object.keys(data).filter(key => key.startsWith('pendingSave:'));
+
+test('a newer stash under the same page is applied even when an earlier one is already folded in', async () => {
+  // These two drafts have the same 32-bit djb2 fingerprint ("o4kdcp").
+  const { store, data, hooks } = storageContext();
+  store.state.drafts.chat = 'draft-0001r';
+  store.stashChangesOnUnload();
+  hooks.failRemove = 1;
+  await assert.rejects(store.writeLocalChanges(false));
+  assert.equal(data.drafts.chat, 'draft-0001r');
+  assert.equal(pendingKeys(data).length, 1);
+  store.state.drafts.chat = 'draft-00030';
+  store.stashChangesOnUnload();
+  assert.equal(pendingKeys(data).length, 2);
+  await store.writeLocalChanges(false);
+  assert.equal(data.drafts.chat, 'draft-00030');
+  assert.deepEqual(pendingKeys(data), []);
+});
+
+test('re-stashing identical content reuses the key, so repeated pagehide stays one changeset', () => {
+  const { store, data } = storageContext();
+  store.state.drafts.chat = 'same';
+  store.stashChangesOnUnload();
+  store.stashChangesOnUnload();
+  assert.equal(pendingKeys(data).length, 1);
+});
+
+test('a stash written after a locked save read its snapshot is not removed by that save', async () => {
+  const { store, data, hooks } = storageContext();
+  store.state.drafts.chat = 'earlier pending';
+  store.stashChangesOnUnload();
+  let released = false;
+  hooks.afterGet = async () => {
+    if (released) return;
+    released = true;
+    // pagehide: same page, newer payload, no lock
+    store.state.drafts.chat = 'latest pending';
+    store.stashChangesOnUnload();
+  };
+  await store.writeLocalChanges(false);
+  assert.equal(pendingKeys(data).length, 1, 'newer stash must survive the earlier save');
+  hooks.afterGet = null;
+  await store.writeLocalChanges(false);
+  assert.equal(data.drafts.chat, 'latest pending');
+  assert.deepEqual(pendingKeys(data), []);
+});
+
+test('different conflicting edits get different copies; replaying one changeset adds none', () => {
+  const { store } = storageContext();
+  const msg = content => ({ id: 'm', role: 'user', content });
+  const chat = content => ({ title: 'T', messages: [msg(content)] });
+  const stored = { sessions: { s: chat('theirs') }, drafts: {} };
+  const change = (content, copyNonce) => ({
+    sessions: { s: { base: JSON.stringify(chat('base')), mine: chat(content), copyNonce, draft: null, current: false } },
+    removed: {}, drafts: {}
+  });
+  // Contents with colliding legacy hashes.
+  let tables = store.applyChanges(stored, change('draft-0000r', 'n1'));
+  tables = store.applyChanges(tables, change('draft-00020', 'n2'));
+  const copies = Object.keys(tables.sessions).filter(key => key.startsWith('conflict-'));
+  assert.equal(copies.length, 2);
+  const again = store.applyChanges(tables, change('draft-0000r', 'n1'));
+  assert.deepEqual(Object.keys(again.sessions).sort(), Object.keys(tables.sessions).sort());
+});
+
+// Re-keys the stored stashes so that sorted key order is `names` order (or the reverse),
+// and re-inserts them in that order, whatever order they were written in.
+function rekeyPending(data, names, reverse) {
+  const keys = pendingKeys(data);
+  const payloads = keys.map(key => data[key]);
+  keys.forEach(key => delete data[key]);
+  const order = names.map((name, i) => [`pendingSave:p:${name}`, payloads[i]]);
+  (reverse ? order.reverse() : order).forEach(([key, value]) => { data[key] = value; });
+}
+
+for (const reverse of [false, true]) {
+  test(`stashes fold oldest first whatever the key sort or return order (${reverse ? 'reversed' : 'plain'})`, async () => {
+    const { store, data } = storageContext();
+    store.state.drafts.chat = 'older pending';
+    store.stashChangesOnUnload();
+    store.state.drafts.chat = 'latest pending';
+    store.stashChangesOnUnload();
+    assert.equal(pendingKeys(data).length, 2);
+    // The page itself no longer holds the draft, so only the stashes decide the result.
+    delete store.state.drafts.chat;
+    // Name the older stash so that it sorts last, and the newer one first.
+    rekeyPending(data, ['zzz', 'aaa'], reverse);
+    await store.writeLocalChanges(false);
+    assert.equal(data.drafts.chat, 'latest pending');
+    assert.deepEqual(pendingKeys(data), []);
+  });
+}
+
+test('stashes from different pages are ordered by their clock, not by page id or key', async () => {
+  const { store, data } = storageContext();
+  const stash = (page, at, text) => ({ sessions: {}, removed: {}, drafts: { chat: text }, order: { at, page, n: 1 } });
+  data['pendingSave:a'] = stash('page-z', 2000, 'newer, page z');
+  data['pendingSave:b'] = stash('page-a', 1000, 'older, page a');
+  await store.writeLocalChanges(false);
+  assert.equal(data.drafts.chat, 'newer, page z');
+  assert.deepEqual(pendingKeys(data), []);
+});
+
+test('a stash without a copy nonce gets a fresh one: colliding legacy hashes keep both edits', async () => {
+  const { store, data } = storageContext();
+  const chat = content => ({ title: 'T', messages: [{ id: 'm', role: 'user', content }] });
+  data.sessions = { s: chat('theirs') };
+  const legacy = content => ({
+    sessions: { s: { base: JSON.stringify(chat('base')), mine: chat(content), draft: null, current: false } },
+    removed: {}, drafts: {}
+  });
+  // 'draft-0000r' and 'draft-00020' collide under the old 32-bit hash.
+  data['pendingSave:1'] = legacy('draft-0000r');
+  data['pendingSave:2'] = legacy('draft-00020');
+  await store.writeLocalChanges(false);
+  const copies = Object.entries(data.sessions).filter(([key]) => key.startsWith('conflict-s-'));
+  assert.deepEqual(copies.map(([, copy]) => copy.messages[0].content).sort(), ['draft-0000r', 'draft-00020']);
+  assert.deepEqual(pendingKeys(data), []);
+});
+
+test('applying a nonce-less change directly is stable within the call and differs between calls', () => {
+  const { store } = storageContext();
+  const chat = content => ({ title: 'T', messages: [{ id: 'm', role: 'user', content }] });
+  const change = { sessions: { s: { base: JSON.stringify(chat('base')), mine: chat('mine'), draft: null, current: true } }, removed: {}, drafts: {} };
+  const stored = { sessions: { s: chat('theirs') }, drafts: {} };
+  const first = store.applyChanges(stored, change);
+  const second = store.applyChanges(stored, change);
+  assert.equal(first.conflicts.length, 1);
+  assert.ok(first.sessions[first.conflicts[0].copyId]);
+  assert.equal(first.currentSessionId, first.conflicts[0].copyId);
+  assert.notEqual(first.conflicts[0].copyId, second.conflicts[0].copyId);
+});
+
+test('a conflict copy is recorded in the same write as the marker that guards it', async () => {
+  const { store, data, hooks } = storageContext();
+  const chat = content => ({ title: 'T', messages: [{ id: 'm', role: 'user', content }] });
+  data.sessions = { s: chat('theirs') };
+  data['pendingSave:1'] = { sessions: { s: { base: JSON.stringify(chat('base')), mine: chat('mine'), draft: null, current: false } }, removed: {}, drafts: {} };
+  hooks.failRemove = 1;
+  await assert.rejects(store.writeLocalChanges(false));
+  assert.equal(Object.keys(data.sessions).filter(key => key.startsWith('conflict-s-')).length, 1);
+  assert.equal(typeof data.appliedPending['pendingSave:1'].nonce, 'string');
+  await store.writeLocalChanges(false);
+  assert.equal(Object.keys(data.sessions).filter(key => key.startsWith('conflict-s-')).length, 1, 'retry only removes the key');
+  assert.deepEqual(pendingKeys(data), []);
+});
+
+test('legacy string markers: a matching one counts as applied, a stale one is replayed', async () => {
+  const { store, data } = storageContext();
+  const payload = text => ({ sessions: {}, removed: {}, drafts: { chat: text } });
+  // The fingerprint format of the previous build: djb2 over the stash JSON.
+  const hash = text => {
+    let h = 5381;
+    for (let i = 0; i < text.length; i += 1) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  };
+  data.drafts = { chat: 'newer draft' };
+  data['pendingSave:old'] = payload('already folded in');
+  data.appliedPending = { 'pendingSave:old': hash(JSON.stringify(payload('already folded in'))) };
+  await store.writeLocalChanges(false);
+  assert.equal(data.drafts.chat, 'newer draft', 'matching legacy marker: only the removal is retried');
+  assert.deepEqual(pendingKeys(data), []);
+
+  // Same key rewritten with different content after the marker was written.
+  data['pendingSave:old'] = payload('rewritten later');
+  data.appliedPending = { 'pendingSave:old': hash(JSON.stringify(payload('first version'))) };
+  await store.writeLocalChanges(false);
+  assert.equal(data.drafts.chat, 'rewritten later', 'non-matching legacy marker: the stash is replayed, not dropped');
+  assert.deepEqual(pendingKeys(data), []);
+  await store.writeLocalChanges(false);
+  assert.deepEqual(data.appliedPending, {}, 'the next save drops the stale marker');
 });

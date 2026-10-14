@@ -46,6 +46,7 @@ const state = {
 
 // Message element cache
 const messageElementCache = new Map();
+const elementMessages = new WeakMap();
 
 // Simplified markdown cache with automatic size control
 const markdownCache = new Map();
@@ -275,6 +276,7 @@ async function loadFromStorage() {
     showNotification('Could not load settings. Reload SideMind to try again.');
   }
   try {
+    await withStorageLock(() => writeLocalChanges(true));
     const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId', 'drafts']);
 
     if (localResult.sessions) {
@@ -289,6 +291,7 @@ async function loadFromStorage() {
       state.currentSessionId = localResult.currentSessionId;
     }
 
+    rememberSaved(state.sessions, state.drafts, state.currentSessionId);
     if (!state.sessions[state.currentSessionId]) {
       await createNewSession();
     }
@@ -319,19 +322,332 @@ function retryStorageSave() {
   saveToStorage();
 }
 
-// Draft and transcript writes share one queue. Take the snapshot when each
-// write starts, so rapid switches and retries cannot write older drafts last.
+// Several side panels share one storage area, so a page may only write what it
+// changed itself. `savedSessions`/`savedDrafts` remember what this page last
+// read or wrote (sessions as JSON); a save collects the difference as a
+// changeset and applies it, inside a Web Lock, to a fresh read of the tables.
+//
+// Merge rules (three-way against the remembered base): messages are merged by
+// id, so independent additions from several pages all survive. A message both
+// pages changed differently cannot be merged; the stored chat is left as the
+// other page saved it and this page's version is kept as a separate
+// "(conflicting copy)" chat. A chat removed by one page is kept if another page
+// changed it meanwhile. Drafts and the selected chat are last writer wins.
+let savedSessions = {};
+let savedDrafts = {};
+let savedCurrentSessionId = null;
+const pageId = crypto.randomUUID();
+const PENDING_PREFIX = 'pendingSave:';
+
+function rememberSaved(sessions, drafts, currentSessionId) {
+  savedSessions = Object.fromEntries(Object.entries(sessions).map(([id, s]) => [id, JSON.stringify(s)]));
+  savedDrafts = { ...drafts };
+  savedCurrentSessionId = currentSessionId;
+}
+
+function withStorageLock(task) {
+  return typeof navigator !== 'undefined' && navigator.locks ? navigator.locks.request('sidemind-local-storage', task) : task();
+}
+
+// A conflict copy's id comes from a random nonce stored in the changeset, not
+// from a hash of its content: hashes collide, and a collision would silently
+// drop a different edit. The nonce is stable while the page's version of the
+// chat is unchanged, so replaying or re-stashing the same changeset still
+// resolves to the same copy.
+const copyNonces = new Map();
+function copyNonceFor(id, json) {
+  const known = copyNonces.get(id);
+  if (known?.json === json) return known.nonce;
+  const nonce = crypto.randomUUID();
+  copyNonces.set(id, { json, nonce });
+  return nonce;
+}
+
+// Synchronous snapshot of everything this page changed since its last save.
+function collectChanges(includeSessions) {
+  const changes = { sessions: {}, removed: {}, drafts: {} };
+  const nextSaved = {};
+  const nextDrafts = { ...state.drafts };
+  if (includeSessions) {
+    Object.entries(state.sessions).forEach(([id, session]) => {
+      const json = JSON.stringify(session);
+      nextSaved[id] = json;
+      if (savedSessions[id] !== json) {
+        // `draft` and `current` say where this page was; they only matter if the
+        // chat turns out to conflict and this page's context moves to a copy.
+        changes.sessions[id] = {
+          base: savedSessions[id] ?? null,
+          mine: JSON.parse(json),
+          copyNonce: copyNonceFor(id, json),
+          draft: state.drafts[id] ?? null,
+          current: state.currentSessionId === id
+        };
+      }
+    });
+    Object.keys(savedSessions).forEach((id) => {
+      if (!(id in state.sessions)) changes.removed[id] = savedSessions[id];
+    });
+    if (state.currentSessionId !== savedCurrentSessionId) changes.currentSessionId = state.currentSessionId;
+  }
+  Object.keys(savedDrafts).forEach((id) => {
+    if (!(id in state.drafts)) changes.drafts[id] = null;
+  });
+  Object.entries(state.drafts).forEach(([id, text]) => {
+    if (savedDrafts[id] !== text) changes.drafts[id] = text;
+  });
+  const commit = () => {
+    if (includeSessions) {
+      savedSessions = nextSaved;
+      savedCurrentSessionId = changes.currentSessionId ?? savedCurrentSessionId;
+    }
+    savedDrafts = nextDrafts;
+  };
+  const empty =
+    !Object.keys(changes.sessions).length &&
+    !Object.keys(changes.removed).length &&
+    !Object.keys(changes.drafts).length &&
+    changes.currentSessionId === undefined;
+  return { changes, commit, empty };
+}
+
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// Returns the merged chat, or null when both sides changed the same message
+// (or a message one side deleted) in incompatible ways.
+function mergeSession(base, mine, theirs) {
+  const index = (list) => new Map(list.map((message) => [message.id, message]));
+  const [b, m, s] = [index(base.messages), index(mine.messages), index(theirs.messages)];
+  const resolved = new Map();
+  for (const id of new Set([...b.keys(), ...m.keys(), ...s.keys()])) {
+    const [bv, mv, sv] = [b.get(id), m.get(id), s.get(id)];
+    let pick;
+    if (sameValue(mv, sv) || sameValue(mv, bv)) pick = sv;
+    else if (sameValue(sv, bv)) pick = mv;
+    else return null;
+    if (pick) resolved.set(id, pick);
+  }
+  const order = theirs.messages.map((message) => message.id).filter((id) => resolved.has(id));
+  mine.messages.forEach((message, i) => {
+    if (s.has(message.id) || !resolved.has(message.id)) return;
+    const previous = mine.messages.slice(0, i).reverse().find((candidate) => order.includes(candidate.id));
+    let at = previous ? order.indexOf(previous.id) + 1 : order.length;
+    // Skip messages another page added meanwhile: ours are the later ones.
+    while (at < order.length && !b.has(order[at]) && !m.has(order[at])) at += 1;
+    order.splice(at, 0, message.id);
+  });
+  const merged = {};
+  for (const key of new Set([...Object.keys(base), ...Object.keys(mine), ...Object.keys(theirs)])) {
+    if (key === 'messages') continue;
+    const value = sameValue(mine[key], base[key]) ? theirs[key] : mine[key];
+    if (value !== undefined) merged[key] = value;
+  }
+  merged.messages = order.map((id) => resolved.get(id));
+  return merged;
+}
+
+// Pure: applies a changeset to copies of the stored tables.
+function applyChanges(stored, changes) {
+  const sessions = { ...stored.sessions };
+  const drafts = { ...stored.drafts };
+  const conflicts = [];
+  Object.entries(changes.sessions).forEach(([id, { base, mine, draft, current, copyNonce }]) => {
+    const theirs = sessions[id];
+    // The copy's id belongs to the changeset, never to the stored chat. If
+    // that copy exists, this changeset already ran as a conflict: replaying it
+    // must not touch the original chat again (it may have moved on, been
+    // deleted or been restored since) nor the copy (its page may have saved
+    // newer messages). A changeset without a nonce (written by an older build)
+    // gets a fresh one for this call: no content hash is trusted to say "this
+    // copy is the same one", so such a changeset is never matched to an
+    // existing copy. Callers that replay stashes pass the nonce in beforehand
+    // (see writeLocalChanges) so the copy id is recorded together with the write.
+    const nonce = copyNonce || crypto.randomUUID();
+    const copyId = `conflict-${id}-${nonce}`;
+    if (sessions[copyId]) {
+      // `copy` is what this page's changeset made of the chat, not the stored
+      // copy, which may hold newer messages from the copy's own page by now.
+      const written = { ...mine, title: `${mine.title} (conflicting copy)` };
+      conflicts.push({ id, copyId, copy: written, theirs, isNew: false, draft, current });
+      return;
+    }
+    const merged = theirs && base && JSON.stringify(theirs) !== base ? mergeSession(JSON.parse(base), mine, theirs) : mine;
+    if (merged) {
+      sessions[id] = merged;
+      return;
+    }
+    const copy = { ...mine, title: `${mine.title} (conflicting copy)` };
+    sessions[copyId] = copy;
+    conflicts.push({ id, copyId, copy, theirs, isNew: true, draft, current });
+  });
+  Object.entries(changes.removed).forEach(([id, base]) => {
+    if (sessions[id] && JSON.stringify(sessions[id]) === base) delete sessions[id];
+  });
+  const conflicted = new Set(conflicts.map(({ id }) => id));
+  Object.entries(changes.drafts).forEach(([id, text]) => {
+    if (conflicted.has(id)) return; // the stored draft stays with the original chat
+    if (text === null) delete drafts[id];
+    else drafts[id] = text;
+  });
+  // The page that made the change continues in its copy: its selection and
+  // unsent draft move there (once, when the copy is created).
+  let currentSessionId = changes.currentSessionId;
+  conflicts.forEach(({ id, copyId, isNew, draft, current }) => {
+    if (currentSessionId === id) currentSessionId = isNew ? copyId : undefined;
+    else if (isNew && current) currentSessionId = copyId;
+    if (isNew && typeof draft === 'string') drafts[copyId] = draft;
+  });
+  return { sessions, drafts, conflicts, currentSessionId };
+}
+
+// Only used to recognise the markers an older build wrote (a hash of the stash).
+function hashText(text) {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
+}
+
+// Another window changed the same message: this page carries on in its copy,
+// and the original chat shows what the other window saved.
+function adoptConflicts(conflicts) {
+  conflicts.forEach(({ id, copyId, copy, theirs, isNew, draft, current }) => {
+    const live = state.sessions[id];
+    if (!live) return;
+    live.title = copy.title;
+    state.sessions[copyId] = live;
+    if (theirs) state.sessions[id] = theirs;
+    else delete state.sessions[id];
+    // The baselines are what was actually written. Anything this page changed
+    // while that write was in flight still differs from them and is saved next.
+    if (theirs) savedSessions[id] = JSON.stringify(theirs);
+    else delete savedSessions[id];
+    savedSessions[copyId] = JSON.stringify(copy);
+    // The chat's stored draft now belongs to whoever owns the original chat;
+    // this page's draft follows its copy and is tracked there.
+    delete savedDrafts[id];
+    if (isNew && typeof draft === 'string') savedDrafts[copyId] = draft;
+    else delete savedDrafts[copyId];
+    if (state.drafts[id] !== undefined) {
+      state.drafts[copyId] = state.drafts[id];
+      delete state.drafts[id];
+    }
+    if (state.currentSessionId === id) state.currentSessionId = copyId;
+    if (isNew && current) savedCurrentSessionId = copyId;
+  });
+  if (conflicts.length) {
+    renderMessages();
+    debouncedSave();
+    showNotification('Another window changed this chat. Your version was kept as a separate copy.');
+  }
+}
+
+// Also run once at load (with nothing to save) to fold in what closed pages left.
+async function writeLocalChanges(includeSessions) {
+  const stored = await chrome.storage.local.get(null);
+  // Stashes are folded oldest first: the key is random and the storage returns
+  // keys in no meaningful order, so the version order travels in the payload.
+  const pending = Object.keys(stored)
+    .filter((key) => key.startsWith(PENDING_PREFIX))
+    .sort((a, b) => compareStashes(stored[a], stored[b]) || (a < b ? -1 : a > b ? 1 : 0));
+  let tables = { sessions: stored.sessions || {}, drafts: stored.drafts || {} };
+  let currentSessionId;
+  // Replaying a stash is not idempotent (its drafts would overwrite newer ones),
+  // so the set that folds a stash in also records its key, with the nonce its
+  // conflict copies were named by. If removing the key then fails, later saves
+  // see the marker and only retry the removal. A key is never rewritten with
+  // different content (see stashChangesOnUnload), so the key alone identifies the
+  // changeset, and removing exactly the keys read here can never delete a newer
+  // stash.
+  const applied = {};
+  pending.forEach((key) => {
+    const marker = stored.appliedPending?.[key];
+    if (marker && typeof marker === 'object') {
+      applied[key] = marker;
+      return;
+    }
+    // Older builds recorded a hash of the stash as a bare string, and reused a
+    // key for different content. Only a marker that still matches this very
+    // payload counts as applied; anything else is replayed rather than dropped.
+    // (A 32-bit hash cannot prove equality; a collision on a rewritten legacy
+    // key is not distinguishable and is accepted as a known limit.)
+    if (typeof marker === 'string' && marker === hashText(JSON.stringify(stored[key]))) {
+      applied[key] = marker;
+      return;
+    }
+    const nonce = crypto.randomUUID();
+    applied[key] = { nonce };
+    const change = stored[key];
+    const sessions = Object.fromEntries(
+      Object.entries(change.sessions || {}).map(([id, entry]) => [id, { ...entry, copyNonce: entry.copyNonce || nonce }])
+    );
+    const folded = applyChanges(tables, { ...change, sessions });
+    tables = folded;
+    currentSessionId = folded.currentSessionId ?? currentSessionId;
+  });
+  const { changes, commit, empty } = collectChanges(includeSessions);
+  const own = applyChanges(tables, changes);
+  const staleMarks = Object.keys(stored.appliedPending || {}).length > 0;
+  if (empty && !pending.length && !staleMarks) return;
+  const data = { drafts: own.drafts };
+  if (pending.length || staleMarks) data.appliedPending = applied;
+  if (includeSessions || pending.length) data.sessions = own.sessions;
+  const selected = own.currentSessionId ?? currentSessionId;
+  if (selected !== undefined) data.currentSessionId = selected;
+  await chrome.storage.local.set(data);
+  // The tables are written: record that before anything else can fail, or a
+  // retry would diff against a stale baseline and undo what other pages add.
+  commit();
+  lastStash = null;
+  adoptConflicts(own.conflicts);
+  if (pending.length) await chrome.storage.local.remove(pending);
+}
+
+// A closing page cannot wait for the lock or a read, and must not rewrite the
+// shared tables from a stale view. It issues one write to a key of its own;
+// the next page to load or save folds it in under the lock. Whether the browser
+// finishes that single call during teardown cannot be guaranteed from here.
+let lastStash = null;
+let lastStashAt = 0;
+let stashCounter = 0;
+
+// Version order of stashes: wall clock (made strictly increasing within a page),
+// then page id and a page-local counter. Stashes without an order (older builds)
+// sort first, among themselves by key, which is the one case left ambiguous.
+function compareStashes(a, b) {
+  const [x, y] = [a?.order, b?.order];
+  if (!x || !y) return x ? 1 : y ? -1 : 0;
+  return x.at - y.at || (x.page < y.page ? -1 : x.page > y.page ? 1 : 0) || x.n - y.n;
+}
+
+function stashChangesOnUnload() {
+  const { changes, empty } = collectChanges(true);
+  if (empty) return;
+  // Identical content (repeated pagehide, BFCache) reuses its key; anything
+  // newer gets a key of its own so an older save cannot remove or be mistaken
+  // for it.
+  const json = JSON.stringify(changes);
+  if (lastStash?.json !== json) {
+    lastStashAt = Math.max(Date.now(), lastStashAt + 1);
+    stashCounter += 1;
+    lastStash = {
+      json,
+      key: `${PENDING_PREFIX}${pageId}:${crypto.randomUUID()}`,
+      payload: { ...changes, order: { at: lastStashAt, page: pageId, n: stashCounter } }
+    };
+  }
+  chrome.storage.local.set({ [lastStash.key]: lastStash.payload }).catch((error) => {
+    console.error('Conversation save error:', error);
+  });
+}
+
+// Draft and transcript writes share one queue, and each write takes the
+// snapshot when it starts, so rapid switches and retries cannot write older
+// drafts last. The lock serialises the read-merge-write across pages.
 function queueLocalSave(includeSessions) {
   if (storageLoadFailed) return Promise.resolve(false);
   storageWriteQueue = storageWriteQueue.then(async () => {
     elements.retryStorageBtn.disabled = true;
     try {
-      const data = { drafts: structuredClone(state.drafts) };
-      if (includeSessions) {
-        data.sessions = structuredClone(state.sessions);
-        data.currentSessionId = state.currentSessionId;
-      }
-      await chrome.storage.local.set(data);
+      await withStorageLock(() => writeLocalChanges(includeSessions));
       if (includeSessions) elements.storageStatus.classList.add('hidden');
       return true;
     } catch (error) {
@@ -393,7 +709,8 @@ function persistConfig() {
 function flushSidebarSaves() {
   clearTimeout(saveTimeout);
   if (configSaveTimer !== null) persistConfig();
-  saveToStorage();
+  if (storageLoadFailed) return;
+  stashChangesOnUnload();
 }
 
 // ----------------------------------------
@@ -690,8 +1007,11 @@ function renderMessages() {
 
     let messageElement = messageElementCache.get(message.id);
 
-    if (!messageElement) {
+    // Ids are only unique within a chat (a conflicting copy shares them with
+    // the chat it split from), so a cached node must belong to this message.
+    if (!messageElement || elementMessages.get(messageElement) !== message) {
       messageElement = createMessageElement(message);
+      elementMessages.set(messageElement, message);
       messageElementCache.set(message.id, messageElement);
     }
 
@@ -1247,11 +1567,11 @@ async function submitEdit(message, rawText) {
   renderMessages();
   updateMessageDisplay(message.id);
 
-  const sessionId = state.currentSessionId;
   offerUndo(describeEditUndo(removed.length), async () => {
     await stopStreamingIfActive();
 
-    const target = state.sessions[sessionId];
+    // By object, not id: a save conflict can move this chat to another id.
+    const target = Object.values(state.sessions).includes(session) ? session : null;
     if (!target) return;
 
     message.content = previousText;
@@ -1300,13 +1620,12 @@ async function regenerateMessage(message, button) {
     renderMessages();
 
     if (removed.length > 0) {
-      const sessionId = state.currentSessionId;
       const count = removed.length;
 
       offerUndo(`Removed ${count} message${count > 1 ? 's' : ''}`, async () => {
         await stopStreamingIfActive();
 
-        const target = state.sessions[sessionId];
+        const target = Object.values(state.sessions).includes(session) ? session : null;
         if (!target) return;
 
         // Drop whatever the regeneration produced, then put the originals back
@@ -1439,6 +1758,12 @@ function sanitizeMarkdown(html) {
       }
       if (!isText && !isLanguage && !isNumber && !isUrl) node.removeAttribute(name);
     });
+    // A remote image is a request to a third party that can carry anything the
+    // model wrote into the URL, so it is never loaded until the user asks.
+    if (node.tagName === 'IMG' && node.hasAttribute('src')) {
+      node.setAttribute('data-remote-src', node.getAttribute('src'));
+      node.removeAttribute('src');
+    }
   });
   return template.innerHTML;
 }
@@ -1476,7 +1801,25 @@ function decorateMarkdown(container, finished = true) {
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
   });
+  container.querySelectorAll('img[data-remote-src]').forEach(createRemoteImageButton);
   if (finished) decorateCodeBlocks(container);
+}
+
+function createRemoteImageButton(image) {
+  const url = new URL(image.dataset.remoteSrc, location.href);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'remote-image-btn';
+  button.textContent = `Load image from ${url.hostname}`;
+  button.title = image.getAttribute('alt') || url.href;
+  button.addEventListener('click', () => {
+    const loaded = document.createElement('img');
+    loaded.alt = image.getAttribute('alt') || '';
+    loaded.referrerPolicy = 'no-referrer';
+    loaded.src = url.href;
+    button.replaceWith(loaded);
+  });
+  image.replaceWith(button);
 }
 
 function updateResponseStatus(
@@ -1657,7 +2000,9 @@ function renderWelcomeMessage() {
     button.textContent = label;
     button.disabled = !hasModel;
     button.addEventListener('click', () => {
-      elements.messageInput.value = prompt;
+      // Never replace what the user already typed; append like a selection import.
+      const current = elements.messageInput.value;
+      elements.messageInput.value = `${current}${current.trim() ? '\n\n' : ''}${prompt}`;
       handleInputChange();
       elements.messageInput.focus();
     });
@@ -2257,7 +2602,7 @@ const API_ADAPTERS = {
     endpoint: '/responses',
     buildRequestBody: buildResponsesRequestBody,
     applyStreamEvent: applyResponsesStreamEvent,
-    applyResponse: applyResponsesResponse
+    applyResponse: applyResponsesBody
   }
 };
 
@@ -2540,6 +2885,16 @@ function applyChatResponse(data, message) {
   }
 }
 
+// A complete non-streaming body must look like a Responses object; `{}` or a
+// Chat Completions payload would otherwise be reported as an empty success.
+function applyResponsesBody(data, message) {
+  const recognised = Array.isArray(data?.output) || typeof data?.output_text === 'string';
+  if (!recognised && !data?.error && data?.status !== 'failed') {
+    throw new Error('The provider returned no answer. Check the API type in Settings and retry.');
+  }
+  applyResponsesResponse(data, message);
+}
+
 // Responses API: a list of output items. `reasoning` items hold the summary
 // (and optionally raw reasoning text), `message` items hold the answer.
 function applyResponsesResponse(data, message) {
@@ -2605,26 +2960,102 @@ function readUsage(usage) {
   };
 }
 
-// Process think tags
+// Process think tags. Code is located with the same Markdown lexer that
+// renders the answer and masked first: a tag shown as an example in code is
+// answer text, not reasoning. Token `raw` strings are verified against the
+// source position by position. Fenced/indented blocks and code spans in plain
+// paragraphs are masked exactly; a blockquote, list or table that contains
+// code is masked whole (its children's raw text omits the quote/indent
+// prefixes, so exact positions are not recoverable), which means a think tag
+// elsewhere in that same quote, list or table is kept as answer text too. If
+// the lexer output cannot be matched to the source, nothing is extracted.
+// Tags are paired in the original text and skipped when they sit inside code.
+function codeRanges(source) {
+  // The lexer reads \r\n and \r as \n, so work on that form and map the
+  // offsets back to the original text.
+  const offsets = [];
+  let text = '';
+  for (let i = 0; i < source.length; i += 1) {
+    offsets.push(i);
+    if (source[i] === '\r') {
+      text += '\n';
+      if (source[i + 1] === '\n') i += 1;
+    } else {
+      text += source[i];
+    }
+  }
+  offsets.push(source.length);
+  const ranges = lexCodeRanges(text);
+  return ranges && ranges.map(([start, end]) => [offsets[start], offsets[end]]);
+}
+
+function lexCodeRanges(text) {
+  const hasCode = (token) =>
+    token.type === 'code' ||
+    token.type === 'codespan' ||
+    [token.tokens, ...(token.items || []).map((item) => item.tokens), token.header?.map((cell) => cell.tokens), ...(token.rows || []).map((row) => row.map((cell) => cell.tokens))]
+      .flat()
+      .some((child) => child && (Array.isArray(child) ? child.some(hasCode) : hasCode(child)));
+  const ranges = [];
+  const walk = (tokens, start) => {
+    let at = start;
+    for (const token of tokens) {
+      if (!text.startsWith(token.raw, at)) return false;
+      const end = at + token.raw.length;
+      if (token.type === 'code' || token.type === 'codespan') ranges.push([at, end]);
+      else if (hasCode(token)) {
+        const inline = token.tokens && !['blockquote', 'list', 'table'].includes(token.type);
+        const mark = ranges.length;
+        if (!inline || !walk(token.tokens, at)) {
+          ranges.length = mark;
+          ranges.push([at, end]);
+        }
+      }
+      at = end;
+    }
+    return true;
+  };
+  return walk(marked.lexer(text), 0) ? ranges : null;
+}
+
 function processThinkTags(message) {
   if (!message.content) return;
 
-  const thinkRegex = /<think(?:ing)?>(.*?)<\/think(?:ing)?>/gs;
-  const matches = [...message.content.matchAll(thinkRegex)];
-
-  if (matches.length > 0) {
-    const extracted = matches.map((m) => m[1]).join('\n\n');
-
-    if (extracted.trim()) {
-      if (message.reasoning) {
-        message.reasoning += '\n\n' + extracted;
-      } else {
-        message.reasoning = extracted;
-      }
-    }
-
-    message.content = message.content.replace(thinkRegex, '').trim();
+  const text = message.content;
+  let ranges;
+  try {
+    ranges = codeRanges(text);
+  } catch {
+    ranges = null;
   }
+  if (!ranges) return;
+  const inCode = (at) => ranges.some(([start, end]) => at >= start && at < end);
+
+  // Pair tags found in the original text and rebuild from its offsets, so
+  // nothing is ever substituted into or back out of the answer.
+  let kept = '';
+  let from = 0;
+  let open = null;
+  const inner = [];
+  for (const tag of text.matchAll(/<(\/?)think(?:ing)?>/g)) {
+    if (inCode(tag.index)) continue;
+    if (!tag[1]) {
+      open ??= tag;
+    } else if (open) {
+      inner.push(text.slice(open.index + open[0].length, tag.index));
+      kept += text.slice(from, open.index);
+      from = tag.index + tag[0].length;
+      open = null;
+    }
+  }
+  if (inner.length === 0) return;
+  kept += text.slice(from);
+
+  const extracted = inner.join('\n\n');
+  if (extracted.trim()) {
+    message.reasoning = message.reasoning ? `${message.reasoning}\n\n${extracted}` : extracted;
+  }
+  message.content = kept.trim();
 }
 
 // ========================================
