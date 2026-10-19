@@ -312,6 +312,15 @@ body {
 .message-content h3 {
   font-size: 1.15em;
 }
+.message-content h5,
+.message-content h6 {
+  font-size: 1em;
+  font-weight: 650;
+  margin: 18px 0 8px;
+}
+.message-content h6 {
+  color: var(--text-secondary);
+}
 .message-content ul,
 .message-content ol {
   padding-left: 22px;
@@ -319,6 +328,15 @@ body {
 }
 .message-content li {
   margin: 5px 0;
+}
+.message-content li.task-item {
+  list-style: none;
+}
+.task-checkbox {
+  display: inline-block;
+  width: 1.2em;
+  margin-left: -1.2em;
+  color: var(--text-secondary);
 }
 .message-content blockquote {
   margin: 16px 0;
@@ -493,6 +511,12 @@ body {
   background: var(--bg-tertiary);
   font-weight: 600;
 }
+.message-content [align='center'] {
+  text-align: center;
+}
+.message-content [align='right'] {
+  text-align: right;
+}
 .hljs-comment,
 .hljs-quote {
   color: var(--text-tertiary);
@@ -509,9 +533,34 @@ body {
 }
 .hljs-title,
 .hljs-built_in,
-.hljs-type {
+.hljs-type,
+.hljs-section,
+.hljs-name {
   color: var(--text-primary);
   font-weight: 600;
+}
+.hljs-meta,
+.hljs-symbol,
+.hljs-regexp,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--text-secondary);
+}
+.hljs-addition {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+.hljs-deletion {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 700;
 }
 
 /* ===== Reasoning, waiting and editing ===== */

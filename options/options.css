@@ -199,6 +199,15 @@ html {
   margin-top: 5px;
   overflow-wrap: anywhere;
 }
+.provider-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--error-text);
+}
 .provider-actions {
   display: flex;
   align-items: center;
@@ -492,6 +501,24 @@ html {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+.connection-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 10px;
+}
+.connection-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.connection-status[data-state='saved'] {
+  color: var(--success);
+}
+.connection-status[data-state='error'] {
+  color: var(--error-text);
 }
 .models-list {
   margin: 12px 0;

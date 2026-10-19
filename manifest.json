@@ -6,6 +6,7 @@
   "description": "AI Chat Assistant in Your Browser Sidebar",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "sidePanel",
     "contextMenus",
     "activeTab"

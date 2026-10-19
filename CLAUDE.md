@@ -61,9 +61,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     max_completion_tokens: string,
     stream: boolean,
     reasoning_effort: string,   // '' = not sent | minimal | low | medium | high
-    reasoning_summary: string,  // Responses API only: auto | concise | detailed | off
+    reasoning_summary: string,  // Responses API only: off (default) | auto | concise | detailed
     systemPrompts: [...],       // Custom system prompts
-    theme: string               // 'light', 'dark', or 'system'
+    theme: string               // 'light', 'dark', or 'system' (default)
   },
   sessions: {
     [sessionId]: {
@@ -127,15 +127,21 @@ Two request/response shapes are supported, selected **per provider** via `provid
 
 - **`API_ADAPTERS`** (sidebar.js) maps each type to `{ endpoint, buildRequestBody, applyStreamEvent, applyResponse }`; everything outside the adapters is API-agnostic.
 - **Responses is stateless here**: `store: false` and the full history is replayed as `input` on every turn — no `previous_response_id`.
-- **Reasoning visibility**: OpenAI reasoning models only emit a chain of thought when `reasoning.summary` is requested, hence the `reasoning_summary: 'auto'` default.
+- **Reasoning visibility**: OpenAI reasoning models only emit a chain of thought when `reasoning.summary` is requested. It is opt-in (`reasoning_summary: 'off'` by default) because not every model accepts reasoning options.
+- **Chat reasoning fields**: `readReasoningField()` reads `reasoning_content` (DeepSeek, LM Studio, older vLLM) or `reasoning` (OpenRouter, Ollama, newer vLLM) - one of them, never both, since some servers send the same text in each.
+- **History**: `buildHistory()` drops assistant turns without answer text (failed, or stopped while reasoning) - many providers reject an empty assistant message.
 - **Base URL normalization**: `buildEndpointUrl()` strips trailing slashes and a pasted `/chat/completions` or `/responses` suffix, so one base URL works for both.
 
 ### Streaming API Integration
 - **Server-Sent Events (SSE)**: Real-time streaming for both APIs. `event:` lines are ignored — both formats carry a discriminator inside the `data:` payload.
-- **Dual Reasoning Format Support**: Handles `reasoning_content`, Responses reasoning events, and `<think>`/`<thinking>` tags
+- **Reasoning Format Support**: Handles `reasoning_content`/`reasoning`, Responses reasoning events, and `<think>`/`<thinking>` tags.
+  While streaming, `displayParts(message)` shows a leading inline think block as reasoning (the sanitizer would otherwise drop the
+  unknown tag and its text); `processThinkTags()` moves it out for good in `cleanupStreaming()`, after any outcome. A leading tag
+  that never closes (stopped mid-thought) is all reasoning.
 - **Error events**: `error` / `response.failed` / streamed `{"error":...}` abort the stream with the provider's own message
 - **AbortController**: Proper cancellation of in-flight requests with stop button
-- **360s Timeout**: Configurable timeout for complex reasoning tasks
+- **Timeouts** (`createRequestWatchdog`): 120s for headers when streaming, 600s without streaming (headers only arrive with the
+  finished answer), then 180s idle between chunks
 - **Key functions**: `streamResponse()`, `processStream()`, `processStreamLine()` in `sidebar/sidebar.js`
 
 ### Message Rendering & Caching
@@ -158,10 +164,11 @@ An assistant message moves through four visible states, all driven by `updateMes
 
 1. **Waiting** — pulsing dots (`.typing-indicator`), plus an elapsed counter after 3s.
    `message.startedAt` is stamped when the request goes out.
-2. **Thinking** — reasoning section expanded, header ticks `🤔 Thinking… 8s` via
-   `startStreamTicker()` (1s interval, updates labels only — no markdown re-render).
-3. **Answering** — the first visible token sets `message.thinkingMs`, the header settles on
-   `🤔 Thought for 12s` and the reasoning folds away unless `message.reasoningTouched`
+2. **Thinking** — reasoning section appears folded, header ticks `Reasoning… 8s` via
+   `startStreamTicker()` (1s interval, updates labels only — no markdown re-render). Opened,
+   the panel follows new reasoning unless the reader scrolls up inside it.
+3. **Answering** — the first visible token sets `message.thinkingMs` and the header settles on
+   `Reasoning · 12s`; the reasoning folds away unless `message.reasoningTouched`
    (the user opened or closed it by hand).
 4. **Done** — `cleanupStreaming()` records `message.durationMs`, flushes pending frames, then
    repaints once more so the final markdown is cached and code blocks get their copy buttons.
@@ -173,7 +180,10 @@ transcript — the transcript's content is rewritten on every repaint.
 To support models with identical IDs from different providers, the extension uses a composite key:
 - **Storage Format**: `"modelId - providerId"` (e.g., `"gpt-4 - provider123"`)
 - **UI Display**: Models grouped by provider in `<optgroup>` elements
-- **API Request**: Extracts only `modelId` when building request body (sidebar.js:1140)
+- **Parsing**: always via `parseModelKey()`, which splits at the *last* `" - "` (provider ids are generated, model ids can contain anything)
+- **API Request**: Extracts only `modelId` when building request body (`getSelectedModelId()`)
+- **Readiness**: `getReadyProvider()` (model still exists and provider has a key) gates Send; `ensureReadyToSend()`
+  gates Regenerate and Edit *before* they truncate the chat
 - **Key Functions**: `updateModelSelector()`, `handleModelChange()`, `buildRequestBody()`
 
 ### Token Usage
@@ -201,6 +211,20 @@ Anything that swaps the transcript while a stream is running must first await
 `stopStreamingIfActive()` - `createNewSession()` and `deleteSession()` used to skip
 this and left the request running against an abandoned session.
 
+`activateSession()` is the one place that changes the visible chat. A *blank* chat (no
+messages, no draft - `isBlankSession()`) is reused by New chat, dropped when left, and
+hidden from history. Undoing the deletion of the open chat activates it again.
+
+### Host Permissions
+Providers are reached through optional host permissions (`<all_urls>` is only the upper
+bound). Settings sync across devices but permissions do not, so a provider can be
+configured yet not allowed here. Shared helpers in `assets/js/ui.js`
+(`hasProviderAccess`, `requestProviderAccess`) back three recovery paths: the provider row
+in Settings shows **Allow access**, import asks for every provider at once, and a fetch
+`TypeError` without access becomes an `errorAction: 'permission'` with an **Allow access**
+button that grants and retries. `requestProviderAccess` must be called before anything is
+awaited in the click handler, or Chrome drops the user gesture.
+
 ### Configuration Management
 - **Provider CRUD**: Full create/read/update/delete for LLM providers
 - **System Prompts**: Custom prompt management with default prompt
@@ -209,16 +233,18 @@ this and left the request running against an abandoned session.
 - **Permissions**: Optional host_permissions for `<all_urls>` - user must grant when needed
 
 ### Storage Strategy
-- **Config**: Stored in `chrome.storage.sync` (synced across devices, 100KB limit)
-- **Sessions**: Stored in `chrome.storage.local` (local only, ~5MB limit)
+- **Config**: Stored in `chrome.storage.sync` (synced across devices, 8KB per item - see `assertConfigFitsSync()`)
+- **Sessions**: Stored in `chrome.storage.local` (local only; `unlimitedStorage` lifts the 10MB quota)
 - **Session IDs**: Timestamp-based strings (`Date.now().toString()`)
 - **Message IDs**: Timestamp-based strings with role (user/assistant) and content
-- **Auto-titles**: First user message truncated to 50 chars as session title
+- **Auto-titles**: First user message, whitespace collapsed, cut at 50 code points (`titleFromContent()`)
 
 ### Theme System
 - **CSS Variables**: Theme colors defined in `:root` (light) and `[data-theme="dark"]` (dark)
 - **System Detection**: Uses `prefers-color-scheme` media query for automatic theme
-- **Manual Override**: User can select light/dark/system in options page
+- **Manual Override**: User can select light/dark/system in options page (system is the default)
+- **No flash**: `assets/js/ui.js` loads in `<head>` and applies the last theme from a localStorage
+  mirror (`cacheAppearance()`), since `chrome.storage` only answers after the first paint
 - **Smooth Transitions**: 200ms ease transition on theme changes (sidebar.css)
 
 ## Code Architecture
@@ -260,6 +286,8 @@ streamResponse()
 
 ### Options Page Architecture (options.js)
 - **Modal-based editing**: Provider and system prompt CRUD via modal dialogs
+- **Check connection**: `GET {baseUrl}/models` verifies URL and key and fills the `#modelSuggestions`
+  datalist used by Model ID fields
 - **Direct config manipulation**: Load → Modify → Save pattern
 - **Notification system**: Simple toast notifications for success/error feedback
 - **Export/Import**: JSON file-based config backup/restore
@@ -282,10 +310,14 @@ sidemind/
 │   └── options.js            # Configuration management (~800 lines)
 ├── assets/                   # Static assets
 │   ├── css/
+│   │   ├── ui.css            # Shared design tokens and controls (both pages)
 │   │   └── fontawesome.min.css # FontAwesome 6 icons
+│   ├── js/
+│   │   └── ui.js             # Shared helpers: theme cache, host access, dialog focus, sync quota
 │   ├── icons.svg             # UI icon library
 │   └── webfonts/             # FontAwesome font files
 ├── icons/                    # Extension icons (16/48/128px)
+├── tests/                    # node --test suites (api, background; ui needs Playwright, see README)
 ├── build.sh                  # Chrome extension package builder
 └── local/                    # Internal documentation (excluded from build)
 ```
@@ -303,7 +335,7 @@ sidemind/
 ### Using the Responses API
 - Set the provider's API Type to `Responses` (base URL stays the root, e.g. `https://api.openai.com/v1`)
 - For GPT-5 style reasoning models, tick **Use model default (omit temperature)** — they reject `temperature`
-- Set **Reasoning Summary** to `auto` (default) to see the model's thinking; set it to `off` for providers that reject the field
+- Set **Reasoning Summary** to `auto` to see the model's thinking; leave it `off` (default) for providers that reject the field
 
 ### Debugging Streaming Issues
 - Open DevTools in sidebar (right-click → Inspect)

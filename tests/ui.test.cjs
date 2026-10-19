@@ -65,6 +65,11 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({
     headless: true,
+    // The multi-page fixtures share storage through localStorage, which Chromium
+    // propagates between renderer processes asynchronously: a page could read a
+    // table another process wrote a moment before, after the Web Lock ordered
+    // them. chrome.storage has no such lag; one process per site removes it here.
+    args: ['--process-per-site'],
     ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {})
   });
 });
@@ -123,7 +128,7 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}, pr
           session: storageArea('session'),
           onChanged: { addListener: (listener) => listeners.push(listener) }
         },
-        permissions: { contains: async () => true, request: async () => true },
+        permissions: { contains: async () => true, request: async () => true, remove: async () => true },
         windows: { getCurrent: async () => ({ id: 1 }) },
         runtime: {
           getManifest: () => ({ version }),
@@ -1157,6 +1162,8 @@ browserTest('concurrent side panels keep each other\'s sessions, drafts and dele
 
   // A starts a new chat that B has never seen; B's snapshot is now stale.
   const fresh = await a.evaluate(async () => {
+    // New chat reuses a blank chat, so give this one a draft first
+    state.drafts[state.currentSessionId] = 'kept';
     await createNewSession();
     state.drafts[state.currentSessionId] = 'draft from A';
     await saveToStorage();
@@ -1678,6 +1685,217 @@ browserTest('welcome prompt suggestions keep an existing draft', async () => {
   const value = await page.locator('#messageInput').inputValue();
   assert.equal(value.startsWith('My unsent thought\n\nPlease help me polish'), true);
   await page.waitForFunction(() => state.drafts[state.currentSessionId]?.startsWith('My unsent thought'));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('inline think tags stream into the reasoning panel and leave a clean answer', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  await page.evaluate(() => window.__stream.delta('<think>Planning the steps'));
+  await page.waitForFunction(() => document.querySelector('.message.assistant .reasoning-header'));
+  assert.equal(await page.locator('.message.assistant .message-content').textContent(), '');
+  await page.locator('.reasoning-header').click();
+  assert.match(await page.locator('.reasoning-content').textContent(), /Planning the steps/);
+  if (process.env.UI_SCREENSHOTS)
+    await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/inline-think.png` });
+  await page.evaluate(() => window.__stream.delta(' carefully.</think>\n\nHere is the answer.'));
+  await page.waitForFunction(() =>
+    document.querySelector('.message.assistant .message-content').textContent.includes('Here is the answer'));
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  const stored = await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1));
+  assert.equal(stored.content, 'Here is the answer.');
+  assert.equal(stored.reasoning, 'Planning the steps carefully.');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a reply stopped mid-thought keeps its thinking as reasoning', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  await page.evaluate(() => window.__stream.delta('<think>Still weighing'));
+  await page.waitForFunction(() => document.querySelector('.message.assistant .reasoning-header'));
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming);
+  const stored = await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1));
+  assert.equal(stored.reasoning, 'Still weighing');
+  assert.equal(stored.content, '');
+  assert.equal(stored.stopped, true);
+  // The empty answer is not replayed as an assistant turn
+  await page.locator('#messageInput').fill('Go on');
+  await page.locator('#messageInput').press('Enter');
+  await page.waitForFunction(() => window.__fetchCalls.length === 2);
+  const roles = await page.evaluate(() => window.__fetchCalls[1].messages.map((m) => m.role));
+  assert.deepEqual(roles, ['system', 'user', 'user']);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('New chat reuses a blank chat, and blank chats stay out of history', async () => {
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('sidebar', fixtureConfig, {
+    currentSessionId: 'kept',
+    sessions: {
+      kept: { title: 'Kept', timestamp, messages: [{ id: 'k1', role: 'user', content: 'Hi', timestamp }] },
+      leftover: { title: 'New Chat', timestamp, messages: [] }
+    }
+  });
+  await page.locator('#newChatBtn').click();
+  const blank = await page.evaluate(() => state.currentSessionId);
+  assert.notEqual(blank, 'kept');
+  await page.locator('#newChatBtn').click();
+  assert.equal(await page.evaluate(() => state.currentSessionId), blank);
+  await page.locator('#chatHistoryBtn').click();
+  // The open blank chat is listed; the one left over from before is not
+  assert.equal(await page.locator('.chat-history-item').count(), 2);
+  await page.locator('.chat-history-content', { hasText: 'Kept' }).click();
+  assert.equal(await page.evaluate((blank) => blank in state.sessions, blank), false);
+  await page.waitForFunction((blank) => !(blank in window.__storage.local.sessions), blank);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('undoing the deletion of the open chat returns to it', async () => {
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('sidebar', fixtureConfig, {
+    currentSessionId: 'only',
+    sessions: { only: { title: 'Only chat', timestamp, messages: [{ id: 'o1', role: 'user', content: 'Hello there', timestamp }] } }
+  });
+  await page.locator('#chatHistoryBtn').click();
+  await page.getByRole('button', { name: 'Delete chat' }).click();
+  assert.notEqual(await page.evaluate(() => state.currentSessionId), 'only');
+  await page.locator('#historyUndoBtn').click();
+  assert.equal(await page.evaluate(() => state.currentSessionId), 'only');
+  // The blank chat created to replace it is gone again
+  assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions)), ['only']);
+  assert.match(await page.locator('#messagesList').textContent(), /Hello there/);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a provider blocked for lack of host access offers to allow it and retries', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(() => {
+    chrome.permissions.contains = async () => false;
+    chrome.permissions.request = async ({ origins }) => {
+      window.__requested = origins;
+      chrome.permissions.contains = async () => true;
+      return true;
+    };
+    const fixtureFetch = window.fetch;
+    window.__blocked = true;
+    window.fetch = async (url, options) => {
+      if (window.__blocked) throw new TypeError('Failed to fetch');
+      return fixtureFetch(url, options);
+    };
+  });
+  await page.locator('#messageInput').fill('Hello');
+  await page.locator('#messageInput').press('Enter');
+  await page.waitForFunction(() => document.querySelector('.message.assistant .response-status.error'));
+  assert.match(await page.locator('.message.assistant .response-status').textContent(), /permission to connect to provider\.test/);
+  if (process.env.UI_SCREENSHOTS)
+    await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/host-access.png` });
+  await page.evaluate(() => { window.__blocked = false; });
+  await page.getByRole('button', { name: 'Allow access' }).click();
+  await page.waitForFunction(() => window.__fetchCalls.length === 1 && state.isStreaming);
+  assert.deepEqual(await page.evaluate(() => window.__requested), ['https://provider.test/*']);
+  await delta(page, 'Connected answer');
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.message.assistant').count(), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('task lists keep their state and tables keep their alignment', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  await page.evaluate(() => window.__stream.delta('- [x] Done\n- [ ] Todo\n\n| L | C |\n| - | :-: |\n| a | b |\n\n* [x] Loose\n\n* [ ] items'));
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.message-content input').count(), 0);
+  assert.deepEqual(await page.locator('.task-checkbox').allTextContents(), ['☑', '☐', '☑', '☐']);
+  assert.equal(await page.locator('li.task-item').count(), 4);
+  assert.equal(await page.locator('.message-content td').nth(1).evaluate((td) => getComputedStyle(td).textAlign), 'center');
+  if (process.env.UI_SCREENSHOTS)
+    await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/task-list.png` });
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('settings check a provider connection and suggest its model IDs', async () => {
+  const { page, errors } = await openPage('options');
+  await page.evaluate(() => {
+    const fixtureFetch = window.fetch;
+    window.fetch = async (url, options) => {
+      if (String(url) !== 'https://provider.test/v1/models') return fixtureFetch(url, options);
+      window.__modelsAuth = options.headers.Authorization;
+      return Response.json({ data: [{ id: 'model-b' }, { id: 'model-a' }, { id: 'model-a' }] });
+    };
+  });
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  await page.locator('#checkConnectionBtn').click();
+  await page.waitForFunction(() => document.querySelector('#connectionStatus').dataset.state === 'saved');
+  assert.match(await page.locator('#connectionStatus').textContent(), /2 models available/);
+  assert.equal(await page.evaluate(() => window.__modelsAuth), 'Bearer fixture-key');
+  assert.deepEqual(
+    await page.locator('#modelSuggestions option').evaluateAll((options) => options.map((o) => o.value)),
+    ['model-a', 'model-b']
+  );
+  await page.locator('#addModelBtn').click();
+  await page.locator('.model-id').last().fill('model-b');
+  await page.locator('.model-id').last().dispatchEvent('change');
+  assert.equal(await page.locator('.model-name').last().inputValue(), 'model-b');
+  if (process.env.UI_SCREENSHOTS)
+    await page.locator('#providerModal .modal-panel').screenshot({ path: `${process.env.UI_SCREENSHOTS}/connection-check.png` });
+  await page.locator('#providerApiKey').fill('changed');
+  assert.equal(await page.locator('#connectionStatus').textContent(), '');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a provider not yet allowed on this device can be allowed from its row', async () => {
+  const { page, errors } = await openPage('options');
+  await page.evaluate(() => {
+    chrome.permissions.contains = async () => false;
+    chrome.permissions.request = async () => {
+      chrome.permissions.contains = async () => true;
+      return true;
+    };
+    renderProviders();
+  });
+  const allow = page.getByRole('button', { name: 'Allow access to Test provider' });
+  await allow.waitFor();
+  if (process.env.UI_SCREENSHOTS)
+    await page.locator('#providers').screenshot({ path: `${process.env.UI_SCREENSHOTS}/provider-access.png` });
+  await allow.click();
+  await page.waitForFunction(() => document.querySelector('.provider-access').classList.contains('hidden'));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('deleting a provider releases host access no other provider uses', async () => {
+  const shared = {
+    ...fixtureConfig,
+    providers: [
+      fixtureConfig.providers[0],
+      { ...fixtureConfig.providers[0], id: 'twin', name: 'Twin provider' },
+      { ...fixtureConfig.providers[0], id: 'other', name: 'Other provider', baseUrl: 'https://other.test/v1' }
+    ]
+  };
+  const { page, errors } = await openPage('options', shared);
+  await page.evaluate(() => {
+    window.__removed = [];
+    chrome.permissions.remove = async ({ origins }) => { window.__removed.push(...origins); return true; };
+  });
+  for (const name of ['Twin provider', 'Other provider']) {
+    await page.getByRole('button', { name: `Delete ${name}` }).click();
+    await page.locator('#confirmAccept').click();
+    await page.waitForFunction((name) => !window.__storage.sync.config.providers.some((p) => p.name === name), name);
+  }
+  // provider.test is still used by the first provider
+  assert.deepEqual(await page.evaluate(() => window.__removed), ['https://other.test/*']);
   assert.deepEqual(errors, []);
   await page.close();
 });

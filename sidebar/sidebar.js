@@ -19,7 +19,7 @@ const state = {
     stream: true,
     reasoning_effort: '',
     reasoning_summary: 'off',
-    theme: 'light',
+    theme: 'system',
     systemPrompts: [
       {
         id: 'default',
@@ -133,6 +133,11 @@ const elements = {
 // ========================================
 // APPLICATION INITIALIZATION
 // ========================================
+
+// ui.js already applied the cached theme; fonts are this page's own setting.
+try {
+  applyFontSettings(cachedAppearance());
+} catch {}
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('SideMind initializing...');
@@ -843,8 +848,37 @@ async function stopStreamingIfActive() {
   if (state.generationDone) await handleStopGeneration();
 }
 
+// A chat nobody wrote anything in is not worth keeping: New chat reuses it,
+// and leaving it drops it, so history does not fill up with "New Chat" rows.
+function isBlankSession(sessionId) {
+  const session = state.sessions[sessionId];
+  return Boolean(session && !session.messages.length && !state.drafts[sessionId]?.trim());
+}
+
+// Makes `sessionId` the visible chat. Callers stop any running stream first.
+function activateSession(sessionId) {
+  if (sessionId !== state.currentSessionId && isBlankSession(state.currentSessionId)) {
+    delete state.sessions[state.currentSessionId];
+  }
+  state.currentSessionId = sessionId;
+  clearOldCacheEntries();
+  state.userScrolledUp = false;
+  state.readingResponse = false;
+  state.followOutput = false;
+
+  saveToStorage();
+  renderMessages();
+  restoreDraft();
+  updateInputState();
+}
+
 async function createNewSession() {
   await stopStreamingIfActive();
+
+  if (isBlankSession(state.currentSessionId)) {
+    elements.messageInput.focus();
+    return;
+  }
 
   const sessionId = crypto.randomUUID();
   state.sessions[sessionId] = {
@@ -854,80 +888,54 @@ async function createNewSession() {
     modelUsed: state.config.selectedModel,
     systemPromptId: state.config.selectedSystemPrompt
   };
-  state.currentSessionId = sessionId;
-  clearOldCacheEntries();
-  state.userScrolledUp = false;
-  state.readingResponse = false;
-  state.followOutput = false;
   clearUndo();
-
-  saveToStorage();
-  renderMessages();
-  restoreDraft();
-  updateInputState();
+  activateSession(sessionId);
 }
 
 async function switchSession(sessionId) {
   if (!state.sessions[sessionId]) return;
 
-  await stopStreamingIfActive();
-
-  state.currentSessionId = sessionId;
-  clearOldCacheEntries();
-  state.userScrolledUp = false;
-  state.readingResponse = false;
-  state.followOutput = false;
-  clearUndo();
-  saveToStorage();
-  renderMessages();
-  restoreDraft();
-  updateInputState();
+  if (sessionId !== state.currentSessionId) {
+    await stopStreamingIfActive();
+    clearUndo();
+    activateSession(sessionId);
+  }
   closeChatHistory();
 }
 
 async function deleteSession(sessionId) {
   if (!state.sessions[sessionId]) return;
 
-  if (sessionId === state.currentSessionId) {
+  const wasCurrent = sessionId === state.currentSessionId;
+  if (wasCurrent) {
     await stopStreamingIfActive();
   }
 
   const removed = state.sessions[sessionId];
   const removedDraft = state.drafts[sessionId];
 
-  // Clear cache for this session
-  if (state.sessions[sessionId].messages) {
-    state.sessions[sessionId].messages.forEach((msg) => {
-      messageElementCache.delete(msg.id);
-    });
-  }
-
+  removed.messages?.forEach((msg) => messageElementCache.delete(msg.id));
   delete state.sessions[sessionId];
   delete state.drafts[sessionId];
 
-  // Switch to another session or create new
-  if (state.currentSessionId === sessionId) {
-    const remaining = Object.keys(state.sessions);
-    if (remaining.length > 0) {
-      const recent = remaining.sort(
-        (a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
-      )[0];
-      state.currentSessionId = recent;
-      restoreDraft();
-    } else {
-      await createNewSession();
-    }
+  // Switch to the most recent remaining chat, or start a new one
+  if (wasCurrent) {
+    const recent = Object.keys(state.sessions).sort(
+      (a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp)
+    )[0];
+    if (recent) activateSession(recent);
+    else await createNewSession();
+  } else {
+    saveToStorage();
   }
-
-  saveToStorage();
-  renderMessages();
-  updateInputState();
 
   offerUndo(`Deleted "${removed.title}"`, () => {
     state.sessions[sessionId] = removed;
     if (removedDraft) state.drafts[sessionId] = removedDraft;
-    saveToStorage();
-    renderChatHistory();
+    // Deleting the open chat moved away from it; undoing moves back.
+    if (wasCurrent) activateSession(sessionId);
+    else saveToStorage();
+    if (elements.chatHistoryDropdown.open) renderChatHistory();
   });
 
   if (elements.chatHistoryDropdown.open) {
@@ -939,8 +947,10 @@ async function deleteSession(sessionId) {
 // MESSAGE MANAGEMENT
 // ========================================
 
+// One line, cut on code points so an emoji or surrogate pair is never split
 function titleFromContent(content) {
-  return content.length > 50 ? content.substring(0, 50) + '...' : content;
+  const characters = Array.from(content.replace(/\s+/g, ' ').trim());
+  return characters.length > 50 ? `${characters.slice(0, 50).join('')}…` : characters.join('');
 }
 
 function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
@@ -1074,8 +1084,10 @@ function createMessageElement(message) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
 
+  const parts = displayParts(message);
+
   // Reasoning section (if exists)
-  if (message.reasoning && message.reasoning.trim()) {
+  if (parts.reasoning.trim()) {
     bubble.appendChild(createReasoningSection(message));
   }
 
@@ -1086,7 +1098,7 @@ function createMessageElement(message) {
   if (message.role === 'user') {
     content.textContent = message.content;
   } else {
-    renderMessageMarkdown(content, message.content, !isStreamingMessage(message.id));
+    renderMessageMarkdown(content, parts.content, !isStreamingMessage(message.id));
   }
 
   bubble.appendChild(content);
@@ -1143,7 +1155,10 @@ function createReasoningSection(message) {
     message.reasoningTouched = true;
     content.hidden = message.reasoningCollapsed;
     if (!message.reasoningCollapsed) {
-      renderMessageMarkdown(content, message.reasoning, !isStreamingMessage(message.id));
+      const streaming = isStreamingMessage(message.id);
+      renderMessageMarkdown(content, displayParts(message).reasoning, !streaming);
+      // Opened mid-stream: show where the thinking is now, and follow it
+      if (streaming) content.scrollTop = content.scrollHeight;
     }
     debouncedSave();
   });
@@ -1153,7 +1168,7 @@ function createReasoningSection(message) {
   content.id = `reasoning-${message.id}`;
   content.hidden = Boolean(message.reasoningCollapsed);
   if (!message.reasoningCollapsed) {
-    renderMessageMarkdown(content, message.reasoning, !isStreamingMessage(message.id));
+    renderMessageMarkdown(content, displayParts(message).reasoning, !isStreamingMessage(message.id));
   }
 
   section.appendChild(header);
@@ -1181,7 +1196,33 @@ function isStreamingMessage(messageId) {
 }
 
 function isAwaitingFirstToken(message) {
-  return isStreamingMessage(message.id) && !message.content?.trim() && !message.reasoning?.trim();
+  if (!isStreamingMessage(message.id)) return false;
+  const { content, reasoning } = displayParts(message);
+  return !content.trim() && !reasoning.trim();
+}
+
+// Some models stream their reasoning inline, as <think>…</think> ahead of the
+// answer. processThinkTags() moves it out once the reply is finished; until
+// then this view shows it as reasoning, rather than as an unknown tag that the
+// sanitizer would drop together with all the text inside it.
+function displayParts(message) {
+  const content = message.content || '';
+  const reasoning = message.reasoning || '';
+  if (message.role !== 'assistant' || !isStreamingMessage(message.id)) return { content, reasoning };
+
+  const head = content.trimStart();
+  // The opening tag itself can arrive split over several deltas
+  if (head && '<thinking>'.startsWith(head)) return { content: '', reasoning };
+  const open = head.match(/^<think(?:ing)?>/);
+  if (!open) return { content, reasoning };
+
+  const rest = head.slice(open[0].length);
+  const close = rest.match(/<\/think(?:ing)?>/);
+  const thought = (close ? rest.slice(0, close.index) : rest).trim();
+  return {
+    content: close ? rest.slice(close.index + close[0].length).trimStart() : '',
+    reasoning: [reasoning, thought].filter(Boolean).join('\n\n')
+  };
 }
 
 function formatDuration(ms) {
@@ -1205,7 +1246,8 @@ function reasoningTitle(message) {
 // Reasoning is considered finished the moment the first visible token lands
 function markStreamProgress(message) {
   if (!message.startedAt || message.thinkingMs != null) return;
-  if (!message.content || !message.reasoning) return;
+  const { content, reasoning } = displayParts(message);
+  if (!content || !reasoning) return;
 
   message.thinkingMs = Date.now() - message.startedAt;
 
@@ -1320,10 +1362,12 @@ function highlightCode(code) {
   }
 }
 
-async function copyCode(pre, button) {
+function copyCode(pre, button) {
   const code = pre.querySelector('code');
-  const text = code ? code.textContent : pre.textContent;
+  return copyText(code ? code.textContent : pre.textContent, button, 'Copy code');
+}
 
+async function copyText(text, button, label) {
   try {
     await navigator.clipboard.writeText(text);
     button.classList.add('copied');
@@ -1333,10 +1377,7 @@ async function copyCode(pre, button) {
 
     setTimeout(() => {
       button.classList.remove('copied');
-      button.setAttribute(
-        'aria-label',
-        button.classList.contains('code-copy-btn') ? 'Copy code' : 'Copy message'
-      );
+      button.setAttribute('aria-label', label);
       button.innerHTML = '<i class="fas fa-copy"></i>';
     }, 2000);
   } catch (error) {
@@ -1388,6 +1429,7 @@ function createMessageActions(message) {
   const time = document.createElement('span');
   time.className = 'time-display';
   time.textContent = formatTime(message.timestamp);
+  if (message.timestamp) time.title = new Date(message.timestamp).toLocaleString();
 
   if (message.role !== 'user') actions.appendChild(regenBtn);
   actions.appendChild(stats);
@@ -1419,28 +1461,8 @@ function applyMessageStats(element, message) {
   }
 }
 
-async function copyMessage(message, button) {
-  try {
-    const text = message.content;
-
-    await navigator.clipboard.writeText(text);
-    button.classList.add('copied');
-    button.setAttribute('aria-label', 'Copied');
-    button.innerHTML = '<i class="fas fa-check"></i>';
-    announce('Copied to clipboard.');
-
-    setTimeout(() => {
-      button.classList.remove('copied');
-      button.setAttribute(
-        'aria-label',
-        button.classList.contains('code-copy-btn') ? 'Copy code' : 'Copy message'
-      );
-      button.innerHTML = '<i class="fas fa-copy"></i>';
-    }, 2000);
-  } catch (error) {
-    console.error('Copy failed:', error);
-    showNotification('Could not copy. Please select and copy the text manually.');
-  }
+function copyMessage(message, button) {
+  return copyText(message.content, button, 'Copy message');
 }
 
 // ----------------------------------------
@@ -1551,6 +1573,7 @@ async function submitEdit(message, rawText) {
   const previousTitle = session.title;
   const removed = session.messages.slice(index + 1);
 
+  if (text !== previousText && !ensureReadyToSend()) return;
   cancelEditing(false);
 
   if (text === previousText) return;
@@ -1584,7 +1607,7 @@ async function submitEdit(message, rawText) {
   });
 
   elements.messageInput.focus({ preventScroll: true });
-  await sendMessageToAPI(text);
+  await sendMessageToAPI();
 }
 
 function describeEditUndo(removedCount) {
@@ -1593,7 +1616,7 @@ function describeEditUndo(removedCount) {
 }
 
 async function regenerateMessage(message, button) {
-  if (state.isStreaming || state.generationDone) return;
+  if (state.isStreaming || state.generationDone || !ensureReadyToSend()) return;
   state.userScrolledUp = false;
   state.readingResponse = false;
   state.followOutput = false;
@@ -1635,16 +1658,9 @@ async function regenerateMessage(message, button) {
       });
     }
 
-    if (message.role === 'user') {
-      await sendMessageToAPI(message.content);
-    } else {
-      const lastUser = session.messages
-        .slice()
-        .reverse()
-        .find((m) => m.role === 'user');
-      if (lastUser) {
-        await sendMessageToAPI(lastUser.content);
-      }
+    // The request replays the history, so there must be a question left in it
+    if (session.messages.some((m) => m.role === 'user')) {
+      await sendMessageToAPI();
     }
   } finally {
     button.classList.remove('regenerating');
@@ -1737,6 +1753,17 @@ function sanitizeMarkdown(html) {
     'SUMMARY'
   ]);
   template.content.querySelectorAll('*').forEach((node) => {
+    // GFM task lists: keep the state as a glyph, never as a form control.
+    // In a loose list the box sits in a paragraph inside the item.
+    const taskItem = node.tagName === 'INPUT' && node.getAttribute('type') === 'checkbox' && node.closest('li');
+    if (taskItem) {
+      const box = document.createElement('span');
+      box.className = 'task-checkbox';
+      box.textContent = node.hasAttribute('checked') ? '☑' : '☐';
+      taskItem.classList.add('task-item');
+      node.replaceWith(box);
+      return;
+    }
     if (!allowedTags.has(node.tagName)) {
       node.remove();
       return;
@@ -1747,6 +1774,8 @@ function sanitizeMarkdown(html) {
       const isLanguage =
         node.tagName === 'CODE' && name === 'class' && /^language-[\w+#-]+$/.test(value);
       const isNumber = ['colspan', 'rowspan', 'start'].includes(name) && /^\d{1,3}$/.test(value);
+      const isAlign = ['TH', 'TD'].includes(node.tagName) && name === 'align' && /^(left|center|right)$/.test(value);
+      const isTask = node.tagName === 'LI' && name === 'class' && value === 'task-item';
       let isUrl = false;
       if ((node.tagName === 'A' && name === 'href') || (node.tagName === 'IMG' && name === 'src')) {
         try {
@@ -1756,7 +1785,7 @@ function sanitizeMarkdown(html) {
             (node.tagName === 'A' && url.protocol === 'mailto:');
         } catch {}
       }
-      if (!isText && !isLanguage && !isNumber && !isUrl) node.removeAttribute(name);
+      if (!isText && !isLanguage && !isNumber && !isAlign && !isTask && !isUrl) node.removeAttribute(name);
     });
     // A remote image is a request to a third party that can carry anything the
     // model wrote into the URL, so it is never loaded until the user asks.
@@ -1832,13 +1861,16 @@ function updateResponseStatus(
   status.textContent = message.error || responseCompletionNotice(message);
   status.classList.toggle('error', Boolean(message.error));
   status.hidden = !status.textContent;
-  if ((message.error && message.errorAction) || message.incompleteReason === 'max_output_tokens') {
+  const actionName = message.error
+    ? message.errorAction
+    : message.incompleteReason === 'max_output_tokens' && 'settings';
+  if (ERROR_ACTIONS[actionName]) {
+    const [label, run] = ERROR_ACTIONS[actionName];
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'undo-btn';
-    const needsNewChat = message.errorAction === 'new-chat';
-    action.textContent = needsNewChat ? 'Start new chat' : 'Open settings';
-    action.addEventListener('click', needsNewChat ? createNewSession : openOptions);
+    action.textContent = label;
+    action.addEventListener('click', () => run(message, element));
     status.appendChild(action);
   }
   const retry = element.querySelector('.regenerate-btn');
@@ -1861,6 +1893,23 @@ function updateResponseStatus(
   } else {
     details?.remove();
   }
+}
+
+const ERROR_ACTIONS = {
+  'new-chat': ['Start new chat', () => createNewSession()],
+  settings: ['Open settings', () => openOptions()],
+  permission: ['Allow access', grantAccessAndRetry]
+};
+
+// The click is the user gesture Chrome requires to show its permission prompt
+async function grantAccessAndRetry(message, element) {
+  const provider = providerForModel(message.modelUsed) || getCurrentProvider();
+  if (!provider || !(await requestProviderAccess([provider.baseUrl]))) {
+    showNotification('Chrome did not grant access. You can allow it later from Settings.');
+    return;
+  }
+  const retry = element.querySelector('.regenerate-btn');
+  if (retry) await regenerateMessage(message, retry);
 }
 
 function responseCompletionNotice(message) {
@@ -1889,6 +1938,7 @@ function updateMessageDisplay(messageId) {
   }
   markStreamProgress(message);
   const scrollBefore = elements.messagesList.scrollTop;
+  const parts = displayParts(message);
 
   // Update content
   const contentEl = messageElement.querySelector('.message-content');
@@ -1896,7 +1946,7 @@ function updateMessageDisplay(messageId) {
     if (message.role === 'user') {
       contentEl.textContent = message.content;
     } else {
-      renderMessageMarkdown(contentEl, message.content, !streaming);
+      renderMessageMarkdown(contentEl, parts.content, !streaming);
     }
   }
 
@@ -1904,14 +1954,19 @@ function updateMessageDisplay(messageId) {
   const bubble = messageElement.querySelector('.message-bubble');
   let reasoningSection = messageElement.querySelector('.reasoning-section');
 
-  if (message.reasoning && message.reasoning.trim()) {
+  if (parts.reasoning.trim()) {
     if (!reasoningSection) {
       reasoningSection = createReasoningSection(message);
       bubble.insertBefore(reasoningSection, bubble.firstChild);
     } else {
       const reasoningContent = reasoningSection.querySelector('.reasoning-content');
       if (reasoningContent && !message.reasoningCollapsed) {
-        renderMessageMarkdown(reasoningContent, message.reasoning, !streaming);
+        // The panel scrolls on its own; keep the newest thinking in view
+        // unless the reader scrolled up inside it.
+        const pinned =
+          reasoningContent.scrollHeight - reasoningContent.scrollTop - reasoningContent.clientHeight < 24;
+        renderMessageMarkdown(reasoningContent, parts.reasoning, !streaming);
+        if (streaming && pinned) reasoningContent.scrollTop = reasoningContent.scrollHeight;
       }
 
       const title = reasoningSection.querySelector('.reasoning-title');
@@ -2076,9 +2131,7 @@ function autoResizeTextarea() {
 
 function updateInputState() {
   const provider = getCurrentProvider();
-  const hasConfig =
-    provider?.apiKey?.trim() &&
-    provider.models.some((model) => `${model.id} - ${provider.id}` === state.config.selectedModel);
+  const hasConfig = Boolean(getReadyProvider());
   const hasMessage = elements.messageInput.value.trim().length > 0;
   const canSend = hasConfig && hasMessage && !state.isStreaming;
 
@@ -2110,26 +2163,18 @@ function updateInputState() {
         : 'Choose a model to start chatting';
 }
 
-function applyFontSettings() {
-  document.documentElement.style.setProperty('--font-size', state.config.fontSize || '14px');
-  if (state.config.fontFamily) {
-    document.documentElement.style.setProperty('--font-family', state.config.fontFamily);
+function applyFontSettings(appearance = state.config) {
+  document.documentElement.style.setProperty('--font-size', appearance.fontSize || '14px');
+  if (appearance.fontFamily) {
+    document.documentElement.style.setProperty('--font-family', appearance.fontFamily);
   } else {
     document.documentElement.style.removeProperty('--font-family');
   }
 }
 
 function applyTheme() {
-  const theme = state.config.theme || 'light';
-  const html = document.documentElement;
-
-  html.classList.remove('light-theme', 'dark-theme');
-
-  if (theme === 'light') {
-    html.classList.add('light-theme');
-  } else if (theme === 'dark') {
-    html.classList.add('dark-theme');
-  }
+  applyThemeClass(state.config.theme);
+  cacheAppearance(state.config);
 }
 
 function updateModelSelector() {
@@ -2191,8 +2236,7 @@ function handleModelChange(event) {
     return;
   }
 
-  // 解析复合键: "modelId - providerId"
-  const [modelId, providerId] = selectedValue.split(' - ');
+  const [modelId, providerId] = parseModelKey(selectedValue);
 
   if (!providerId || !modelId) {
     console.error('Invalid model selection format');
@@ -2283,7 +2327,7 @@ async function handleSendMessage() {
   updateInputState();
   elements.messageInput.focus();
 
-  await sendMessageToAPI(message);
+  await sendMessageToAPI();
 }
 
 async function handleStopGeneration() {
@@ -2352,18 +2396,18 @@ function showNotification(text) {
   setTimeout(() => notification.remove(), 5000);
 }
 
-function describeModel(modelUsed) {
-  if (!modelUsed) return [];
-
-  const [modelId, providerId] = String(modelUsed).split(' - ');
-
-  const provider = providerId
+function providerForModel(modelUsed) {
+  if (!modelUsed) return null;
+  const [modelId, providerId] = parseModelKey(modelUsed);
+  return providerId
     ? state.config.providers.find((p) => p.id === providerId)
     : // Sessions written before the composite key stored a bare model id
       state.config.providers.find((p) => p.models.some((m) => m.id === modelId));
+}
 
-  const model = provider?.models.find((m) => m.id === modelId);
-
+function describeModel(modelUsed) {
+  const provider = providerForModel(modelUsed);
+  const model = provider?.models.find((m) => m.id === parseModelKey(modelUsed)[0]);
   return provider && model ? [provider.name, model.name] : [];
 }
 
@@ -2392,9 +2436,9 @@ function renderChatHistory() {
   elements.chatHistoryList.replaceChildren();
   const query = elements.historySearch.value.trim().toLocaleLowerCase();
   const sessionIds = Object.keys(state.sessions)
-    .filter((id) => {
-      return !query || sessionSearchText(id).includes(query);
-    })
+    // Blank chats left behind by older versions are not worth a row
+    .filter((id) => id === state.currentSessionId || !isBlankSession(id))
+    .filter((id) => !query || sessionSearchText(id).includes(query))
     .sort((a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp));
   if (!sessionIds.length) {
     const empty = document.createElement('p');
@@ -2431,7 +2475,8 @@ function renderChatHistory() {
     title.textContent = session.title;
     const meta = document.createElement('div');
     meta.className = 'chat-history-meta';
-    meta.textContent = `${date.toLocaleDateString()} · ${describeModel(session.modelUsed).join(' / ') || 'No model'}`;
+    const when = group === 'Today' ? formatTime(session.timestamp) : date.toLocaleDateString();
+    meta.textContent = `${when} · ${describeModel(session.modelUsed).join(' / ') || 'No model'}`;
     content.append(title, meta);
     content.addEventListener('click', () => switchSession(sessionId));
     const actions = document.createElement('div');
@@ -2521,10 +2566,14 @@ function exportSession(sessionId) {
   showNotification('Conversation exported as Markdown.');
 }
 
-async function sendMessageToAPI(_userMessage) {
-  const provider = getCurrentProvider();
+async function sendMessageToAPI() {
+  const provider = getReadyProvider();
   if (!provider) {
-    showError('No provider configured. Please configure in options.');
+    showError(
+      getCurrentProvider()
+        ? 'This provider has no API key. Add one in Settings, then retry.'
+        : 'No model selected. Choose a model above, then retry.'
+    );
     return;
   }
 
@@ -2562,7 +2611,7 @@ async function sendMessageToAPI(_userMessage) {
   } catch (error) {
     if (error.name !== 'AbortError') {
       console.error('API request failed:', error.name);
-      handleApiError(error);
+      await handleApiError(error, provider);
     }
   } finally {
     try {
@@ -2578,6 +2627,28 @@ async function sendMessageToAPI(_userMessage) {
 function getCurrentProvider() {
   if (!state.config.selectedProvider) return null;
   return state.config.providers.find((p) => p.id === state.config.selectedProvider);
+}
+
+// The selected provider, only if a request to it can actually be made: the
+// selected model still exists there and the provider has a key.
+function getReadyProvider() {
+  const provider = getCurrentProvider();
+  const ready =
+    provider?.apiKey?.trim() &&
+    provider.models.some((model) => `${model.id} - ${provider.id}` === state.config.selectedModel);
+  return ready ? provider : null;
+}
+
+// Regenerating and editing discard later turns before sending, so check first
+// rather than leave the user with a truncated chat and an error.
+function ensureReadyToSend() {
+  if (getReadyProvider()) return true;
+  showNotification(
+    getCurrentProvider()
+      ? 'Add an API key for this provider in Settings, then try again.'
+      : 'Choose a model first, then try again.'
+  );
+  return false;
 }
 
 // ========================================
@@ -2618,7 +2689,11 @@ function getAdapter(provider) {
 async function streamResponse(provider, assistantMessage, signal) {
   const adapter = getAdapter(provider);
   const body = adapter.buildRequestBody();
-  const watchdog = createRequestWatchdog(signal);
+  // Without streaming, the headers only arrive once the whole answer is ready
+  const watchdog = createRequestWatchdog(
+    signal,
+    body.stream ? REQUEST_TIMEOUT_MS : COMPLETE_RESPONSE_TIMEOUT_MS
+  );
   try {
     const response = await makeApiRequest(provider, adapter.endpoint, body, watchdog.signal);
     if (!response) return;
@@ -2644,11 +2719,12 @@ async function streamResponse(provider, assistantMessage, signal) {
 }
 
 const REQUEST_TIMEOUT_MS = 120000;
+const COMPLETE_RESPONSE_TIMEOUT_MS = 600000;
 const STREAM_IDLE_TIMEOUT_MS = 180000;
 
 // The watchdog lasts through body consumption, not just the response headers.
 // A local controller preserves the distinction between timeout and user stop.
-function createRequestWatchdog(signal) {
+function createRequestWatchdog(signal, requestTimeout = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   let timer = null;
   const stop = () => controller.abort(signal.reason);
@@ -2663,7 +2739,7 @@ function createRequestWatchdog(signal) {
       controller.abort(error);
     }, delay);
   };
-  arm(REQUEST_TIMEOUT_MS, 'The provider did not respond in time. Check your connection and retry.');
+  arm(requestTimeout, 'The provider did not respond in time. Check your connection and retry.');
   return {
     signal: controller.signal,
     touch: () => arm(STREAM_IDLE_TIMEOUT_MS, 'The response stopped arriving. Your partial answer is kept; you can retry.'),
@@ -2767,6 +2843,14 @@ function processStreamEvent(event, message, adapter) {
   }
 }
 
+// Compatible servers disagree on the field: DeepSeek, LM Studio and older
+// vLLM use `reasoning_content`; OpenRouter, Ollama and newer vLLM `reasoning`.
+// Some send both with the same text, so only one is read.
+function readReasoningField(source) {
+  const text = source.reasoning_content || source.reasoning;
+  return typeof text === 'string' ? text : '';
+}
+
 // Chat Completions: deltas arrive under choices[0].delta
 function applyChatStreamEvent(parsed, message) {
   if (parsed.error) {
@@ -2792,8 +2876,9 @@ function applyChatStreamEvent(parsed, message) {
 
   let updated = false;
 
-  if (delta.reasoning_content) {
-    message.reasoning = (message.reasoning || '') + delta.reasoning_content;
+  const reasoning = readReasoningField(delta);
+  if (reasoning) {
+    message.reasoning = (message.reasoning || '') + reasoning;
     updated = true;
   }
 
@@ -2876,8 +2961,9 @@ function applyChatResponse(data, message) {
   if (reason === 'length') message.incompleteReason = 'max_output_tokens';
   else if (reason === 'content_filter') message.incompleteReason = 'content_filter';
 
-  if (msg.reasoning_content) {
-    message.reasoning = msg.reasoning_content;
+  const reasoning = readReasoningField(msg);
+  if (reasoning) {
+    message.reasoning = reasoning;
   }
 
   if (msg.content) {
@@ -3048,6 +3134,12 @@ function processThinkTags(message) {
       open = null;
     }
   }
+  // A reply that opened with a tag and never closed it (stopped or cut off
+  // mid-thought) is all reasoning.
+  if (inner.length === 0 && open && !text.slice(0, open.index).trim()) {
+    inner.push(text.slice(open.index + open[0].length));
+    from = text.length;
+  }
   if (inner.length === 0) return;
   kept += text.slice(from);
 
@@ -3067,10 +3159,18 @@ function getSystemPromptContent() {
   return prompt?.content || '';
 }
 
-// Model selection uses a composite "modelId - providerId" key
+// Model selection uses a composite "modelId - providerId" key. It is split at
+// the last separator: provider ids are generated, a model id can contain
+// anything. Keys written before providers had ids are a bare model id.
+function parseModelKey(key) {
+  const text = String(key ?? '');
+  const at = text.lastIndexOf(' - ');
+  return at === -1 ? [text, ''] : [text.slice(0, at), text.slice(at + 3)];
+}
+
 function getSelectedModelId() {
   const selected = state.config.selectedModel;
-  return selected ? selected.split(' - ')[0] : selected;
+  return selected ? parseModelKey(selected)[0] : selected;
 }
 
 function getTemperature() {
@@ -3094,15 +3194,17 @@ function getReasoningEffort() {
 }
 
 // Conversation history, shared by both APIs.
-// The in-flight assistant placeholder is excluded.
+// The in-flight assistant placeholder is excluded, and so is any reply that
+// has no answer text (it failed, or was stopped while still reasoning): many
+// providers reject an empty assistant turn and fail every later request.
 function buildHistory() {
   const session = state.sessions[state.currentSessionId];
   if (!session) return [];
 
   return session.messages
     .filter((m) => m.id !== state.currentStreamingMessage?.id)
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({ role: m.role, content: m.content || '' }));
+    .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content?.trim()))
+    .map((m) => ({ role: m.role, content: m.content }));
 }
 
 function buildMessages() {
@@ -3246,25 +3348,20 @@ function cleanupStreaming(messageId) {
   stopStreamTicker();
   pendingDisplayUpdates.delete(messageId);
   flushMessageDisplays();
+  // Also after a stop, timeout or error, which skip the end of streamResponse
+  if (message) processThinkTags(message);
   finalizeTiming(messageId);
 
-  if (wasAborted && messageId) {
-    const session = state.sessions[state.currentSessionId];
-    const message = session?.messages.find((m) => m.id === messageId);
+  if (wasAborted && message) {
+    const hasContent = message.content?.trim() || message.reasoning?.trim();
 
-    if (message) {
-      const hasContent = message.content?.trim() || message.reasoning?.trim();
-
-      if (hasContent) {
-        message.timestamp = new Date().toISOString();
-        message.stopped = !message.error;
-      } else {
-        if (!message.error) {
-          session.messages = session.messages.filter((m) => m.id !== messageId);
-          messageElementCache.get(messageId)?.remove();
-          messageElementCache.delete(messageId);
-        }
-      }
+    if (hasContent) {
+      message.timestamp = new Date().toISOString();
+      message.stopped = !message.error;
+    } else if (!message.error) {
+      session.messages = session.messages.filter((m) => m.id !== messageId);
+      messageElementCache.get(messageId)?.remove();
+      messageElementCache.delete(messageId);
     }
   }
 
@@ -3312,8 +3409,8 @@ function finalizeTiming(messageId) {
   }
 }
 
-function handleApiError(error) {
-  const key = getCurrentProvider()?.apiKey;
+async function handleApiError(error, provider = getCurrentProvider()) {
+  const key = provider?.apiKey;
   const redact = (text) => key ? text.split(key).join('[redacted]') : text;
   const safeError = {
     name: error.name,
@@ -3327,6 +3424,13 @@ function handleApiError(error) {
     message.errorAction = isContextLimitError(safeError)
       ? 'new-chat'
       : [400, 401, 403, 404].includes(error.status) ? 'settings' : null;
+    // fetch() rejects with a bare TypeError when CORS blocks the request.
+    // Settings only sync, host permissions do not: on another device (or after
+    // an import) a provider can be configured but not yet allowed here.
+    if (error instanceof TypeError && provider && !(await hasProviderAccess(provider.baseUrl))) {
+      message.error = `SideMind needs your permission to connect to ${new URL(provider.baseUrl).host}.`;
+      message.errorAction = 'permission';
+    }
     updateMessageDisplay(message.id);
     announce(`Error: ${message.error}`);
   } else {

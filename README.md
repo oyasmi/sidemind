@@ -70,6 +70,7 @@ SideMind is designed with your privacy as the top priority:
    - Open Options (right-click → Extension Options)
    - Add your AI provider with API key
    - Pick the API type: **Chat Completions** (`/chat/completions`) or **Responses** (`/responses`)
+   - Click **Check connection** to verify the URL and key; the provider's model IDs then appear as suggestions
    - Select your preferred model
 
 2. **Start Chatting**
@@ -117,7 +118,8 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 
 ### AI Capabilities
 - Real-time streaming responses (Chat Completions + Responses APIs)
-- Thinking/reasoning display, including Responses API reasoning summaries
+- Thinking/reasoning display, including Responses API reasoning summaries, `reasoning_content` /
+  `reasoning` fields, and inline `<think>` tags (shown as reasoning while they stream)
 - Configurable reasoning effort and summary detail
 - Markdown rendering
 - Syntax highlighting for 36 languages, with per-block copy buttons
@@ -133,8 +135,8 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Open the sidebar with Alt+Shift+S, start a chat with Ctrl/Cmd+Shift+O, and focus the input with Shift+Esc
 - Right-click selected webpage text to add it and its source to your current draft; review and send when ready
 - Current conversation titles and provider names remain visible while chatting
-- Unsent drafts are kept per chat
-- Undo for regenerating and for deleting a chat
+- Unsent drafts are kept per chat; New chat reuses an empty chat instead of piling up blank ones
+- Undo for regenerating and for deleting a chat (undoing a deletion returns to that chat)
 - Auto-resizing input field
 - Long streaming answers preserve your reading position; follow the output when you choose
 - Failed requests retain partial answers and offer retry
@@ -143,6 +145,8 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Oversized sync settings receive an actionable size warning while keeping edits available
 - Keyboard-accessible dialogs with focus restoration and reduced-motion support
 - Configuration backups omit API keys by default, with a preview before importing
+- Settings sync between devices but Chrome host access does not: providers not yet allowed on
+  this device show an **Allow access** button, and a blocked request offers to allow and retry
 - Responsive design for different sidebar widths
 
 The selection context menu uses Chrome's `contextMenus` permission and only receives
@@ -151,7 +155,8 @@ automatically. Chrome 116+ is required. The opening shortcut can be changed at
 `chrome://extensions/shortcuts`; in-panel shortcuts leave dialogs and IME input alone.
 
 Streaming uses a two-minute request timeout and a three-minute idle timeout after
-headers arrive. Incoming stream chunks, including heartbeats, reset the idle timer.
+headers arrive. With streaming off, the whole answer must be ready before headers
+arrive, so complete responses get ten minutes. Incoming stream chunks, including heartbeats, reset the idle timer.
 Compatible providers that omit completion markers still display their answer, with
 a notice that completion could not be confirmed. API calls are never automatically
 retried.
@@ -159,7 +164,9 @@ retried.
 Rendering skips folded reasoning until expansion and preserves unchanged Markdown
 subtrees. History search is debounced and caches searchable text; the Markdown cache
 is bounded by both entry count and text size. Storage stays on Chrome's existing
-sync/local APIs, without a database or new runtime dependencies.
+sync/local APIs, without a database or new runtime dependencies. Conversations use
+the `unlimitedStorage` permission (no install warning), so long histories are not
+cut off by the default local storage quota.
 
 ## 🛠️ Technical Details
 

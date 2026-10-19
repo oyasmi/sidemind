@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   systemPrompts: [
     { id: 'default', name: 'Default', content: 'You are a helpful assistant.', isDefault: true }
   ],
-  theme: 'light'
+  theme: 'system'
 };
 let config = structuredClone(DEFAULT_CONFIG);
 let editingProviderId = null;
@@ -79,6 +79,9 @@ function cacheElements() {
     'providerApiType',
     'toggleApiKey',
     'endpointPreview',
+    'checkConnectionBtn',
+    'connectionStatus',
+    'modelSuggestions',
     'promptName',
     'promptContent',
     'providerSaveBtn',
@@ -117,6 +120,10 @@ function setupEventListeners() {
   elements.addModelBtn.addEventListener('click', addModelField);
   elements.providerBaseUrl.addEventListener('input', updateEndpointPreview);
   elements.providerApiType.addEventListener('change', updateEndpointPreview);
+  elements.checkConnectionBtn.addEventListener('click', checkConnection);
+  [elements.providerBaseUrl, elements.providerApiKey].forEach((field) =>
+    field.addEventListener('input', () => setConnectionStatus(''))
+  );
   elements.toggleApiKey.addEventListener('click', toggleApiKey);
   elements.providerSaveBtn.addEventListener('click', saveProvider);
   elements.promptSaveBtn.addEventListener('click', savePrompt);
@@ -329,7 +336,7 @@ function createProviderElement(provider) {
   const models = document.createElement('div');
   models.className = 'provider-models';
   models.textContent = `${provider.models.length} model${provider.models.length === 1 ? '' : 's'} · ${provider.models.map((model) => model.name).join(', ')}`;
-  info.append(name, details, models);
+  info.append(name, details, models, createAccessNotice(provider));
   const actions = createItemActions(
     () => openProviderModal(provider),
     () => deleteProvider(provider.id),
@@ -337,6 +344,40 @@ function createProviderElement(provider) {
   );
   item.append(info, actions);
   return item;
+}
+
+// Settings sync between devices, host permissions do not. A provider that was
+// allowed elsewhere (or imported) needs allowing here too.
+function createAccessNotice(provider) {
+  const notice = document.createElement('div');
+  notice.className = 'provider-access hidden';
+  const text = document.createElement('span');
+  text.textContent = 'Not yet allowed on this device. Some providers need it to respond.';
+  const allow = document.createElement('button');
+  allow.type = 'button';
+  allow.className = 'btn btn-small';
+  allow.textContent = 'Allow access';
+  allow.setAttribute('aria-label', `Allow access to ${provider.name}`);
+  allow.addEventListener('click', async () => {
+    if (await requestProviderAccess([provider.baseUrl])) {
+      notice.classList.add('hidden');
+      showNotification(`${provider.name} is allowed on this device.`);
+    } else {
+      showNotification('Chrome did not grant access.', 'error');
+    }
+  });
+  notice.append(text, allow);
+  hasProviderAccess(provider.baseUrl).then((granted) => notice.classList.toggle('hidden', granted));
+  return notice;
+}
+
+// Drop host access that no remaining provider uses
+function releaseProviderAccess(baseUrl, remaining) {
+  const [origin] = providerOrigins(baseUrl);
+  if (!origin || remaining.some((provider) => providerOrigins(provider.baseUrl)[0] === origin)) return;
+  chrome.permissions
+    .remove({ origins: [origin] })
+    .catch((error) => console.error('Releasing provider access:', error));
 }
 
 function createItemActions(edit, remove, name) {
@@ -406,7 +447,7 @@ function renderParameters() {
   elements.customFontFamilyInput.value =
     elements.fontFamilySelector.value === 'custom' ? config.fontFamily : '';
   toggleCustomFontInputVisibility();
-  elements.themeSelector.value = config.theme || 'light';
+  elements.themeSelector.value = config.theme || 'system';
   elements.maxTokensError.classList.add('hidden');
   elements.maxCompletionTokensInput.removeAttribute('aria-invalid');
 }
@@ -521,6 +562,8 @@ function openProviderModal(provider = null) {
   elements.toggleApiKey.setAttribute('aria-label', 'Show API key');
   renderModelsList(provider?.models || []);
   updateEndpointPreview();
+  setConnectionStatus('');
+  elements.modelSuggestions.replaceChildren();
   openDialog(elements.providerModal);
 }
 
@@ -552,7 +595,13 @@ function createModelField(name = '', id = '') {
     input.setAttribute('aria-label', label);
     input.value = value;
     input.required = true;
+    if (className === 'model-id') input.setAttribute('list', 'modelSuggestions');
     item.appendChild(input);
+  });
+  // Picking an ID from the suggestions is usually all a model needs
+  const [nameInput, idInput] = item.querySelectorAll('input');
+  idInput.addEventListener('change', () => {
+    if (!nameInput.value.trim()) nameInput.value = idInput.value.trim();
   });
   const remove = document.createElement('button');
   remove.type = 'button';
@@ -585,6 +634,75 @@ function updateEndpointPreview() {
   elements.endpointPreview.textContent = base
     ? `Request URL: ${base}${endpoint}`
     : 'Your request URL will appear here.';
+}
+
+function setConnectionStatus(text, status = '') {
+  elements.connectionStatus.textContent = text;
+  elements.connectionStatus.dataset.state = status;
+}
+
+// Lists the provider's models: it proves the URL and key work before the
+// first chat, and fills the Model ID suggestions.
+async function checkConnection() {
+  const baseUrl = normalizeBaseUrl(elements.providerBaseUrl.value);
+  const apiKey = elements.providerApiKey.value.trim();
+  let validUrl = false;
+  try {
+    validUrl = ['http:', 'https:'].includes(new URL(baseUrl).protocol);
+  } catch {}
+  if (!validUrl) {
+    setConnectionStatus('Enter an HTTP or HTTPS Base URL first.', 'error');
+    return;
+  }
+  // Ask before anything is awaited: the prompt needs this click's gesture
+  const access = requestProviderAccess([baseUrl]);
+  const redact = (text) => (apiKey ? String(text).split(apiKey).join('[redacted]') : String(text));
+  elements.checkConnectionBtn.disabled = true;
+  setConnectionStatus('Checking…', 'saving');
+  try {
+    if (!(await access)) {
+      setConnectionStatus('Chrome did not grant access to this provider.', 'error');
+      return;
+    }
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      const detail = redact(payload?.error?.message || response.statusText || '');
+      setConnectionStatus(
+        [401, 403].includes(response.status)
+          ? `The provider rejected this API key (${response.status}).`
+          : response.status === 404
+            ? 'The provider answered but does not list models. Enter model IDs by hand.'
+            : `The provider answered ${response.status}${detail ? `: ${detail}` : ''}.`,
+        response.status === 404 ? 'warning' : 'error'
+      );
+      return;
+    }
+    const payload = await response.json();
+    const listed = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+    const ids = [...new Set(listed.map((model) => model?.id || model?.name).filter((id) => typeof id === 'string' && id))].sort();
+    elements.modelSuggestions.replaceChildren(
+      ...ids.map((id) => Object.assign(document.createElement('option'), { value: id }))
+    );
+    setConnectionStatus(
+      ids.length
+        ? `Connected · ${ids.length} model${ids.length === 1 ? '' : 's'} available. Pick from the suggestions in a Model ID field.`
+        : 'Connected. The provider did not list any models.',
+      'saved'
+    );
+  } catch (error) {
+    setConnectionStatus(
+      error.name === 'TimeoutError'
+        ? 'The provider did not answer within 15 seconds.'
+        : 'Could not reach the provider. Check the Base URL and your connection.',
+      'error'
+    );
+  } finally {
+    elements.checkConnectionBtn.disabled = false;
+  }
 }
 
 function toggleApiKey() {
@@ -643,9 +761,11 @@ async function saveProvider() {
     showDialogError(elements.providerModal, 'Each model ID must be unique within this provider.');
     return;
   }
+  // Ask before anything is awaited: the prompt needs this click's gesture
+  const access = requestProviderAccess([data.baseUrl]);
   setDialogBusy(elements.providerModal, true);
   try {
-    if (!(await ensureBackendPermission(data.baseUrl))) {
+    if (!(await access)) {
       showDialogError(
         elements.providerModal,
         'Chrome did not grant access to this provider. Save again to allow access.'
@@ -654,6 +774,7 @@ async function saveProvider() {
     }
     const candidate = structuredClone(config);
     const index = candidate.providers.findIndex((provider) => provider.id === data.id);
+    const previousUrl = candidate.providers[index]?.baseUrl;
     if (index === -1) candidate.providers.push(data);
     else candidate.providers[index] = data;
     repairSelection(candidate);
@@ -664,6 +785,7 @@ async function saveProvider() {
       );
       return;
     }
+    if (previousUrl) releaseProviderAccess(previousUrl, candidate.providers);
     renderProviders();
     closeProviderModal();
   } catch (error) {
@@ -700,8 +822,10 @@ async function deleteProvider(id) {
   const candidate = structuredClone(config);
   candidate.providers = candidate.providers.filter((item) => item.id !== id);
   repairSelection(candidate);
-  if (await saveConfig(candidate)) renderProviders();
-  else showNotification('Provider was not deleted. Try again.', 'error');
+  if (await saveConfig(candidate)) {
+    releaseProviderAccess(provider.baseUrl, candidate.providers);
+    renderProviders();
+  } else showNotification('Provider was not deleted. Try again.', 'error');
 }
 
 // ===== Assistant roles =====
@@ -847,9 +971,8 @@ function updateFontPreview() {
   );
 }
 function applyTheme() {
-  document.documentElement.classList.remove('light-theme', 'dark-theme');
-  if (config.theme !== 'system')
-    document.documentElement.classList.add(config.theme === 'dark' ? 'dark-theme' : 'light-theme');
+  applyThemeClass(config.theme);
+  cacheAppearance(config);
 }
 function updateTheme() {
   config.theme = elements.themeSelector.value;
@@ -903,6 +1026,10 @@ async function importConfig(event) {
       'Import configuration'
     );
     if (!accepted) return;
+    // Still inside the click on "Import": the only chance to ask for every
+    // provider at once. Declining keeps the import; each provider can be
+    // allowed later from its row.
+    const granted = await requestProviderAccess(candidate.providers.map((provider) => provider.baseUrl));
     if (!(await saveConfig(candidate, true))) {
       showNotification(
         lastSaveError || 'Import could not be saved. Your current configuration is unchanged.',
@@ -911,7 +1038,11 @@ async function importConfig(event) {
       return;
     }
     renderUI();
-    showNotification('Configuration imported.');
+    showNotification(
+      granted
+        ? 'Configuration imported.'
+        : 'Configuration imported. Allow access for each provider from its row to use it on this device.'
+    );
   } catch (error) {
     console.error('Importing configuration:', error);
     showNotification(error.message || 'Could not import this file.', 'error');
@@ -987,18 +1118,7 @@ function validateConfig(value) {
   );
 }
 
-// ===== Provider permissions and notifications =====
-async function ensureBackendPermission(backendUrl) {
-  try {
-    const origins = [new URL(backendUrl).origin + '/*'];
-    if (await chrome.permissions.contains({ origins })) return true;
-    return await chrome.permissions.request({ origins });
-  } catch (error) {
-    console.error('Provider permission:', error);
-    return false;
-  }
-}
-
+// ===== Notifications =====
 function showNotification(message, type = 'info') {
   const notification = document.createElement('div');
   notification.className = `notification ${type}`;

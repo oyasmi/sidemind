@@ -32,7 +32,8 @@ function sidebar() {
       state, getAdapter, buildChatRequestBody, buildResponsesRequestBody,
       buildEndpointUrl, streamResponse, processStream, processNonStream,
       applyChatStreamEvent, applyResponsesStreamEvent, applyResponsesResponse,
-      createRequestWatchdog, responseCompletionNotice, processThinkTags
+      createRequestWatchdog, responseCompletionNotice, processThinkTags,
+      parseModelKey, displayParts, titleFromContent
     };
   `, context);
   const { app } = context;
@@ -354,7 +355,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     document: { addEventListener() {}, getElementById: id => fields[id] },
     chrome: {
       storage: { sync: { set: async value => { saved = structuredClone(value); }, get: async () => saved } },
-      permissions: { contains: async () => true }
+      permissions: { contains: async () => true, request: async () => true }
     }
   });
   vm.runInContext(`
@@ -376,6 +377,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     providerName: value('OpenAI'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
     providerApiKey: value('test-key'), providerApiType: value('responses'),
     toggleApiKey: { setAttribute() {} },
+    connectionStatus: { dataset: {} }, modelSuggestions: { replaceChildren() {} },
     modelsList: { querySelectorAll: () => [{ querySelector: () => value('test-model') }] }
   });
   await app.saveProvider();
@@ -700,4 +702,101 @@ test('legacy string markers: a matching one counts as applied, a stale one is re
   assert.deepEqual(pendingKeys(data), []);
   await store.writeLocalChanges(false);
   assert.deepEqual(data.appliedPending, {}, 'the next save drops the stale marker');
+});
+
+test('Chat reasoning is read from reasoning_content or reasoning, never both', async () => {
+  const { app } = sidebar();
+  const adapter = app.getAdapter({});
+  const message = { id: 'pending', content: '', reasoning: '' };
+  await app.processStream(sseResponse([
+    { choices: [{ delta: { reasoning: 'Weigh ' } }] },
+    { choices: [{ delta: { reasoning: 'options.', reasoning_content: 'options.' } }] },
+    { choices: [{ delta: { content: 'Answer' }, finish_reason: 'stop' }] }
+  ]), message, new AbortController().signal, adapter);
+  assert.equal(message.reasoning, 'Weigh options.');
+  assert.equal(message.content, 'Answer');
+
+  const complete = { id: 'pending' };
+  adapter.applyResponse({ choices: [{ message: { content: 'Done', reasoning: 'Thought' } }] }, complete);
+  assert.equal(complete.reasoning, 'Thought');
+});
+
+test('replies without answer text are left out of the history sent to the provider', () => {
+  const { app } = sidebar();
+  const { messages } = app.state.sessions.session;
+  messages.splice(3, 0,
+    { id: 'failed', role: 'assistant', content: '', error: 'Network error' },
+    { id: 'thinking', role: 'assistant', content: '  ', reasoning: 'Stopped while thinking' });
+  assert.deepEqual(plain(app.buildChatRequestBody().messages.map((m) => m.role)), ['system', 'user', 'assistant', 'user']);
+});
+
+test('a reply that opens a think tag and never closes it is all reasoning', () => {
+  const { app } = sidebar();
+  const message = { content: '\n<think>Weighing the options' };
+  app.processThinkTags(message);
+  assert.equal(message.reasoning, 'Weighing the options');
+  assert.equal(message.content, '');
+
+  // Only a leading tag: one opened later in the answer is answer text
+  const later = { content: 'Answer first <think>then this' };
+  app.processThinkTags(later);
+  assert.equal(later.content, 'Answer first <think>then this');
+  assert.equal(later.reasoning, undefined);
+});
+
+test('inline think tags show as reasoning while streaming', () => {
+  const { app } = sidebar();
+  const message = app.state.currentStreamingMessage;
+  message.reasoning = '';
+  const view = (content) => (message.content = content, plain(app.displayParts(message)));
+  assert.deepEqual(view('<thi'), { content: '', reasoning: '' });
+  assert.deepEqual(view('<think>Plan the'), { content: '', reasoning: 'Plan the' });
+  assert.deepEqual(view('<think>Plan</think>\n\nThe answer'), { content: 'The answer', reasoning: 'Plan' });
+  assert.deepEqual(view('No tags <think>here'), { content: 'No tags <think>here', reasoning: '' });
+  // A finished message is shown as stored
+  assert.deepEqual(plain(app.displayParts({ id: 'done', role: 'assistant', content: '<think>x' })), { content: '<think>x', reasoning: '' });
+});
+
+test('model keys split at the last separator, so model ids may contain it', () => {
+  const { app } = sidebar();
+  assert.deepEqual(plain(app.parseModelKey('org/model - v2 - provider-id')), ['org/model - v2', 'provider-id']);
+  assert.deepEqual(plain(app.parseModelKey('legacy-model')), ['legacy-model', '']);
+  app.state.config.selectedModel = 'org/model - v2 - provider-id';
+  assert.equal(app.buildChatRequestBody().model, 'org/model - v2');
+});
+
+test('chat titles are one line and never split a character', () => {
+  const { app } = sidebar();
+  assert.equal(app.titleFromContent('  Help me\n\n> with   this '), 'Help me > with this');
+  const title = app.titleFromContent('😀'.repeat(60));
+  assert.equal(Array.from(title).length, 51);
+  assert.equal(title.endsWith('😀…'), true);
+});
+
+test('non-streaming requests get a longer wait for headers than streaming ones', async () => {
+  for (const stream of [true, false]) {
+    const context = sidebar();
+    context.app.state.config.stream = stream;
+    const delays = [];
+    context.setTimeout = (callback, delay) => { delays.push(delay); return delays.length; };
+    context.clearTimeout = () => {};
+    context.fetch = async () => { throw new TypeError('Failed to fetch'); };
+    await assert.rejects(context.app.streamResponse({ baseUrl: 'https://example.com/v1' }, {}, new AbortController().signal));
+    assert.equal(delays[0], stream ? 120000 : 600000);
+  }
+});
+
+test('pages open in the last applied theme before settings load', () => {
+  const classes = new Set();
+  const root = { classList: { add: (name) => classes.add(name), remove: (...names) => names.forEach((name) => classes.delete(name)) } };
+  const store = { 'sidemind:appearance': JSON.stringify({ theme: 'dark' }) };
+  const context = vm.createContext({
+    document: { addEventListener() {}, documentElement: root },
+    localStorage: { getItem: (key) => store[key] ?? null, setItem: (key, value) => { store[key] = value; } }
+  });
+  vm.runInContext(readFileSync(resolve(__dirname, '..', 'assets/js/ui.js'), 'utf8'), context);
+  assert.deepEqual([...classes], ['dark-theme']);
+  vm.runInContext("cacheAppearance({ theme: 'system', fontSize: '15px' }); applyThemeClass('system');", context);
+  assert.deepEqual([...classes], []);
+  assert.deepEqual(JSON.parse(store['sidemind:appearance']), { theme: 'system', fontSize: '15px' });
 });

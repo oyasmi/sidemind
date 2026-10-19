@@ -1,3 +1,68 @@
+// ===== Appearance =====
+// Settings arrive from an async storage read, after the first paint. The last
+// applied appearance is mirrored to localStorage so a page opens in it rather
+// than flashing the default theme. This file loads in <head> for that reason.
+const APPEARANCE_CACHE_KEY = 'sidemind:appearance';
+
+function applyThemeClass(theme) {
+  const root = document.documentElement;
+  root.classList.remove('light-theme', 'dark-theme');
+  // Anything else follows the system (see the media query in ui.css)
+  if (theme === 'light' || theme === 'dark') root.classList.add(`${theme}-theme`);
+}
+
+function cachedAppearance() {
+  try {
+    return JSON.parse(localStorage.getItem(APPEARANCE_CACHE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function cacheAppearance({ theme, fontSize, fontFamily }) {
+  try {
+    localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify({ theme, fontSize, fontFamily }));
+  } catch {}
+}
+
+try {
+  applyThemeClass(cachedAppearance().theme);
+} catch {}
+
+// ===== Provider host access =====
+// Extension pages need host permission to reach providers that do not send
+// CORS headers. Permissions are per device: they do not sync with settings.
+function providerOrigins(baseUrl) {
+  try {
+    return [`${new URL(baseUrl).origin}/*`];
+  } catch {
+    return [];
+  }
+}
+
+async function hasProviderAccess(baseUrl) {
+  const origins = providerOrigins(baseUrl);
+  if (!origins.length || !chrome.permissions?.contains) return true;
+  try {
+    return await chrome.permissions.contains({ origins });
+  } catch {
+    return true;
+  }
+}
+
+// Must be called synchronously from a user gesture: nothing may be awaited
+// before the request. Chrome answers true without prompting if already granted.
+async function requestProviderAccess(baseUrls) {
+  const origins = [...new Set(baseUrls.flatMap(providerOrigins))];
+  if (!origins.length) return true;
+  try {
+    return await chrome.permissions.request({ origins });
+  } catch (error) {
+    console.error('Provider permission:', error);
+    return false;
+  }
+}
+
 // ===== Dialog keyboard navigation =====
 // Native dialogs handle background inertness and focus restoration. Explicit
 // wrapping keeps Tab within the dialog rather than visiting browser chrome.
