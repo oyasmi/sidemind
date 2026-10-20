@@ -30,7 +30,12 @@ EXTENSION_NAME="sidemind"
 
 # Read version from manifest.json for versioned package name
 if [ -f "$SCRIPT_DIR/manifest.json" ]; then
-    VERSION=$(grep -o '"version":\s*"[^"]*"' "$SCRIPT_DIR/manifest.json" | sed 's/.*"version":\s*"\([^"]*\)".*/\1/')
+    # POSIX classes only: BSD sed (macOS) does not understand \s
+    VERSION=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/manifest.json" | head -n 1)
+    if [ -z "$VERSION" ]; then
+        print_error "Could not read version from manifest.json!"
+        exit 1
+    fi
     PACKAGE_NAME="${EXTENSION_NAME}-v${VERSION}.zip"
 else
     print_error "manifest.json not found!"
