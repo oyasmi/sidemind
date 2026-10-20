@@ -225,6 +225,9 @@ function setupEventListeners() {
       applyFontSettings();
       applyTheme();
     }
+    if (areaName === 'local') {
+      handleStoredChanges(changes);
+    }
     if (areaName === 'session' && selectionStorageKey && changes[selectionStorageKey]?.newValue) {
       importSelectedText();
     }
@@ -281,12 +284,17 @@ async function loadFromStorage() {
     showNotification('Could not load settings. Reload SideMind to try again.');
   }
   try {
-    await withStorageLock(() => writeLocalChanges(true));
-    const localResult = await chrome.storage.local.get(['sessions', 'currentSessionId', 'drafts']);
-
-    if (localResult.sessions) {
-      state.sessions = localResult.sessions;
-    }
+    const localResult = await withStorageLock(async () => {
+      await writeLocalChanges(true, { scanAll: true });
+      return chrome.storage.local.get(null);
+    });
+    const revs = {};
+    Object.entries(localResult).forEach(([key, entry]) => {
+      if (!key.startsWith(SESSION_PREFIX)) return;
+      const id = key.slice(SESSION_PREFIX.length);
+      state.sessions[id] = entry.session;
+      revs[id] = entry.rev;
+    });
 
     if (localResult.drafts) {
       state.drafts = localResult.drafts;
@@ -296,7 +304,12 @@ async function loadFromStorage() {
       state.currentSessionId = localResult.currentSessionId;
     }
 
-    rememberSaved(state.sessions, state.drafts, state.currentSessionId);
+    rememberSaved(state.sessions, revs, state.drafts, state.currentSessionId);
+    storageReady = true;
+    if (repairedChats) {
+      showNotification(`Merged ${repairedChats} duplicate chat${repairedChats > 1 ? 's' : ''} left behind by a saving bug.`);
+      repairedChats = 0;
+    }
     if (!state.sessions[state.currentSessionId]) {
       await createNewSession();
     }
@@ -328,24 +341,44 @@ function retryStorageSave() {
 }
 
 // Several side panels share one storage area, so a page may only write what it
-// changed itself. `savedSessions`/`savedDrafts` remember what this page last
-// read or wrote (sessions as JSON); a save collects the difference as a
-// changeset and applies it, inside a Web Lock, to a fresh read of the tables.
+// changed itself. Every chat is a key of its own, `session:<id>`, holding
+// `{ rev, session }`; `rev` is an opaque token replaced by each write. A page
+// remembers the rev it last read or wrote (`savedRevs`) and, inside a Web Lock,
+// writes its chat straight over the stored one while the stored rev is still
+// that rev. If it is not, another page wrote in between, and the two versions
+// are merged three-way against the snapshot this page last saved.
 //
-// Merge rules (three-way against the remembered base): messages are merged by
-// id, so independent additions from several pages all survive. A message both
-// pages changed differently cannot be merged; the stored chat is left as the
-// other page saved it and this page's version is kept as a separate
-// "(conflicting copy)" chat. A chat removed by one page is kept if another page
-// changed it meanwhile. Drafts and the selected chat are last writer wins.
+// The rule that keeps this honest: content read back from storage is never
+// compared with a string this page serialised itself. chrome.storage does not
+// return objects as they were written (it reorders keys and drops undefined
+// values), so such a comparison says nothing about content - it once made
+// every save of a streaming reply look like a conflict with the page's own
+// previous save. "Did this page change the chat?" is answered against the
+// page's own snapshot (`savedSessions`); "did another page?" by the rev.
+//
+// Merge rules: messages are merged by id, so independent additions from
+// several pages all survive. A message both pages changed differently takes
+// the version of whoever saves last, as does every other chat field. A chat
+// removed by one page is kept if another page changed it meanwhile. Pages also
+// follow each other (`handleStoredChanges`), so such overlaps are rare. Drafts
+// and the selected chat are last writer wins.
 let savedSessions = {};
+let savedRevs = {};
 let savedDrafts = {};
 let savedCurrentSessionId = null;
+let storageReady = false;
+let repairedChats = 0;
 const pageId = crypto.randomUUID();
-const PENDING_PREFIX = 'pendingSave:';
+const SESSION_PREFIX = 'session:';
+const PENDING_PREFIX = 'pending:';
+// Older builds kept all chats in one `sessions` table and called their stashes
+// `pendingSave:`; both are folded into the per-chat layout on first load.
+const LEGACY_PENDING_PREFIX = 'pendingSave:';
+const LEGACY_BACKUP_KEY = 'backup:sessions-v1';
 
-function rememberSaved(sessions, drafts, currentSessionId) {
+function rememberSaved(sessions, revs, drafts, currentSessionId) {
   savedSessions = Object.fromEntries(Object.entries(sessions).map(([id, s]) => [id, JSON.stringify(s)]));
+  savedRevs = { ...revs };
   savedDrafts = { ...drafts };
   savedCurrentSessionId = currentSessionId;
 }
@@ -354,43 +387,20 @@ function withStorageLock(task) {
   return typeof navigator !== 'undefined' && navigator.locks ? navigator.locks.request('sidemind-local-storage', task) : task();
 }
 
-// A conflict copy's id comes from a random nonce stored in the changeset, not
-// from a hash of its content: hashes collide, and a collision would silently
-// drop a different edit. The nonce is stable while the page's version of the
-// chat is unchanged, so replaying or re-stashing the same changeset still
-// resolves to the same copy.
-const copyNonces = new Map();
-function copyNonceFor(id, json) {
-  const known = copyNonces.get(id);
-  if (known?.json === json) return known.nonce;
-  const nonce = crypto.randomUUID();
-  copyNonces.set(id, { json, nonce });
-  return nonce;
-}
-
 // Synchronous snapshot of everything this page changed since its last save.
 function collectChanges(includeSessions) {
   const changes = { sessions: {}, removed: {}, drafts: {} };
-  const nextSaved = {};
+  const snapshots = {};
   const nextDrafts = { ...state.drafts };
   if (includeSessions) {
     Object.entries(state.sessions).forEach(([id, session]) => {
       const json = JSON.stringify(session);
-      nextSaved[id] = json;
-      if (savedSessions[id] !== json) {
-        // `draft` and `current` say where this page was; they only matter if the
-        // chat turns out to conflict and this page's context moves to a copy.
-        changes.sessions[id] = {
-          base: savedSessions[id] ?? null,
-          mine: JSON.parse(json),
-          copyNonce: copyNonceFor(id, json),
-          draft: state.drafts[id] ?? null,
-          current: state.currentSessionId === id
-        };
-      }
+      if (savedSessions[id] === json) return;
+      snapshots[id] = json;
+      changes.sessions[id] = { base: savedSessions[id] ?? null, baseRev: savedRevs[id], mine: JSON.parse(json) };
     });
     Object.keys(savedSessions).forEach((id) => {
-      if (!(id in state.sessions)) changes.removed[id] = savedSessions[id];
+      if (!(id in state.sessions)) changes.removed[id] = { rev: savedRevs[id] };
     });
     if (state.currentSessionId !== savedCurrentSessionId) changes.currentSessionId = state.currentSessionId;
   }
@@ -401,34 +411,28 @@ function collectChanges(includeSessions) {
     if (savedDrafts[id] !== text) changes.drafts[id] = text;
   });
   const commit = () => {
-    if (includeSessions) {
-      savedSessions = nextSaved;
-      savedCurrentSessionId = changes.currentSessionId ?? savedCurrentSessionId;
-    }
     savedDrafts = nextDrafts;
+    if (changes.currentSessionId !== undefined) savedCurrentSessionId = changes.currentSessionId;
   };
   const empty =
     !Object.keys(changes.sessions).length &&
     !Object.keys(changes.removed).length &&
     !Object.keys(changes.drafts).length &&
     changes.currentSessionId === undefined;
-  return { changes, commit, empty };
+  return { changes, snapshots, commit, empty };
 }
 
-const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-
-// Returns the merged chat, or null when both sides changed the same message
-// (or a message one side deleted) in incompatible ways.
+// Three-way merge of one chat by message id. Whenever both sides changed a
+// message (or one side removed what the other changed) this page's version
+// wins: it is the later write.
 function mergeSession(base, mine, theirs) {
   const index = (list) => new Map(list.map((message) => [message.id, message]));
   const [b, m, s] = [index(base.messages), index(mine.messages), index(theirs.messages)];
   const resolved = new Map();
   for (const id of new Set([...b.keys(), ...m.keys(), ...s.keys()])) {
     const [bv, mv, sv] = [b.get(id), m.get(id), s.get(id)];
-    let pick;
-    if (sameValue(mv, sv) || sameValue(mv, bv)) pick = sv;
-    else if (sameValue(sv, bv)) pick = mv;
-    else return null;
+    // Equal to ours: keep our object, the live message may be streaming.
+    const pick = sameValue(mv, sv) ? mv : sameValue(mv, bv) ? sv : mv;
     if (pick) resolved.set(id, pick);
   }
   const order = theirs.messages.map((message) => message.id).filter((id) => resolved.has(id));
@@ -450,160 +454,300 @@ function mergeSession(base, mine, theirs) {
   return merged;
 }
 
-// Pure: applies a changeset to copies of the stored tables.
-function applyChanges(stored, changes) {
-  const sessions = { ...stored.sessions };
-  const drafts = { ...stored.drafts };
-  const conflicts = [];
-  Object.entries(changes.sessions).forEach(([id, { base, mine, draft, current, copyNonce }]) => {
-    const theirs = sessions[id];
-    // The copy's id belongs to the changeset, never to the stored chat. If
-    // that copy exists, this changeset already ran as a conflict: replaying it
-    // must not touch the original chat again (it may have moved on, been
-    // deleted or been restored since) nor the copy (its page may have saved
-    // newer messages). A changeset without a nonce (written by an older build)
-    // gets a fresh one for this call: no content hash is trusted to say "this
-    // copy is the same one", so such a changeset is never matched to an
-    // existing copy. Callers that replay stashes pass the nonce in beforehand
-    // (see writeLocalChanges) so the copy id is recorded together with the write.
-    const nonce = copyNonce || crypto.randomUUID();
-    const copyId = `conflict-${id}-${nonce}`;
-    if (sessions[copyId]) {
-      // `copy` is what this page's changeset made of the chat, not the stored
-      // copy, which may hold newer messages from the copy's own page by now.
-      const written = { ...mine, title: `${mine.title} (conflicting copy)` };
-      conflicts.push({ id, copyId, copy: written, theirs, isNew: false, draft, current });
-      return;
-    }
-    const merged = theirs && base && JSON.stringify(theirs) !== base ? mergeSession(JSON.parse(base), mine, theirs) : mine;
-    if (merged) {
-      sessions[id] = merged;
-      return;
-    }
-    const copy = { ...mine, title: `${mine.title} (conflicting copy)` };
-    sessions[copyId] = copy;
-    conflicts.push({ id, copyId, copy, theirs, isNew: true, draft, current });
+// Pure: applies a changeset to copies of the stored tables. `tables.sessions`
+// maps ids to stored `{ rev, session }` entries. Returns the new tables and the
+// ids of the chats whose entry was written or removed.
+function applyChanges(tables, changes) {
+  const sessions = { ...tables.sessions };
+  const drafts = { ...tables.drafts };
+  const touched = new Set();
+  Object.entries(changes.sessions || {}).forEach(([id, { base, baseRev, mine }]) => {
+    const stored = sessions[id];
+    // The stored chat is still the one this page last saw: nothing to merge.
+    // (A changeset without a rev - an older build's - is always merged.)
+    const untouched = !stored || (baseRev !== undefined && stored.rev === baseRev);
+    const next = untouched ? mine : mergeSession(base ? JSON.parse(base) : { messages: [] }, mine, stored.session);
+    if (stored && sameValue(next, stored.session)) return;
+    sessions[id] = { rev: crypto.randomUUID(), session: next };
+    touched.add(id);
   });
-  Object.entries(changes.removed).forEach(([id, base]) => {
-    if (sessions[id] && JSON.stringify(sessions[id]) === base) delete sessions[id];
+  Object.entries(changes.removed || {}).forEach(([id, { rev, base }]) => {
+    const stored = sessions[id];
+    // Only a chat nobody changed since this page saw it is removed.
+    const unchanged = rev !== undefined ? stored?.rev === rev : stored && base && sameValue(stored.session, JSON.parse(base));
+    if (!unchanged) return;
+    delete sessions[id];
+    touched.add(id);
   });
-  const conflicted = new Set(conflicts.map(({ id }) => id));
-  Object.entries(changes.drafts).forEach(([id, text]) => {
-    if (conflicted.has(id)) return; // the stored draft stays with the original chat
+  Object.entries(changes.drafts || {}).forEach(([id, text]) => {
     if (text === null) delete drafts[id];
     else drafts[id] = text;
   });
-  // The page that made the change continues in its copy: its selection and
-  // unsent draft move there (once, when the copy is created).
-  let currentSessionId = changes.currentSessionId;
-  conflicts.forEach(({ id, copyId, isNew, draft, current }) => {
-    if (currentSessionId === id) currentSessionId = isNew ? copyId : undefined;
-    else if (isNew && current) currentSessionId = copyId;
-    if (isNew && typeof draft === 'string') drafts[copyId] = draft;
+  return { sessions, drafts, touched, currentSessionId: changes.currentSessionId };
+}
+
+// ----------------------------------------
+// Older storage layouts
+// ----------------------------------------
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+// "conflict-<chat id>-<nonce>", nested when a copy conflicted again. Chat ids
+// are timestamps or UUIDs, nonces always UUIDs.
+const COPY_ID = new RegExp(`^(?:conflict-)+(${UUID}|\\d+)(?:-${UUID})+$`);
+const COPY_SUFFIX = / \(conflicting copy\)/g;
+
+// Does `newer` contain everything in `older`, the way a reply grows while it
+// streams? Every message must be there with the same role and the older text
+// must be the start of the newer one.
+function growsInto(older, newer) {
+  const byId = new Map(newer.messages.map((message) => [message.id, message]));
+  const starts = (full, part) => String(full ?? '').startsWith(String(part ?? ''));
+  return older.messages.every((message) => {
+    const later = byId.get(message.id);
+    return later && later.role === message.role && starts(later.content, message.content) && starts(later.reasoning, message.reasoning);
   });
-  return { sessions, drafts, conflicts, currentSessionId };
 }
 
-// Only used to recognise the markers an older build wrote (a hash of the stash).
-function hashText(text) {
-  let hash = 5381;
-  for (let i = 0; i < text.length; i += 1) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
-  return hash.toString(36);
-}
-
-// Another window changed the same message: this page carries on in its copy,
-// and the original chat shows what the other window saved.
-function adoptConflicts(conflicts) {
-  conflicts.forEach(({ id, copyId, copy, theirs, isNew, draft, current }) => {
-    const live = state.sessions[id];
-    if (!live) return;
-    live.title = copy.title;
-    state.sessions[copyId] = live;
-    if (theirs) state.sessions[id] = theirs;
-    else delete state.sessions[id];
-    // The baselines are what was actually written. Anything this page changed
-    // while that write was in flight still differs from them and is saved next.
-    if (theirs) savedSessions[id] = JSON.stringify(theirs);
-    else delete savedSessions[id];
-    savedSessions[copyId] = JSON.stringify(copy);
-    // The chat's stored draft now belongs to whoever owns the original chat;
-    // this page's draft follows its copy and is tracked there.
-    delete savedDrafts[id];
-    if (isNew && typeof draft === 'string') savedDrafts[copyId] = draft;
-    else delete savedDrafts[copyId];
-    if (state.drafts[id] !== undefined) {
-      state.drafts[copyId] = state.drafts[id];
-      delete state.drafts[id];
+// An earlier build saved a streaming reply over and over as "(conflicting
+// copy)" chats, each a longer prefix of the same conversation. Folds every such
+// family back into the chat it came from, but only when one member holds all
+// the others; families that really diverge are left alone (their titles just
+// lose the stacked suffixes). Works on, and returns, stored tables.
+function mergeCopyFamilies(tables) {
+  const families = new Map();
+  Object.keys(tables.sessions).forEach((id) => {
+    const root = COPY_ID.exec(id)?.[1];
+    if (root) families.set(root, [...(families.get(root) || []), id]);
+  });
+  const sessions = { ...tables.sessions };
+  const drafts = { ...tables.drafts };
+  const touched = new Set();
+  let currentSessionId;
+  let folded = 0;
+  families.forEach((copies, root) => {
+    const members = [root, ...copies].filter((id) => sessions[id]);
+    const heaviest = (id) => canonicalJSON(sessions[id].session).length;
+    const keeper = members
+      .filter((candidate) => members.every((other) => other === candidate || growsInto(sessions[other].session, sessions[candidate].session)))
+      .sort((a, b) => heaviest(b) - heaviest(a))[0];
+    if (!keeper) {
+      copies.forEach((id) => {
+        const title = sessions[id].session.title;
+        if (typeof title === 'string' && (title.match(COPY_SUFFIX) || []).length > 1) {
+          sessions[id] = { rev: crypto.randomUUID(), session: { ...sessions[id].session, title: title.replace(/( \(conflicting copy\))+$/, ' (conflicting copy)') } };
+          touched.add(id);
+        }
+      });
+      return;
     }
-    if (state.currentSessionId === id) state.currentSessionId = copyId;
-    if (isNew && current) savedCurrentSessionId = copyId;
+    const draft = [keeper, ...members].map((id) => drafts[id]).find(Boolean);
+    const title = String(sessions[keeper].session.title ?? '').replace(/( \(conflicting copy\))+$/, '');
+    const session = { ...sessions[keeper].session, title };
+    members.forEach((id) => {
+      delete sessions[id];
+      delete drafts[id];
+      touched.add(id);
+      if (tables.currentSessionId === id) currentSessionId = root;
+    });
+    sessions[root] = { rev: crypto.randomUUID(), session };
+    if (draft) drafts[root] = draft;
+    folded += members.length - 1;
   });
-  if (conflicts.length) {
-    renderMessages();
-    debouncedSave();
-    showNotification('Another window changed this chat. Your version was kept as a separate copy.');
-  }
+  return { ...tables, sessions, drafts, touched, currentSessionId: currentSessionId ?? tables.currentSessionId, folded };
 }
 
-// Also run once at load (with nothing to save) to fold in what closed pages left.
-async function writeLocalChanges(includeSessions) {
-  const stored = await chrome.storage.local.get(null);
+// Older stashes recorded a removal as the chat's JSON; they are otherwise the
+// same shape as a current changeset and merge by their `base`.
+function upgradeLegacyStash(change) {
+  return {
+    ...change,
+    removed: Object.fromEntries(Object.entries(change.removed || {}).map(([id, base]) => [id, { base }]))
+  };
+}
+
+// ----------------------------------------
+// Keeping this page in step with storage
+// ----------------------------------------
+
+// Replaces a chat's content with another version in place: the live chat and
+// its message objects stay the ones the rest of the page (a running stream, an
+// open undo) holds.
+function replaceSessionContent(live, next) {
+  Object.keys(live).forEach((key) => {
+    if (key !== 'messages' && !(key in next)) delete live[key];
+  });
+  Object.entries(next).forEach(([key, value]) => {
+    if (key !== 'messages') live[key] = value;
+  });
+  const known = new Map(live.messages.map((message) => [message.id, message]));
+  const messages = next.messages.map((message) => {
+    const existing = known.get(message.id);
+    if (!existing) return message;
+    if (!sameValue(existing, message)) {
+      Object.keys(existing).forEach((key) => delete existing[key]);
+      Object.assign(existing, message);
+    }
+    return existing;
+  });
+  live.messages.splice(0, live.messages.length, ...messages);
+}
+
+// Takes a stored version of a chat into this page. False when the chat is busy
+// (an answer is streaming into it) and it should be taken later.
+function adoptStored(id, entry) {
+  const current = id === state.currentSessionId;
+  if (current && (state.isStreaming || state.generationDone || editingMessageId)) return false;
+  const live = state.sessions[id];
+  if (live) replaceSessionContent(live, entry.session);
+  else state.sessions[id] = entry.session;
+  savedSessions[id] = JSON.stringify(state.sessions[id]);
+  savedRevs[id] = entry.rev;
+  sessionSearchCache.clear();
+  if (current) renderMessages();
+  if (elements.chatHistoryDropdown?.open) renderChatHistory();
+  return true;
+}
+
+// After a write: the page's baseline for each chat it saved is what is now
+// stored. If another page's messages were merged in, the page takes them over
+// unless it changed the chat again while the write was in flight; then the
+// baseline stays where it was, the chat stays "changed", and the next save
+// merges once more.
+function settleSaved(changes, snapshots, sessions) {
+  let resave = false;
+  Object.entries(changes.sessions).forEach(([id, { mine }]) => {
+    const entry = sessions[id];
+    if (!entry) return;
+    const live = state.sessions[id];
+    if (sameValue(entry.session, mine) || !live) {
+      savedSessions[id] = snapshots[id];
+      savedRevs[id] = entry.rev;
+    } else if (JSON.stringify(live) !== snapshots[id] || !adoptStored(id, entry)) {
+      resave = true;
+    }
+  });
+  Object.keys(changes.removed).forEach((id) => {
+    delete savedSessions[id];
+    delete savedRevs[id];
+  });
+  if (resave) debouncedSave();
+}
+
+// Brings one chat in step with what is stored (`entry`, or undefined once it
+// was removed). Chats this page has unsaved changes in are left for the merge
+// of its next save.
+function followStoredSession(id, entry) {
+  const live = state.sessions[id];
+  const unsaved = live && JSON.stringify(live) !== savedSessions[id];
+  if (!entry) {
+    // Removed elsewhere; a chat this page is looking at or has changed stays.
+    if (live && !unsaved && id !== state.currentSessionId) {
+      delete state.sessions[id];
+      delete savedSessions[id];
+      delete savedRevs[id];
+      sessionSearchCache.clear();
+      if (elements.chatHistoryDropdown?.open) renderChatHistory();
+    }
+    return;
+  }
+  if (entry.rev === savedRevs[id]) return; // already in step, e.g. this page's own write
+  if (unsaved || (id in savedSessions && !live)) return; // merged when this page saves
+  adoptStored(id, entry);
+}
+
+// Another page (or the folding of a closed page's stash) changed storage.
+function handleStoredChanges(changes) {
+  if (!storageReady) return;
+  let fold = false;
+  Object.entries(changes).forEach(([key, change]) => {
+    if (key.startsWith(SESSION_PREFIX)) {
+      followStoredSession(key.slice(SESSION_PREFIX.length), change.newValue);
+    } else if (key.startsWith(PENDING_PREFIX) && change.newValue && !key.startsWith(`${PENDING_PREFIX}${pageId}:`)) {
+      fold = true;
+    }
+  });
+  if (fold) queueLocalSave(true, true);
+}
+
+// With `scanAll` (at load, and when another page left a stash) the whole
+// storage is read: legacy layouts are converted and closed pages' stashes are
+// folded in. Otherwise only the chats this page changed are read.
+async function writeLocalChanges(includeSessions, { scanAll = false } = {}) {
+  const { changes, snapshots, commit, empty } = collectChanges(includeSessions);
+  if (empty && !scanAll) return;
+  const ids = [...Object.keys(changes.sessions), ...Object.keys(changes.removed)];
+  const stored = await chrome.storage.local.get(scanAll ? null : [...ids.map((id) => SESSION_PREFIX + id), 'drafts']);
+  let tables = { sessions: {}, drafts: stored.drafts || {}, currentSessionId: stored.currentSessionId };
+  Object.entries(stored).forEach(([key, entry]) => {
+    if (key.startsWith(SESSION_PREFIX)) tables.sessions[key.slice(SESSION_PREFIX.length)] = entry;
+  });
+  const touched = new Set();
+  const legacyTable = scanAll && stored.sessions && typeof stored.sessions === 'object' ? stored.sessions : null;
+  Object.entries(legacyTable || {}).forEach(([id, session]) => {
+    // Per-chat keys written by an interrupted conversion are the same chats.
+    tables.sessions[id] = { rev: crypto.randomUUID(), session };
+    touched.add(id);
+  });
   // Stashes are folded oldest first: the key is random and the storage returns
   // keys in no meaningful order, so the version order travels in the payload.
-  const pending = Object.keys(stored)
-    .filter((key) => key.startsWith(PENDING_PREFIX))
-    .sort((a, b) => compareStashes(stored[a], stored[b]) || (a < b ? -1 : a > b ? 1 : 0));
-  let tables = { sessions: stored.sessions || {}, drafts: stored.drafts || {} };
-  let currentSessionId;
+  const pending = scanAll
+    ? Object.keys(stored)
+        .filter((key) => key.startsWith(PENDING_PREFIX) || key.startsWith(LEGACY_PENDING_PREFIX))
+        .sort((a, b) => compareStashes(stored[a], stored[b]) || (a < b ? -1 : a > b ? 1 : 0))
+    : [];
   // Replaying a stash is not idempotent (its drafts would overwrite newer ones),
-  // so the set that folds a stash in also records its key, with the nonce its
-  // conflict copies were named by. If removing the key then fails, later saves
-  // see the marker and only retry the removal. A key is never rewritten with
-  // different content (see stashChangesOnUnload), so the key alone identifies the
-  // changeset, and removing exactly the keys read here can never delete a newer
-  // stash.
+  // so the set that folds a stash in also records its key. If removing the key
+  // then fails, later saves see the marker and only retry the removal. A key is
+  // never rewritten with different content (see stashChangesOnUnload), so the
+  // key alone identifies the changeset.
   const applied = {};
+  let legacy = Boolean(legacyTable);
   pending.forEach((key) => {
-    const marker = stored.appliedPending?.[key];
-    if (marker && typeof marker === 'object') {
-      applied[key] = marker;
-      return;
-    }
-    // Older builds recorded a hash of the stash as a bare string, and reused a
-    // key for different content. Only a marker that still matches this very
-    // payload counts as applied; anything else is replayed rather than dropped.
-    // (A 32-bit hash cannot prove equality; a collision on a rewritten legacy
-    // key is not distinguishable and is accepted as a known limit.)
-    if (typeof marker === 'string' && marker === hashText(JSON.stringify(stored[key]))) {
-      applied[key] = marker;
-      return;
-    }
-    const nonce = crypto.randomUUID();
-    applied[key] = { nonce };
-    const change = stored[key];
-    const sessions = Object.fromEntries(
-      Object.entries(change.sessions || {}).map(([id, entry]) => [id, { ...entry, copyNonce: entry.copyNonce || nonce }])
-    );
-    const folded = applyChanges(tables, { ...change, sessions });
-    tables = folded;
-    currentSessionId = folded.currentSessionId ?? currentSessionId;
+    applied[key] = true;
+    if (stored.appliedPending?.[key]) return;
+    const isLegacy = key.startsWith(LEGACY_PENDING_PREFIX);
+    legacy ||= isLegacy;
+    const folded = applyChanges(tables, isLegacy ? upgradeLegacyStash(stored[key]) : stored[key]);
+    folded.touched.forEach((id) => touched.add(id));
+    tables = { ...tables, ...folded, currentSessionId: folded.currentSessionId ?? tables.currentSessionId };
   });
-  const { changes, commit, empty } = collectChanges(includeSessions);
+  if (legacy) {
+    const repaired = mergeCopyFamilies(tables);
+    repaired.touched.forEach((id) => touched.add(id));
+    repairedChats += repaired.folded;
+    tables = repaired;
+  }
   const own = applyChanges(tables, changes);
+  own.touched.forEach((id) => touched.add(id));
   const staleMarks = Object.keys(stored.appliedPending || {}).length > 0;
-  if (empty && !pending.length && !staleMarks) return;
-  const data = { drafts: own.drafts };
-  if (pending.length || staleMarks) data.appliedPending = applied;
-  if (includeSessions || pending.length) data.sessions = own.sessions;
-  const selected = own.currentSessionId ?? currentSessionId;
-  if (selected !== undefined) data.currentSessionId = selected;
-  await chrome.storage.local.set(data);
+
+  const data = {};
+  const gone = [];
+  touched.forEach((id) => {
+    if (own.sessions[id]) data[SESSION_PREFIX + id] = own.sessions[id];
+    else gone.push(SESSION_PREFIX + id);
+  });
+  if (legacyTable && !(LEGACY_BACKUP_KEY in stored)) data[LEGACY_BACKUP_KEY] = legacyTable;
+  if (!sameValue(own.drafts, stored.drafts || {})) data.drafts = own.drafts;
+  if (pending.length) data.appliedPending = applied;
+  const selected = own.currentSessionId ?? tables.currentSessionId;
+  if (selected !== undefined && selected !== stored.currentSessionId) data.currentSessionId = selected;
+  // A removal that fails leaves nothing recorded, so a retry redoes it; a chat
+  // still to be written is not lost either way.
+  if (gone.length) await chrome.storage.local.remove(gone);
+  if (Object.keys(data).length) await chrome.storage.local.set(data);
   // The tables are written: record that before anything else can fail, or a
   // retry would diff against a stale baseline and undo what other pages add.
   commit();
   lastStash = null;
-  adoptConflicts(own.conflicts);
-  if (pending.length) await chrome.storage.local.remove(pending);
+  settleSaved(changes, snapshots, own.sessions);
+  // Chats this write took over from stashes or conversions are new to this page.
+  if (storageReady) {
+    touched.forEach((id) => {
+      if (!(id in changes.sessions) && !(id in changes.removed)) followStoredSession(id, own.sessions[id]);
+    });
+  }
+  const leftovers = [...pending, ...(legacyTable ? ['sessions'] : [])];
+  if (leftovers.length || staleMarks) await chrome.storage.local.remove([...leftovers, 'appliedPending']);
 }
 
 // A closing page cannot wait for the lock or a read, and must not rewrite the
@@ -647,12 +791,12 @@ function stashChangesOnUnload() {
 // Draft and transcript writes share one queue, and each write takes the
 // snapshot when it starts, so rapid switches and retries cannot write older
 // drafts last. The lock serialises the read-merge-write across pages.
-function queueLocalSave(includeSessions) {
+function queueLocalSave(includeSessions, scanAll = false) {
   if (storageLoadFailed) return Promise.resolve(false);
   storageWriteQueue = storageWriteQueue.then(async () => {
     elements.retryStorageBtn.disabled = true;
     try {
-      await withStorageLock(() => writeLocalChanges(includeSessions));
+      await withStorageLock(() => writeLocalChanges(includeSessions, { scanAll }));
       if (includeSessions) elements.storageStatus.classList.add('hidden');
       return true;
     } catch (error) {
@@ -1017,8 +1161,8 @@ function renderMessages() {
 
     let messageElement = messageElementCache.get(message.id);
 
-    // Ids are only unique within a chat (a conflicting copy shares them with
-    // the chat it split from), so a cached node must belong to this message.
+    // Ids are only unique within a chat (another chat can hold a message with
+    // the same id), so a cached node must belong to this message.
     if (!messageElement || elementMessages.get(messageElement) !== message) {
       messageElement = createMessageElement(message);
       elementMessages.set(messageElement, message);
@@ -1593,7 +1737,7 @@ async function submitEdit(message, rawText) {
   offerUndo(describeEditUndo(removed.length), async () => {
     await stopStreamingIfActive();
 
-    // By object, not id: a save conflict can move this chat to another id.
+    // By object: the chat may have been deleted in the meantime.
     const target = Object.values(state.sessions).includes(session) ? session : null;
     if (!target) return;
 

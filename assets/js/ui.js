@@ -111,3 +111,18 @@ function handleDialogTab(event) {
     first.focus();
   }
 }
+
+// ===== Comparing values =====
+// chrome.storage hands objects back with their keys in alphabetical order and
+// without undefined fields, so text from JSON.stringify of a value that went
+// through storage differs from that of the original. Compare with sameValue
+// whenever either side may have been stored.
+function canonicalJSON(value) {
+  return JSON.stringify(value, (key, item) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item
+  );
+}
+
+const sameValue = (a, b) => canonicalJSON(a) === canonicalJSON(b);

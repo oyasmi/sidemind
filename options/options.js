@@ -239,7 +239,7 @@ async function saveConfig(candidate = config, replace = false) {
     : candidate === config
       ? []
       : Object.keys(snapshot).filter(
-          (key) => JSON.stringify(snapshot[key]) !== JSON.stringify(config[key])
+          (key) => !sameValue(snapshot[key], config[key])
         );
   const keys = Array.from(new Set([...changedKeys, ...pendingPreferenceKeys]));
   let written;
@@ -257,8 +257,7 @@ async function saveConfig(candidate = config, replace = false) {
   try {
     await write;
     keys.forEach((key) => {
-      if (JSON.stringify(config[key]) === JSON.stringify(snapshot[key]))
-        pendingPreferenceKeys.delete(key);
+      if (sameValue(config[key], snapshot[key])) pendingPreferenceKeys.delete(key);
     });
     const unsaved = Object.fromEntries(
       Array.from(pendingPreferenceKeys).map((key) => [key, config[key]])

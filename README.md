@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.6.0-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 

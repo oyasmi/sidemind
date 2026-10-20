@@ -48,7 +48,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 #### 3. Storage Schema
 ```javascript
-// Chrome Storage API (sync for config, local for sessions)
+// Chrome Storage API (sync for config, local for chats)
 {
   config: {
     providers: [...],           // OpenAI-compatible API providers
@@ -65,8 +65,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     systemPrompts: [...],       // Custom system prompts
     theme: string               // 'light', 'dark', or 'system' (default)
   },
-  sessions: {
-    [sessionId]: {
+  // one key per chat: "session:<id>" -> { rev, session }
+  // rev is an opaque token replaced by every write (see Chat storage below)
+  "session:<id>": {
+    rev: string,
+    session: {
       messages: [...],          // Chat history with reasoning content
       title: string,
       timestamp: string,
@@ -215,6 +218,30 @@ this and left the request running against an abandoned session.
 messages, no draft - `isBlankSession()`) is reused by New chat, dropped when left, and
 hidden from history. Undoing the deletion of the open chat activates it again.
 
+### Chat Storage (several side panels, one storage area)
+Every chat is its own key, `session:<id>` = `{ rev, session }`; `rev` is a random token replaced by each write.
+A save (`writeLocalChanges()`, inside the `sidemind-local-storage` Web Lock) reads only the chats this page changed:
+
+- **Did this page change a chat?** Decided against the page's own snapshot (`savedSessions`, text from this page's
+  own `JSON.stringify`). **Did another page?** Decided by `rev`: the stored `rev` is still the one this page last
+  saw (`savedRevs`) -> write straight over it, no merge. Otherwise `mergeSession()` merges three-way by message id;
+  for a message both pages changed, the page that saves last wins. A chat deleted by one page survives if another changed it.
+- **The rule: never compare content read back from `chrome.storage` with text this page serialised itself.**
+  `chrome.storage` reorders object keys alphabetically and drops `undefined` fields, so such a comparison is not a
+  statement about content - it once turned every save of a streaming reply into a "conflict with another window" and
+  spawned a "(conflicting copy)" chat per save. Compare values with `sameValue()` (`assets/js/ui.js`, key-order
+  independent) or with a `rev`. The test fixtures reproduce the reordering; keep them doing so.
+- **Following other pages**: `chrome.storage.onChanged` -> `handleStoredChanges()` adopts a changed chat in place
+  (`replaceSessionContent()` keeps the live message objects, a running stream holds them) unless this page has unsaved
+  changes in it, the chat is streaming/being edited, or it is the open chat removed elsewhere.
+- **Closing pages** (`pagehide`) cannot take the lock, so they write one `pending:<pageId>:<uuid>` stash and nothing
+  else. The next full scan (`writeLocalChanges(true, { scanAll: true })` at load, or when `onChanged` announces a new
+  stash) folds stashes oldest first. The `appliedPending` marker is written in the same `set` as the fold, so a failed
+  stash removal is only retried, never replayed.
+- **Earlier layouts**: a one-table `sessions` key (and `pendingSave:` stashes) is converted on first load; the old table
+  is kept as `backup:sessions-v1`. `mergeCopyFamilies()` folds the `conflict-<id>-<nonce>` chats the streaming bug left
+  back into their chat (only when one copy holds all the others as growing prefixes); real divergences are kept.
+
 ### Host Permissions
 Providers are reached through optional host permissions (`<all_urls>` is only the upper
 bound). Settings sync across devices but permissions do not, so a provider can be
@@ -234,7 +261,7 @@ awaited in the click handler, or Chrome drops the user gesture.
 
 ### Storage Strategy
 - **Config**: Stored in `chrome.storage.sync` (synced across devices, 8KB per item - see `assertConfigFitsSync()`)
-- **Sessions**: Stored in `chrome.storage.local` (local only; `unlimitedStorage` lifts the 10MB quota)
+- **Sessions**: Stored in `chrome.storage.local`, one `session:<id>` key per chat (local only; `unlimitedStorage` lifts the 10MB quota)
 - **Session IDs**: Timestamp-based strings (`Date.now().toString()`)
 - **Message IDs**: Timestamp-based strings with role (user/assistant) and content
 - **Auto-titles**: First user message, whitespace collapsed, cut at 50 code points (`titleFromContent()`)

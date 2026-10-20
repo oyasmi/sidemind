@@ -79,7 +79,19 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
 });
 
-async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}, prepare) {
+// Storage as the current build keeps it: one `session:<id>` key per chat.
+// `{ sessions, __legacyLayout: true }` seeds the one-table layout of earlier builds.
+function seedLayout({ sessions, __legacyLayout, ...rest }) {
+  if (!sessions) return rest;
+  if (__legacyLayout) return { ...rest, sessions };
+  return {
+    ...rest,
+    ...Object.fromEntries(Object.entries(sessions).map(([id, session]) => [`session:${id}`, { rev: `seed-${id}`, session }]))
+  };
+}
+
+async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {}, prepare) {
+  const local = seedLayout(rawLocal);
   const page = await browser.newPage({
     viewport: { width: kind === 'sidebar' ? 380 : 1160, height: 800 },
     reducedMotion: 'reduce'
@@ -94,13 +106,23 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}, pr
       window.__failSave = false;
       window.__failLocalSave = false;
       window.__storage = { sync: { config: initialConfig }, local: initialLocal, session: {} };
+      // chrome.storage returns JSON with the keys of every object in
+      // alphabetical order, not a clone of what was written.
+      const stored = (value) =>
+        JSON.parse(
+          JSON.stringify(value, (key, item) =>
+            item && typeof item === 'object' && !Array.isArray(item)
+              ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+              : item
+          )
+        );
       const storageArea = (area) => ({
         get: async (keys) => {
           if (area === 'local' && window.__storage.local.__failLoad) throw new Error('Fixture read failure');
           return Object.fromEntries(
             (keys || Object.keys(window.__storage[area]))
               .filter((key) => key in window.__storage[area])
-              .map((key) => [key, structuredClone(window.__storage[area][key])])
+              .map((key) => [key, stored(window.__storage[area][key])])
           );
         },
         set: async (data) => {
@@ -110,15 +132,20 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, local = {}, pr
           for (const [key, value] of Object.entries(data)) {
             changes[key] = {
               oldValue: window.__storage[area][key],
-              newValue: structuredClone(value)
+              newValue: stored(value)
             };
-            window.__storage[area][key] = structuredClone(value);
+            window.__storage[area][key] = stored(value);
           }
-          window.__writes.push({ area, data: structuredClone(data) });
+          window.__writes.push({ area, data: stored(data) });
           listeners.forEach((listener) => listener(changes, area));
         },
         remove: async (keys) => {
-          for (const key of keys) delete window.__storage[area][key];
+          const changes = {};
+          for (const key of keys) {
+            if (key in window.__storage[area]) changes[key] = { oldValue: window.__storage[area][key] };
+            delete window.__storage[area][key];
+          }
+          listeners.forEach((listener) => listener(changes, area));
         }
       });
       window.chrome = {
@@ -887,7 +914,7 @@ browserTest('unsaved drafts remain visible and retry persists the complete curre
   await page.locator('#retryStorageBtn').click();
   await page.waitForFunction(() => document.querySelector('#storageStatus').classList.contains('hidden'));
   assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), 'A draft that must not disappear');
-  assert.equal(await page.evaluate(() => Boolean(window.__storage.local.sessions[state.currentSessionId])), true);
+  assert.equal(await page.evaluate(() => Boolean(window.__storage.local[`session:${state.currentSessionId}`])), true);
   assert.deepEqual(errors, []);
   await page.close();
 });
@@ -899,7 +926,7 @@ browserTest('a failed transcript load never overwrites existing history', async 
   assert.equal(await page.locator('#retryStorageBtn').textContent(), 'Reload');
   await page.locator('#messageInput').fill('New draft');
   await page.evaluate(() => saveToStorage());
-  assert.deepEqual(await page.evaluate(() => window.__storage.local.sessions), existing);
+  assert.deepEqual(await page.evaluate(() => Object.keys(window.__storage.local).filter((key) => key.startsWith('session:'))), ['session:old']);
   assert.equal(await page.evaluate(() => window.__writes.filter((write) => write.area === 'local').length), 0);
   assert.deepEqual(errors, []);
   await page.close();
@@ -1105,9 +1132,21 @@ browserTest('queued local writes preserve the latest draft when an earlier write
 
 // Two sidebar pages in one browser context share localStorage (backing the
 // storage mock) and the real Web Locks manager, like two extension pages do.
+// A write by one page reaches the other's chrome.storage.onChanged listeners
+// through the `storage` event, as it would in the browser.
 async function openSharedPages() {
   const context = await browser.newContext({ viewport: { width: 380, height: 800 }, reducedMotion: 'reduce' });
   await context.addInitScript((initialConfig) => {
+    // JSON with sorted keys, like the real thing (see openPage).
+    const stored = (value) =>
+      JSON.parse(
+        JSON.stringify(value, (key, item) =>
+          item && typeof item === 'object' && !Array.isArray(item)
+            ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+            : item
+        )
+      );
+    const listeners = [];
     const area = (name) => ({
       get: async (keys) => {
         const snapshot = JSON.parse(localStorage.getItem(`fixture-${name}`) || 'null') || (name === 'sync' ? { config: initialConfig } : {});
@@ -1116,8 +1155,10 @@ async function openSharedPages() {
         return Object.fromEntries((keys || Object.keys(snapshot)).filter((key) => key in snapshot).map((key) => [key, snapshot[key]]));
       },
       set: async (data) => {
-        const snapshot = JSON.parse(localStorage.getItem(`fixture-${name}`) || 'null') || {};
-        localStorage.setItem(`fixture-${name}`, JSON.stringify({ ...snapshot, ...data }));
+        const before = localStorage.getItem(`fixture-${name}`);
+        const snapshot = JSON.parse(before || 'null') || {};
+        localStorage.setItem(`fixture-${name}`, JSON.stringify(stored({ ...snapshot, ...data })));
+        if (name === 'local') announce(before, localStorage.getItem('fixture-local'));
       },
       remove: async (keys) => {
         if (localStorage.getItem('fixture-fail-remove')) throw new Error('Fixture remove failure');
@@ -1126,22 +1167,39 @@ async function openSharedPages() {
           localStorage.setItem('fixture-fail-remove-count', String(failures - 1));
           throw new Error('Fixture remove failure');
         }
-        const snapshot = JSON.parse(localStorage.getItem(`fixture-${name}`) || '{}');
+        const before = localStorage.getItem(`fixture-${name}`);
+        const snapshot = JSON.parse(before || '{}');
         for (const key of keys) delete snapshot[key];
         localStorage.setItem(`fixture-${name}`, JSON.stringify(snapshot));
+        if (name === 'local') announce(before, localStorage.getItem('fixture-local'));
       }
     });
+    // Only the local area is shared with listeners: settings sync is not under
+    // test here. The writing page hears its own writes too, like in Chrome.
+    const announce = (oldValue, newValue) => {
+      const [before, after] = [JSON.parse(oldValue || '{}'), JSON.parse(newValue || '{}')];
+      const changes = {};
+      for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changes[key] = { oldValue: before[key], newValue: after[key] };
+      }
+      if (Object.keys(changes).length) listeners.forEach((listener) => listener(changes, 'local'));
+    };
+    window.addEventListener('storage', (event) => {
+      if (event.key === 'fixture-local') announce(event.oldValue, event.newValue);
+    });
     window.chrome = {
-      storage: { sync: area('sync'), local: area('local'), session: area('session'), onChanged: { addListener() {} } },
+      storage: { sync: area('sync'), local: area('local'), session: area('session'), onChanged: { addListener: (listener) => listeners.push(listener) } },
       permissions: { contains: async () => true, request: async () => true },
       windows: { getCurrent: async () => ({ id: 1 }) },
       runtime: { getManifest: () => ({ version: '0' }), openOptionsPage() {} }
     };
   }, fixtureConfig);
+  const ready = (page) =>
+    page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
   const open = async () => {
     const page = await context.newPage();
     await page.goto(`${baseUrl}/sidebar/sidebar.html`);
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
+    await ready(page);
     // The startup save of a first-run chat must land before the test acts or
     // the next page opens; the races under test start from a settled store.
     await page.evaluate(() => storageWriteQueue);
@@ -1149,11 +1207,25 @@ async function openSharedPages() {
   };
   const a = await open();
   const b = await open();
-  return { context, a, b };
+  return { context, a, b, open, ready };
 }
 
 const readShared = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('fixture-local')));
+
+// The shared storage with the chats unwrapped from their `session:<id>` keys.
+const readChats = async (page) => {
+  const raw = await readShared(page);
+  const sessions = Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key]) => key.startsWith('session:'))
+      .map(([key, entry]) => [key.slice('session:'.length), entry.session])
+  );
+  return { ...raw, sessions };
+};
+const pendingIn = (raw) => Object.keys(raw).filter((key) => key.startsWith('pending:'));
+const waitForPending = (page) =>
+  page.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pending:')));
 
 browserTest('concurrent side panels keep each other\'s sessions, drafts and deletions', async () => {
   const { context, a, b } = await openSharedPages();
@@ -1182,7 +1254,7 @@ browserTest('concurrent side panels keep each other\'s sessions, drafts and dele
       return saveToStorage();
     }, shared)
   ]);
-  let stored = await readShared(a);
+  let stored = await readChats(a);
   assert.deepEqual(Object.keys(stored.sessions).sort(), [fresh, shared].sort());
   assert.equal(stored.sessions[fresh].messages[0].content, 'from A');
   assert.equal(stored.sessions[shared].messages[0].content, 'from B');
@@ -1193,7 +1265,7 @@ browserTest('concurrent side panels keep each other\'s sessions, drafts and dele
   // B deletes only its chat; A's chat and draft survive, and the deletion sticks.
   await b.evaluate((shared) => deleteSession(shared), shared);
   await b.evaluate(() => storageWriteQueue);
-  stored = await readShared(a);
+  stored = await readChats(a);
   assert.equal(shared in stored.sessions, false);
   assert.equal(shared in stored.drafts, false);
   assert.equal(fresh in stored.sessions, true);
@@ -1201,410 +1273,201 @@ browserTest('concurrent side panels keep each other\'s sessions, drafts and dele
   await context.close();
 });
 
-browserTest('two pages adding messages to one chat keep both; incompatible edits become a copy', async () => {
+browserTest('a reply streamed into a chat and saved again and again stays one chat', async () => {
+  // Regression: the storage returns objects with their keys reordered, and every
+  // save of the growing reply used to take its own previous save for another
+  // window's edit, spawning a "(conflicting copy)" chat per save.
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  for (const part of ['First part. ', 'Second part. ', 'Third part.']) {
+    await delta(page, part);
+    await page.evaluate(() => saveToStorage());
+  }
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  await page.evaluate(() => storageWriteQueue);
+  const chats = await page.evaluate(() =>
+    Object.entries(window.__storage.local)
+      .filter(([key]) => key.startsWith('session:'))
+      .map(([, entry]) => entry.session)
+  );
+  assert.equal(chats.length, 1);
+  assert.doesNotMatch(chats[0].title, /conflicting/);
+  assert.equal(chats[0].messages.at(-1).content, 'First part. Second part. Third part.');
+  assert.equal(await page.evaluate(() => Object.keys(state.sessions).length), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('two panels follow each other\'s messages without reloading', async () => {
   const { context, a, b } = await openSharedPages();
-  const shared = await a.evaluate(() => state.currentSessionId);
   const add = (page, id, content) =>
     page.evaluate(([id, content]) => {
       state.sessions[state.currentSessionId].messages.push({ id, role: 'user', content });
       return saveToStorage();
     }, [id, content]);
+  const sees = (page, id) =>
+    page.waitForFunction((id) => state.sessions[state.currentSessionId].messages.some((m) => m.id === id), id);
   await add(a, 'a1', 'from A');
-  await add(b, 'b1', 'from B'); // B never saw a1
-  let stored = await readShared(a);
-  assert.deepEqual(stored.sessions[shared].messages.map((m) => m.content), ['from A', 'from B']);
-
-  // Both change the same message differently: nothing may be dropped.
-  for (const page of [a, b]) {
-    await page.reload();
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
-  }
-  await a.evaluate(() => { state.sessions[state.currentSessionId].messages[0].content = 'A edit'; return saveToStorage(); });
-  await b.evaluate(() => { state.sessions[state.currentSessionId].messages[0].content = 'B edit'; return saveToStorage(); });
-  stored = await readShared(a);
-  assert.equal(stored.sessions[shared].messages[0].content, 'A edit');
-  const copyId = await b.evaluate(() => state.currentSessionId);
-  assert.notEqual(copyId, shared);
-  assert.equal(stored.sessions[copyId].messages[0].content, 'B edit');
-  assert.match(stored.sessions[copyId].title, /conflicting copy/);
-  await b.evaluate(() => storageWriteQueue);
-  await b.waitForFunction(async () => JSON.parse(localStorage.getItem('fixture-local')).currentSessionId === state.currentSessionId);
-  // B keeps working in its copy without producing further copies.
-  await add(b, 'b2', 'more from B');
-  stored = await readShared(a);
-  assert.equal(Object.keys(stored.sessions).length, 2);
-  assert.equal(stored.sessions[copyId].messages.at(-1).content, 'more from B');
-  assert.equal(stored.sessions[shared].messages[0].content, 'A edit');
+  await sees(b, 'a1');
+  await add(b, 'b1', 'from B');
+  await sees(a, 'b1');
+  const chosen = await a.evaluate(() => state.currentSessionId);
+  const stored = await readChats(a);
+  assert.deepEqual(stored.sessions[chosen].messages.map((m) => m.content), ['from A', 'from B']);
+  assert.deepEqual(Object.keys(stored.sessions), [chosen]);
+  assert.match(await b.locator('#messagesList').textContent(), /from A/);
   await context.close();
 });
 
-// Two pages share a chat with one message; A saves an edit first, so B's
-// differing edit of the same message cannot be merged.
-async function conflictingPages({ reply = false } = {}) {
-  const shared = await openSharedPages();
-  const { a, b } = shared;
-  const id = await a.evaluate(async (reply) => {
-    state.sessions[state.currentSessionId].messages.push({ id: 'm1', role: 'user', content: 'original', timestamp: 1 });
-    if (reply) state.sessions[state.currentSessionId].messages.push({ id: 'm2', role: 'assistant', content: 'original reply', timestamp: 2 });
+browserTest('a panel with unsaved messages merges in what the other panel saved', async () => {
+  const { context, a, b } = await openSharedPages();
+  const chosen = await a.evaluate(() => state.currentSessionId);
+  // B has typed into the chat but not saved when A's message lands.
+  await b.evaluate(() => state.sessions[state.currentSessionId].messages.push({ id: 'b1', role: 'user', content: 'from B' }));
+  await a.evaluate(() => {
+    state.sessions[state.currentSessionId].messages.push({ id: 'a1', role: 'user', content: 'from A' });
+    return saveToStorage();
+  });
+  assert.deepEqual(await b.evaluate(() => state.sessions[state.currentSessionId].messages.map((m) => m.id)), ['b1'], 'unsaved work is not replaced');
+  await b.evaluate(() => saveToStorage());
+  const stored = await readChats(a);
+  assert.deepEqual(stored.sessions[chosen].messages.map((m) => m.id), ['a1', 'b1']);
+  assert.deepEqual(await b.evaluate(() => state.sessions[state.currentSessionId].messages.map((m) => m.id)), ['a1', 'b1']);
+  await a.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 2);
+  assert.deepEqual(Object.keys(stored.sessions), [chosen]);
+  await context.close();
+});
+
+browserTest('when both panels edit the same message the later save wins, in one chat', async () => {
+  const { context, a, b } = await openSharedPages();
+  const chosen = await a.evaluate(async () => {
+    state.sessions[state.currentSessionId].messages.push({ id: 'm1', role: 'user', content: 'original' });
     await saveToStorage();
     return state.currentSessionId;
-  }, reply);
-  for (const page of [a, b]) {
-    await page.reload();
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
-  }
+  });
+  await b.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 1);
+  await b.evaluate(() => { state.sessions[state.currentSessionId].messages[0].content = 'B edit'; });
   await a.evaluate(() => { state.sessions[state.currentSessionId].messages[0].content = 'A edit'; return saveToStorage(); });
-  return { ...shared, id };
-}
-
-browserTest('edits made while a conflicting copy is being written are saved afterwards', async () => {
-  const { context, b, id } = await conflictingPages();
-  await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages[0].content = 'B edit';
-    const set = chrome.storage.local.set;
-    window.__gate = new Promise((resolve) => { window.__openGate = resolve; });
-    chrome.storage.local.set = async (data) => { window.__setReached = true; await window.__gate; return set(data); };
-    window.__firstSave = saveToStorage();
-  });
-  await b.waitForFunction(() => window.__setReached);
-  // The page keeps working while the copy is being written.
-  await b.evaluate(() => {
-    const live = state.sessions[state.currentSessionId];
-    live.messages[0].content = 'B edit, continued';
-    live.messages.push({ id: 'late', role: 'user', content: 'typed during the write', timestamp: 2 });
-  });
-  await b.evaluate(async () => { window.__openGate(); await window.__firstSave; await saveToStorage(); });
-  const stored = await readShared(b);
-  const copyId = Object.keys(stored.sessions).find((key) => key !== id);
-  assert.deepEqual(stored.sessions[copyId].messages.map((m) => m.content), ['B edit, continued', 'typed during the write']);
-  assert.equal(stored.sessions[id].messages[0].content, 'A edit');
+  assert.equal((await readChats(a)).sessions[chosen].messages[0].content, 'A edit');
+  assert.equal(await b.evaluate(() => state.sessions[state.currentSessionId].messages[0].content), 'B edit', 'unsaved edit is kept');
+  await b.evaluate(() => saveToStorage());
+  const stored = await readChats(a);
+  assert.deepEqual(Object.keys(stored.sessions), [chosen]);
+  assert.equal(stored.sessions[chosen].messages[0].content, 'B edit');
+  assert.doesNotMatch(stored.sessions[chosen].title, /conflicting/);
+  await a.waitForFunction(() => state.sessions[state.currentSessionId].messages[0].content === 'B edit');
+  assert.equal(await a.evaluate(() => Object.keys(state.sessions).length), 1);
   await context.close();
 });
 
-browserTest('a conflicting copy and its original show and act on their own messages', async () => {
-  const { context, b, id } = await conflictingPages();
-  await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages[0].content = 'B edit';
-    messageElementCache.clear();
-    renderMessages();
-    return saveToStorage();
+browserTest('a deleted chat stays deleted when a panel reloads', async () => {
+  const { context, a, b, ready } = await openSharedPages();
+  const [old, fresh] = await a.evaluate(async () => {
+    state.drafts[state.currentSessionId] = 'keeps the first chat';
+    const old = state.currentSessionId;
+    await createNewSession();
+    await saveToStorage();
+    return [old, state.currentSessionId];
   });
-  const copyId = await b.evaluate(() => state.currentSessionId);
-  assert.notEqual(copyId, id);
-  const shown = () => b.locator('.message.user .message-content').first().textContent();
-  const editing = async () => {
-    await b.locator('.message.user .edit-btn').first().click();
-    const value = await b.locator('.message.user textarea').inputValue();
-    await b.keyboard.press('Escape');
-    return value;
+  await b.waitForFunction((fresh) => fresh in state.sessions, fresh);
+  await a.evaluate((old) => deleteSession(old), old);
+  await a.evaluate(() => storageWriteQueue);
+  assert.deepEqual(Object.keys((await readChats(a)).sessions), [fresh]);
+  await b.reload();
+  await ready(b);
+  assert.equal(await b.evaluate((old) => old in state.sessions, old), false);
+  await context.close();
+});
+
+browserTest('chats saved by the one-table layout are converted, and streaming-bug copies fold back', async () => {
+  const timestamp = new Date().toISOString();
+  const root = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const copy1 = `conflict-${root}-11111111-1111-4111-8111-111111111111`;
+  const copy2 = `conflict-${copy1}-22222222-2222-4222-8222-222222222222`;
+  const suffix = ' (conflicting copy)';
+  const reply = (content, title) => ({
+    title,
+    timestamp,
+    messages: [
+      { id: 'u1', role: 'user', content: 'Explain it', timestamp },
+      { id: 'a1', role: 'assistant', content, timestamp }
+    ]
+  });
+  const old = {
+    [root]: reply('Sure', 'Explain it'),
+    [copy1]: reply('Sure, here is', `Explain it${suffix}`),
+    [copy2]: reply('Sure, here is the whole explanation.', `Explain it${suffix}${suffix}`),
+    other: { title: 'Other', timestamp, messages: [{ id: 'o1', role: 'user', content: 'Unrelated', timestamp }] }
   };
-  assert.equal(await shown(), 'B edit');
-  assert.equal(await editing(), 'B edit');
-  await b.evaluate((id) => switchSession(id), id);
-  assert.equal(await shown(), 'A edit');
-  assert.equal(await editing(), 'A edit');
-  await b.evaluate((id) => switchSession(id), copyId);
-  assert.equal(await shown(), 'B edit');
-  assert.equal(await editing(), 'B edit');
-  await context.close();
-});
-
-browserTest('after a conflict both pages keep their own drafts, also across later saves', async () => {
-  const { context, a, b, id } = await conflictingPages();
-  await a.evaluate((id) => { state.drafts[id] = 'A saved draft'; return saveToStorage(); }, id);
-  await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages[0].content = 'B edit';
-    state.drafts[state.currentSessionId] = 'B first draft';
-    const set = chrome.storage.local.set;
-    window.__gate = new Promise((resolve) => { window.__openGate = resolve; });
-    chrome.storage.local.set = async (data) => { window.__setReached = true; await window.__gate; return set(data); };
-    window.__firstSave = saveToStorage();
+  const { page, errors } = await openPage('sidebar', fixtureConfig, {
+    __legacyLayout: true,
+    sessions: old,
+    currentSessionId: copy2,
+    drafts: { [copy2]: 'half-typed' }
   });
-  await b.waitForFunction(() => window.__setReached);
-  await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages[0].content = 'B edit, continued';
-    state.drafts[state.currentSessionId] = 'B latest draft';
-  });
-  await b.evaluate(async () => { window.__openGate(); await window.__firstSave; await saveToStorage(); await saveToStorage(); });
-  const stored = await readShared(b);
-  const copyId = await b.evaluate(() => state.currentSessionId);
-  assert.notEqual(copyId, id);
-  assert.equal(stored.drafts[id], 'A saved draft');
-  assert.equal(stored.drafts[copyId], 'B latest draft');
-  assert.equal(stored.sessions[copyId].messages[0].content, 'B edit, continued');
-  await context.close();
+  assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions).sort()), [root, 'other'].sort());
+  assert.equal(await page.evaluate(() => state.currentSessionId), root);
+  assert.match(await page.locator('#messagesList').textContent(), /the whole explanation/);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'half-typed');
+  assert.match(await page.locator('.notification').textContent(), /Merged 2 duplicate chats/);
+  const local = await page.evaluate(() => window.__storage.local);
+  assert.equal('sessions' in local, false);
+  assert.deepEqual(Object.keys(local['backup:sessions-v1']).sort(), Object.keys(old).sort());
+  assert.deepEqual(Object.keys(local).filter((key) => key.startsWith('session:')).sort(), [`session:${root}`, 'session:other'].sort());
+  assert.equal(local[`session:${root}`].session.title, 'Explain it');
+  assert.deepEqual(errors, []);
+  await page.close();
 });
 
-browserTest('Undo after a conflict restores this page\'s copy and leaves the other page\'s chat alone', async () => {
-  const { context, a, b, id } = await conflictingPages({ reply: true });
-  await a.evaluate(() => {
-    state.sessions[state.currentSessionId].messages.push({ id: 'a-extra', role: 'user', content: 'A saved extra', timestamp: 3 });
-    return saveToStorage();
-  });
-  await b.evaluate(() => { sendMessageToAPI = async () => {}; });
-  await b.locator('.message.user .edit-btn').first().click();
-  await b.locator('.message.user textarea').fill('B edit');
-  await b.locator('.edit-submit-btn').click();
-  await b.waitForFunction((id) => state.currentSessionId !== id, id);
-  await b.evaluate(() => storageWriteQueue);
-  await b.locator('#undoBtn').click();
-  await b.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 2);
-  await b.evaluate(() => storageWriteQueue);
-  const stored = await readShared(b);
-  const copyId = await b.evaluate(() => state.currentSessionId);
-  assert.deepEqual(stored.sessions[id].messages.map((m) => m.content), ['A edit', 'original reply', 'A saved extra']);
-  assert.deepEqual(stored.sessions[copyId].messages.map((m) => m.content), ['original', 'original reply']);
-  await context.close();
-});
-
-browserTest('replaying a pending conflict never duplicates or rolls back its copy', async () => {
-  const { context, a, b, id } = await conflictingPages();
-  await b.evaluate((id) => {
-    state.sessions[id].messages[0].content = 'B edit';
-    state.drafts[id] = 'B draft';
-    window.dispatchEvent(new Event('pagehide'));
-  }, id);
-  await b.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-  await b.close();
-  const open = async () => {
-    const page = await context.newPage();
-    await page.goto(a.url());
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-    return page;
-  };
-  await a.evaluate(() => localStorage.setItem('fixture-fail-remove', '1'));
-  await (await open()).close();
-  const copies = async () => Object.keys((await readShared(a)).sessions).filter((key) => key.startsWith('conflict-'));
-  const [copyId] = await copies();
-  // The copy gets newer work, and the original chat moves on, before the retry.
-  await a.evaluate(([copyId]) => {
-    const tables = JSON.parse(localStorage.getItem('fixture-local'));
-    tables.sessions[copyId].messages.push({ id: 'later', role: 'user', content: 'added to the copy' });
-    tables.drafts[copyId] = 'newer copy draft';
-    tables.sessions[Object.keys(tables.sessions).find((key) => !key.startsWith('conflict-') && tables.sessions[key].messages.length)].messages[0].content = 'A edit again';
-    localStorage.setItem('fixture-local', JSON.stringify(tables));
-    localStorage.removeItem('fixture-fail-remove');
-  }, [copyId]);
-  await (await open()).close();
-  const stored = await readShared(a);
-  assert.deepEqual(await copies(), [copyId]);
-  assert.deepEqual(stored.sessions[copyId].messages.map((m) => m.content), ['B edit', 'added to the copy']);
-  assert.equal(stored.drafts[copyId], 'newer copy draft');
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
-  await context.close();
-});
-
-browserTest('a replayed pending conflict leaves a reverted or deleted original chat alone', async () => {
-  for (const mode of ['reverted', 'deleted']) {
-    const { context, a, b, id } = await conflictingPages();
-    await b.evaluate((id) => {
-      state.sessions[id].messages[0].content = 'B edit';
-      state.drafts[id] = 'B draft';
-      window.dispatchEvent(new Event('pagehide'));
-    }, id);
-    await b.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-    await b.close();
-    const open = async () => {
-      const page = await context.newPage();
-      await page.goto(a.url());
-      await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-      return page;
-    };
-    await a.evaluate(() => localStorage.setItem('fixture-fail-remove', '1'));
-    await (await open()).close();
-    // The original chat goes back to the state B started from, or is deleted,
-    // and its page has a newer draft; the retry must not undo any of that.
-    await a.evaluate(([mode, id]) => {
-      const tables = JSON.parse(localStorage.getItem('fixture-local'));
-      if (mode === 'reverted') tables.sessions[id].messages[0].content = 'original';
-      else delete tables.sessions[id];
-      tables.drafts[id] = 'A later draft';
-      localStorage.setItem('fixture-local', JSON.stringify(tables));
-      localStorage.removeItem('fixture-fail-remove');
-    }, [mode, id]);
-    await (await open()).close();
-    const stored = await readShared(a);
-    const copies = Object.keys(stored.sessions).filter((key) => key.startsWith('conflict-'));
-    assert.equal(copies.length, 1, mode);
-    assert.equal(stored.sessions[copies[0]].messages[0].content, 'B edit', mode);
-    if (mode === 'reverted') assert.equal(stored.sessions[id].messages[0].content, 'original');
-    else assert.equal(id in stored.sessions, false);
-    assert.equal(stored.drafts[id], 'A later draft', mode);
-    assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), [], mode);
-    await context.close();
-  }
-});
-
-browserTest('a save whose pending cleanup failed still adopts its copy, so a retry keeps what others added', async () => {
-  const { context, a, b, id } = await conflictingPages();
-  const open = async () => {
-    const page = await context.newPage();
-    await page.goto(a.url());
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-    return page;
-  };
-  // A closed page leaves a pending record, which B's next save has to fold in.
+browserTest('a panel that stays open folds in what a closing panel left behind', async () => {
+  const { context, a, b, open } = await openSharedPages();
   const p = await open();
-  await p.evaluate(() => { state.drafts.unrelated = 'draft from the closed page'; window.dispatchEvent(new Event('pagehide')); });
-  await p.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
+  await p.evaluate(() => {
+    state.sessions.closing = { title: 'Closing chat', timestamp: new Date().toISOString(), messages: [{ id: 'm1', role: 'user', content: 'written just before closing' }] };
+    state.drafts.closing = 'unsent';
+    window.dispatchEvent(new Event('pagehide'));
+  });
+  // The open panels fold the stash the moment it appears.
   await p.close();
-
-  // B's conflicting save writes its copy, then deleting the pending record fails.
-  await b.evaluate(() => localStorage.setItem('fixture-fail-remove-count', '1'));
-  const saved = await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages[0].content = 'B edit';
-    return saveToStorage();
-  });
-  assert.equal(saved, false);
-  const copyId = await b.evaluate(() => state.currentSessionId);
-  assert.notEqual(copyId, id);
-
-  // Another page opens the copy and saves a new message and draft to it.
-  const c = await open();
-  assert.equal(await c.evaluate(() => state.currentSessionId), copyId);
-  await c.evaluate(() => {
-    state.sessions[state.currentSessionId].messages.push({ id: 'c1', role: 'user', content: 'C saved new message' });
-    state.drafts[state.currentSessionId] = 'C new draft';
-    return saveToStorage();
-  });
-
-  // B retries, with one more edit of its own made in the meantime.
-  await b.evaluate(() => {
-    state.sessions[state.currentSessionId].messages.push({ id: 'b-later', role: 'user', content: 'B later message' });
-    return saveToStorage();
-  });
-  const stored = await readShared(b);
-  assert.deepEqual(stored.sessions[copyId].messages.map((m) => m.content), ['B edit', 'C saved new message', 'B later message']);
-  assert.equal(stored.drafts[copyId], 'C new draft');
-  assert.equal(stored.sessions[id].messages[0].content, 'A edit');
-  assert.equal(stored.drafts.unrelated, 'draft from the closed page');
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
+  for (const page of [a, b]) await page.waitForFunction(() => 'closing' in state.sessions);
+  await a.waitForFunction(() => !Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pending:')));
+  const stored = await readChats(a);
+  assert.equal(stored.sessions.closing.messages[0].content, 'written just before closing');
+  assert.equal(stored.drafts.closing, 'unsent');
+  assert.deepEqual(pendingIn(stored), []);
+  assert.equal('appliedPending' in stored, false);
   await context.close();
 });
 
 browserTest('a stash whose cleanup keeps failing is not replayed over a newer saved draft', async () => {
-  const { context, a } = await openSharedPages();
+  const { context, a, open } = await openSharedPages();
   const id = await a.evaluate(() => state.currentSessionId);
-  const p = await context.newPage();
-  await p.goto(a.url());
-  await p.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-  await p.evaluate((id) => { state.drafts[id] = 'P pending draft'; window.dispatchEvent(new Event('pagehide')); }, id);
-  await p.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-  await p.close();
-
-  // Two saves write successfully but cannot delete the stash.
-  await a.evaluate(() => localStorage.setItem('fixture-fail-remove-count', '2'));
-  const save = (text) => a.evaluate(([id, text]) => { state.drafts[id] = text; return saveToStorage(); }, [id, text]);
-  assert.equal(await save('A first draft'), false);
-  assert.equal(await save('A newer saved draft'), false);
-  assert.equal((await readShared(a)).drafts[id], 'A newer saved draft');
-
-  // The retry removes the stash without replaying it.
-  await a.evaluate(() => { retryStorageSave(); return storageWriteQueue; });
-  const stored = await readShared(a);
-  assert.equal(stored.drafts[id], 'A newer saved draft');
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
-  await context.close();
-});
-
-browserTest('a pending conflict moves an unchanged selection and saved draft to the copy', async () => {
-  const { context, a, b, id } = await conflictingPages();
-  // B's selection and draft were persisted earlier; only a message changes before it closes.
-  await b.evaluate(async (id) => { state.drafts[id] = 'B saved draft'; await saveToStorage(); }, id);
-  await a.evaluate((id) => { state.drafts[id] = 'A draft'; return saveToStorage(); }, id);
-  await b.evaluate((id) => {
-    state.sessions[id].messages[0].content = 'B edit';
-    window.dispatchEvent(new Event('pagehide'));
-  }, id);
-  await b.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-  await b.close();
-  const c = await context.newPage();
-  await c.goto(a.url());
-  await c.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-  const stored = await readShared(a);
-  const copyId = Object.keys(stored.sessions).find((key) => key.startsWith('conflict-'));
-  assert.equal(stored.currentSessionId, copyId);
-  assert.equal(stored.drafts[copyId], 'B saved draft');
-  assert.equal(stored.drafts[id], 'A draft');
-  await context.close();
-});
-
-browserTest('a closed page\'s conflicting changes are restored once, with its selection and draft', async () => {
-  const { context, a, b, id } = await conflictingPages();
-  // B had moved to another chat and back; its unsent draft belongs to the chat it edited.
-  await b.evaluate(async (id) => {
-    await createNewSession();
-    await storageWriteQueue;
-    state.currentSessionId = id;
-    state.sessions[id].messages[0].content = 'B edit';
-    state.drafts[id] = 'draft for B';
-    window.dispatchEvent(new Event('pagehide'));
-  }, id);
-  await b.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-  await b.close();
-  const open = async () => {
-    const page = await context.newPage();
-    await page.goto(a.url());
-    await page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-    return page;
-  };
-  // The first replay writes the tables but fails to delete the pending record.
+  const p = await open();
+  // Whatever page folds the stash writes it and then cannot delete it.
   await a.evaluate(() => localStorage.setItem('fixture-fail-remove', '1'));
-  await (await open()).close();
-  const copies = async () => Object.keys((await readShared(a)).sessions).filter((key) => key.startsWith('conflict-'));
-  assert.equal((await copies()).length, 1);
+  await p.evaluate((id) => { state.drafts[id] = 'P pending draft'; window.dispatchEvent(new Event('pagehide')); }, id);
+  await waitForPending(p);
+  await p.close();
+  await a.waitForFunction((id) => JSON.parse(localStorage.getItem('fixture-local')).drafts?.[id] === 'P pending draft', id);
+  await a.evaluate(() => storageWriteQueue);
+
+  // A newer draft is saved while the stash is still around.
+  await a.evaluate((id) => { state.drafts[id] = 'A newer saved draft'; return saveToStorage(); }, id);
+  assert.equal((await readShared(a)).drafts[id], 'A newer saved draft');
+  assert.equal(pendingIn(await readShared(a)).length, 1);
+
+  // The next page to start removes the stash without replaying it.
   await a.evaluate(() => localStorage.removeItem('fixture-fail-remove'));
   const c = await open();
-  const stored = await readShared(a);
-  const [copyId] = await copies();
-  assert.equal((await copies()).length, 1);
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
-  assert.equal(stored.sessions[copyId].messages[0].content, 'B edit');
-  assert.equal(stored.sessions[id].messages[0].content, 'A edit');
-  assert.equal(stored.currentSessionId, copyId);
-  assert.equal(stored.drafts[copyId], 'draft for B');
-  assert.equal(stored.drafts[id], undefined);
-  assert.equal(await c.evaluate(() => state.currentSessionId), copyId);
-  assert.equal(await c.locator('#messageInput').inputValue(), 'draft for B');
-  await context.close();
-});
-
-browserTest('a pagehide stash written after a save read its snapshot survives that save, and colliding drafts both apply', async () => {
-  const { context, a } = await openSharedPages();
-  const id = await a.evaluate(() => state.currentSessionId);
-  // Open the second page before the stash exists, so startup cannot consume it.
-  const q = await context.newPage();
-  await q.goto(a.url());
-  await q.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-  const p = await context.newPage();
-  await p.goto(a.url());
-  await p.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId);
-  // 'draft-0001r' and 'draft-00030' had the same 32-bit fingerprint.
-  await p.evaluate((id) => { state.drafts[id] = 'draft-0001r'; window.dispatchEvent(new Event('pagehide')); }, id);
-  await p.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
-  await p.close();
-  // A's locked save has read the stash when the other page's newer stash lands.
-  await a.evaluate(() => {
-    const get = chrome.storage.local.get;
-    chrome.storage.local.get = async (...args) => { const value = await get(...args); chrome.storage.local.get = get; await new Promise((r) => { window.__release = r; window.__paused = true; }); return value; };
-    window.__save = saveToStorage();
-  });
-  await a.waitForFunction(() => window.__paused);
-  await q.evaluate((id) => { state.drafts[id] = 'draft-00030'; window.dispatchEvent(new Event('pagehide')); }, id);
-  await q.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).filter((key) => key.startsWith('pendingSave:')).length >= 2);
-  await a.evaluate(async () => { window.__release(); await window.__save; });
-  const pendingNow = Object.keys(await readShared(a)).filter((key) => key.startsWith('pendingSave:'));
-  assert.equal(pendingNow.length, 1, 'the newer stash must still be pending');
-  await q.close();
-  await a.evaluate(async () => { state.drafts.other = 'x'; await saveToStorage(); });
-  const stored = await readShared(a);
-  assert.equal(stored.drafts[id], 'draft-00030');
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
+  const stored = await readShared(c);
+  assert.equal(stored.drafts[id], 'A newer saved draft');
+  assert.deepEqual(pendingIn(stored), []);
   await context.close();
 });
 
 browserTest('a closing page never rewrites shared tables over a paused locked write', async () => {
-  const { context, a, b } = await openSharedPages();
+  const { context, a, b, open } = await openSharedPages();
   // A takes the lock, reads the shared tables, and pauses before writing.
   await a.evaluate(() => {
     const get = chrome.storage.local.get;
@@ -1613,27 +1476,23 @@ browserTest('a closing page never rewrites shared tables over a paused locked wr
     state.drafts.fromA = 'draft A';
     window.__aSave = saveToStorage();
   });
-  await a.waitForFunction(() => document.querySelector('#storageStatus') !== null);
   // B creates a chat and a draft, then is closed (pagehide) while A is paused.
-  const bSession = await b.evaluate(async () => {
+  await b.evaluate(async () => {
     await storageWriteQueue;
     state.sessions.fromB = { messages: [{ id: 'b', role: 'user', content: 'B chat' }], title: 'B chat', timestamp: new Date().toISOString() };
     state.drafts.fromB = 'draft B';
     window.dispatchEvent(new Event('pagehide'));
-    return 'fromB';
   });
-  await b.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pendingSave:')));
+  await waitForPending(b);
+  assert.equal('session:fromB' in (await readShared(a)), false, 'the stash did not touch the shared tables');
   await a.evaluate(async () => { window.__openGate(); await window.__aSave; });
   await b.close();
   // A new page folds the closed page's changes in; nothing was lost.
-  const c = await context.newPage();
-  await c.goto(a.url());
-  await c.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
-  assert.equal(await c.evaluate((id) => state.sessions[id]?.messages[0].content, bSession), 'B chat');
+  const c = await open();
+  assert.equal(await c.evaluate(() => state.sessions.fromB?.messages[0].content), 'B chat');
   assert.equal(await c.evaluate(() => state.drafts.fromB), 'draft B');
   assert.equal(await c.evaluate(() => state.drafts.fromA), 'draft A');
-  const stored = await readShared(c);
-  assert.deepEqual(Object.keys(stored).filter((key) => key.startsWith('pendingSave:')), []);
+  await c.waitForFunction(() => !Object.keys(JSON.parse(localStorage.getItem('fixture-local'))).some((key) => key.startsWith('pending')));
   await context.close();
 });
 
@@ -1751,7 +1610,7 @@ browserTest('New chat reuses a blank chat, and blank chats stay out of history',
   assert.equal(await page.locator('.chat-history-item').count(), 2);
   await page.locator('.chat-history-content', { hasText: 'Kept' }).click();
   assert.equal(await page.evaluate((blank) => blank in state.sessions, blank), false);
-  await page.waitForFunction((blank) => !(blank in window.__storage.local.sessions), blank);
+  await page.waitForFunction((blank) => !(`session:${blank}` in window.__storage.local), blank);
   assert.deepEqual(errors, []);
   await page.close();
 });
