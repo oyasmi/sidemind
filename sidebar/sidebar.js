@@ -172,6 +172,14 @@ function cacheElements() {
   elements.undoText = document.getElementById('undoText');
   elements.undoBtn = document.getElementById('undoBtn');
   [
+    'modelControl',
+    'modelName',
+    'modelProvider',
+    'modelPickerPanel',
+    'modelSearch',
+    'modelOptions',
+    'modelPickerEmpty',
+    'manageModelsBtn',
     'generationStatus',
     'historySearch',
     'historyUndo',
@@ -189,7 +197,16 @@ function cacheElements() {
 
 // Setup Event Listeners
 function setupEventListeners() {
-  elements.modelSelector.addEventListener('change', handleModelChange);
+  elements.modelSelector.addEventListener('click', toggleModelPicker);
+  elements.modelSelector.addEventListener('keydown', handleModelTriggerKeydown);
+  elements.modelSearch.addEventListener('input', renderModelOptions);
+  elements.modelSearch.addEventListener('keydown', handleModelSearchKeydown);
+  elements.modelOptions.addEventListener('click', handleModelOptionClick);
+  elements.modelOptions.addEventListener('pointermove', handleModelOptionPointerMove);
+  elements.modelControl.addEventListener('focusout', handleModelPickerFocusOut);
+  elements.manageModelsBtn.addEventListener('click', manageModels);
+  document.addEventListener('pointerdown', handleModelPickerOutsideClick);
+  window.addEventListener('resize', positionModelPicker);
   elements.systemPromptSelector.addEventListener('change', handleSystemPromptChange);
   elements.newChatBtn.addEventListener('click', createNewSession);
   elements.sendBtn.addEventListener('click', handleSendOrStop);
@@ -1018,6 +1035,7 @@ function activateSession(sessionId) {
 }
 
 async function createNewSession() {
+  closeModelPicker(false);
   await stopStreamingIfActive();
 
   if (isBlankSession(state.currentSessionId)) {
@@ -2293,6 +2311,7 @@ function updateInputState() {
     elements.sendBtn.title = 'Send message';
   }
   elements.modelSelector.disabled = state.isStreaming;
+  if (state.isStreaming) closeModelPicker(false);
   elements.systemPromptSelector.disabled = state.isStreaming;
   elements.messageInput.placeholder = state.isStreaming
     ? 'Write your next message…'
@@ -2324,33 +2343,161 @@ function applyTheme() {
   cacheAppearance(state.config);
 }
 
+// ===== Model picker =====
 function updateModelSelector() {
-  elements.modelSelector.innerHTML = '<option value="">Select Model...</option>';
+  const [providerName, modelName] = describeModel(state.config.selectedModel);
+  const provider = providerForModel(state.config.selectedModel);
+  const hasModels = state.config.providers.some((item) => item.models.length);
+  elements.modelName.textContent = modelName || 'Choose a model';
+  elements.modelProvider.textContent = providerName
+    ? `${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`
+    : hasModels ? 'Select a model to start chatting' : 'Connect a provider in Settings';
+  elements.modelSelector.title = modelName ? `${modelName} · ${providerName}` : 'Choose a model';
+  if (!elements.modelPickerPanel.hidden) {
+    positionModelPicker();
+    renderModelOptions();
+  }
+}
 
-  state.config.providers.forEach((provider) => {
-    const optgroup = document.createElement('optgroup');
-    // 非默认接口在分组标题上标注，便于区分同名 provider
-    optgroup.label =
-      getApiType(provider) === 'responses' ? `${provider.name} · Responses` : provider.name;
+function toggleModelPicker() {
+  if (elements.modelPickerPanel.hidden) openModelPicker();
+  else closeModelPicker(true);
+}
 
-    provider.models.forEach((model) => {
-      const option = document.createElement('option');
-      // 使用复合键: "modelId - providerId"
-      option.value = `${model.id} - ${provider.id}`;
-      // Include the provider in the selected label, where optgroups are hidden.
-      option.textContent = `${model.name} · ${provider.name}`;
+function openModelPicker() {
+  if (state.isStreaming) return;
+  elements.modelSearch.value = '';
+  elements.modelPickerPanel.hidden = false;
+  elements.modelSelector.setAttribute('aria-expanded', 'true');
+  elements.modelSearch.setAttribute('aria-expanded', 'true');
+  positionModelPicker();
+  renderModelOptions();
+  elements.modelSearch.focus({ preventScroll: true });
+}
 
-      // 检查是否匹配当前的选中项
-      if (state.config.selectedModel === `${model.id} - ${provider.id}`) {
-        option.selected = true;
-      }
+function closeModelPicker(restoreFocus = false) {
+  if (!elements.modelPickerPanel || elements.modelPickerPanel.hidden) return;
+  elements.modelPickerPanel.hidden = true;
+  elements.modelSelector.setAttribute('aria-expanded', 'false');
+  elements.modelSearch.setAttribute('aria-expanded', 'false');
+  elements.modelSearch.removeAttribute('aria-activedescendant');
+  if (restoreFocus) elements.modelSelector.focus({ preventScroll: true });
+}
 
-      optgroup.appendChild(option);
+function positionModelPicker() {
+  if (elements.modelPickerPanel.hidden) return;
+  const available = innerHeight - elements.modelSelector.getBoundingClientRect().bottom - 20;
+  elements.modelPickerPanel.style.maxHeight = `${Math.max(0, Math.min(420, available))}px`;
+}
+
+function renderModelOptions() {
+  const query = elements.modelSearch.value.trim().toLocaleLowerCase();
+  const activeKey = elements.modelOptions.querySelector('.active')?.dataset.modelKey;
+  const fragment = document.createDocumentFragment();
+  const options = [];
+  state.config.providers.forEach((provider, providerIndex) => {
+    const group = document.createElement('div');
+    group.setAttribute('role', 'group');
+    const label = document.createElement('div');
+    label.className = 'model-option-group-label';
+    label.id = `model-group-${providerIndex}`;
+    label.textContent = `${provider.name}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`;
+    group.setAttribute('aria-labelledby', label.id);
+    group.appendChild(label);
+    provider.models.forEach((model, modelIndex) => {
+      if (!`${provider.name} ${model.name} ${model.id}`.toLocaleLowerCase().includes(query)) return;
+      const key = `${model.id} - ${provider.id}`;
+      const selected = key === state.config.selectedModel;
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'model-option';
+      option.id = `model-option-${providerIndex}-${modelIndex}`;
+      option.dataset.modelKey = key;
+      option.tabIndex = -1;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(selected));
+      const text = document.createElement('span');
+      text.className = 'model-option-text';
+      const name = document.createElement('span');
+      name.className = 'model-option-name';
+      name.textContent = model.name;
+      const id = document.createElement('span');
+      id.className = 'model-option-id';
+      id.textContent = model.id;
+      text.append(name, id);
+      option.appendChild(text);
+      if (selected) option.appendChild(createIcon('check'));
+      group.appendChild(option);
+      options.push(option);
     });
-
-    elements.modelSelector.appendChild(optgroup);
+    if (group.children.length > 1) fragment.appendChild(group);
   });
-  elements.modelSelector.title = elements.modelSelector.selectedOptions[0]?.textContent || 'Choose a model';
+  elements.modelSearch.removeAttribute('aria-activedescendant');
+  elements.modelOptions.replaceChildren(fragment);
+  elements.modelOptions.hidden = options.length === 0;
+  elements.modelPickerEmpty.hidden = options.length > 0;
+  elements.modelPickerEmpty.textContent = query
+    ? 'No matching models. Try a model ID or provider name.'
+    : 'Add a provider in Settings to see your models here.';
+  const active = options.find((option) => option.dataset.modelKey === activeKey)
+    || options.find((option) => option.getAttribute('aria-selected') === 'true') || options[0];
+  setActiveModelOption(active);
+}
+
+function setActiveModelOption(option, scroll = true) {
+  elements.modelOptions.querySelector('.active')?.classList.remove('active');
+  if (!option) {
+    elements.modelSearch.removeAttribute('aria-activedescendant');
+    return;
+  }
+  option.classList.add('active');
+  elements.modelSearch.setAttribute('aria-activedescendant', option.id);
+  if (scroll) option.scrollIntoView({ block: 'nearest' });
+}
+
+function handleModelTriggerKeydown(event) {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    openModelPicker();
+  }
+}
+
+function handleModelSearchKeydown(event) {
+  if (event.isComposing) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const options = Array.from(elements.modelOptions.querySelectorAll('[role="option"]'));
+    const index = options.findIndex((option) => option.classList.contains('active'));
+    const next = Math.max(0, Math.min(options.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)));
+    setActiveModelOption(options[next]);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    const option = elements.modelOptions.querySelector('.active');
+    if (option) handleModelChange(option.dataset.modelKey);
+  }
+}
+
+function handleModelOptionClick(event) {
+  const option = event.target.closest('[role="option"]');
+  if (option) handleModelChange(option.dataset.modelKey);
+}
+
+function handleModelOptionPointerMove(event) {
+  const option = event.target.closest('[role="option"]');
+  if (option && !option.classList.contains('active')) setActiveModelOption(option, false);
+}
+
+function handleModelPickerOutsideClick(event) {
+  if (!elements.modelControl.contains(event.target)) closeModelPicker(false);
+}
+
+function handleModelPickerFocusOut(event) {
+  if (!elements.modelControl.contains(event.relatedTarget)) closeModelPicker(false);
+}
+
+function manageModels() {
+  closeModelPicker(true);
+  openOptions();
 }
 
 function updateSystemPromptSelector() {
@@ -2373,30 +2520,18 @@ function updateSystemPromptSelector() {
 // EVENT HANDLERS
 // ========================================
 
-function handleModelChange(event) {
-  const selectedValue = event.target.value;
-  elements.modelSelector.title = event.target.selectedOptions[0]?.textContent || 'Choose a model';
-
-  if (!selectedValue) {
-    state.config.selectedModel = null;
-    state.config.selectedProvider = null;
-    saveConfigSoon({ selectedModel: null, selectedProvider: null });
-    updateInputState();
-    return;
-  }
-
+function handleModelChange(selectedValue) {
+  if (state.isStreaming) return;
   const [modelId, providerId] = parseModelKey(selectedValue);
-
-  if (!providerId || !modelId) {
-    console.error('Invalid model selection format');
-    return;
-  }
-
-  state.config.selectedModel = selectedValue; // 存储复合键
+  const provider = state.config.providers.find((item) => item.id === providerId);
+  if (!provider?.models.some((model) => model.id === modelId)) return;
+  state.config.selectedModel = selectedValue;
   state.config.selectedProvider = providerId;
   saveConfigSoon({ selectedModel: selectedValue, selectedProvider: providerId });
+  updateModelSelector();
   updateInputState();
   renderWelcomeMessage();
+  closeModelPicker(true);
 }
 
 function handleSystemPromptChange(event) {
@@ -2422,6 +2557,11 @@ function handleInputKeydown(event) {
 // Escape dismisses the active surface first, then stops generation.
 function handleGlobalKeydown(event) {
   if (event.isComposing || document.querySelector('dialog[open]')) return;
+  if (event.key === 'Escape' && !event.shiftKey && !elements.modelPickerPanel.hidden) {
+    event.preventDefault();
+    closeModelPicker(true);
+    return;
+  }
   const shortcut = event.ctrlKey || event.metaKey;
   if (shortcut && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o') {
     event.preventDefault();
@@ -2430,6 +2570,7 @@ function handleGlobalKeydown(event) {
   }
   if (event.shiftKey && !shortcut && !event.altKey && event.key === 'Escape') {
     event.preventDefault();
+    closeModelPicker(false);
     elements.messageInput.focus();
     return;
   }
@@ -2501,6 +2642,7 @@ function openOptions() {
 }
 
 function openChatHistory() {
+  closeModelPicker(false);
   clearTimeout(historySearchTimer);
   elements.historySearch.value = '';
   renderChatHistory();

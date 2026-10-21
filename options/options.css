@@ -555,7 +555,6 @@
 .model-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   min-width: 0;
   font-size: 11px;
   color: var(--text-secondary);
@@ -957,13 +956,19 @@
 .models-heading .btn {
   flex-shrink: 0;
 }
+.model-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 #providerModal .models-list {
   margin: 0;
-  gap: 14px;
-}
-#providerModal .model-item + .model-item {
-  padding-top: 14px;
-  border-top: 1px solid var(--border-secondary);
+  gap: 10px;
 }
 #providerModal .modal-error {
   margin-right: 24px;
@@ -997,5 +1002,15 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .model-columns {
+    display: flex;
+    gap: 5px;
+  }
+  .model-columns span:nth-child(2)::before {
+    content: '/ ';
   }
 }

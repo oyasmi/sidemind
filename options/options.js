@@ -633,6 +633,7 @@ function createModelField(name = '', id = '') {
     const field = document.createElement('label');
     field.className = 'model-field';
     const caption = document.createElement('span');
+    caption.className = 'sr-only';
     caption.textContent = label;
     const input = document.createElement('input');
     input.className = className;

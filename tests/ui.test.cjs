@@ -249,6 +249,11 @@ async function setTheme(page, theme) {
   await page.locator(`#themeSelector input[value="${theme}"]`).check();
 }
 
+async function chooseModel(page, key) {
+  await page.locator('#modelSelector').click();
+  await page.locator(`[role="option"][data-model-key="${key}"]`).click();
+}
+
 async function startResponse(page, text = 'Explain this carefully.') {
   await page.locator('#messageInput').fill(text);
   await page.locator('#messageInput').press('Enter');
@@ -988,17 +993,101 @@ browserTest('a pending sidebar model selection survives incoming appearance sett
   const settings = structuredClone(fixtureConfig);
   settings.providers[0].models.push({ id: 'other', name: 'Other model' });
   const { page, errors } = await openPage('sidebar', settings);
-  await page.locator('#modelSelector').selectOption('other - provider');
+  await chooseModel(page, 'other - provider');
   await page.evaluate(async () => {
     const latest = structuredClone(window.__storage.sync.config);
     latest.theme = 'dark';
     await chrome.storage.sync.set({ config: latest });
   });
-  assert.equal(await page.locator('#modelSelector').inputValue(), 'other - provider');
+  assert.equal(await page.locator('#modelName').textContent(), 'Other model');
+  assert.equal(await page.evaluate(() => state.config.selectedModel), 'other - provider');
   await page.waitForFunction(
     () => window.__storage.sync.config.selectedModel === 'other - provider'
   );
   assert.equal(await page.evaluate(() => window.__storage.sync.config.theme), 'dark');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('the model picker searches groups and selects with the keyboard without losing a draft', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.providers.push({
+    ...settings.providers[0], id: 'second', name: 'Research service', apiType: 'responses',
+    models: [{ id: 'model', name: 'Research model' }, { id: 'deep-thinking', name: 'Deep research' }]
+  });
+  const { page, errors } = await openPage('sidebar', settings);
+  await page.locator('#messageInput').fill('Keep my draft');
+  await page.locator('#modelSelector').focus();
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.locator('#modelSearch').evaluate((node) => node === document.activeElement), true);
+  assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 3);
+  assert.equal(await page.locator('#modelOptions').getByRole('option', { selected: true }).count(), 1);
+  await page.locator('#modelSearch').fill('research SERVICE');
+  assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 2);
+  assert.match(await page.locator('.model-option-group-label').textContent(), /Responses/);
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => state.config.selectedModel), 'deep-thinking - second');
+  assert.equal(await page.locator('#modelName').textContent(), 'Deep research');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep my draft');
+  assert.equal(await page.locator('#modelSelector').getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('#modelSelector').evaluate((node) => node === document.activeElement), true);
+  await page.waitForFunction(() => window.__storage.sync.config.selectedModel === 'deep-thinking - second');
+  await page.locator('#modelSelector').click();
+  await page.locator('#modelSearch').fill('not-a-model');
+  assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 0);
+  assert.equal(await page.locator('#modelPickerEmpty').isVisible(), true);
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => state.config.selectedModel), 'deep-thinking - second');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('the model picker handles mouse selection, outside focus, IME and generation locking', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.providers[0].models.push({ id: 'other', name: 'Other model' });
+  const { page, errors } = await openPage('sidebar', settings);
+  await chooseModel(page, 'other - provider');
+  assert.equal(await page.locator('#modelName').textContent(), 'Other model');
+  await page.locator('#modelSelector').click();
+  await page.locator('#modelSearch').evaluate((input) => input.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })
+  ));
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), true);
+  await page.locator('#messageInput').click();
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  await page.locator('#modelSelector').click();
+  await page.keyboard.press('Shift+Escape');
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  assert.equal(await page.locator('#messageInput').evaluate((node) => node === document.activeElement), true);
+  await page.locator('#modelSelector').click();
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#manageModelsBtn').evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  await startResponse(page);
+  assert.equal(await page.locator('#modelSelector').isDisabled(), true);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('#modelSelector').isEnabled(), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('the model picker refreshes external changes and guides an empty configuration to settings', async () => {
+  const { page, errors } = await openPage();
+  await page.locator('#modelSelector').click();
+  await page.evaluate(async () => {
+    await chrome.storage.sync.set({ config: { ...state.config, providers: [], selectedProvider: null, selectedModel: null } });
+  });
+  assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 0);
+  assert.match(await page.locator('#modelPickerEmpty').textContent(), /Add a provider/);
+  assert.equal(await page.locator('#modelSearch').getAttribute('aria-activedescendant'), null);
+  await page.locator('#manageModelsBtn').click();
+  assert.equal(await page.evaluate(() => window.__openedOptions), true);
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
   assert.deepEqual(errors, []);
   await page.close();
 });

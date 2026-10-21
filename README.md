@@ -136,6 +136,7 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Open the sidebar with Alt+Shift+S, start a chat with Ctrl/Cmd+Shift+O, and focus the input with Shift+Esc
 - Right-click selected webpage text to add it and its source to your current draft; review and send when ready
 - Current conversation titles and provider names remain visible while chatting
+- Search model names, IDs or providers in a themed picker, with keyboard navigation and grouped results
 - Unsent drafts are kept per chat; New chat reuses an empty chat instead of piling up blank ones
 - Undo for regenerating and for deleting a chat (undoing a deletion returns to that chat)
 - Auto-resizing input field
