@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SideMind · 视觉优化提案</title>
+    <style>
+      /* ===== Proposal palette ===== */
+      :root {
+        color-scheme: light;
+        --canvas: #f5f4f0;
+        --surface: #fdfcf9;
+        --raised: #eeede8;
+        --hover: #e8e7e1;
+        --ink: #292c29;
+        --secondary: #62675f;
+        --muted: #70766c;
+        --line: #e3e3da;
+        --control-line: #8d9585;
+        --accent: #a14c2c;
+        --accent-soft: #f3e8df;
+        --action: #a14c2c;
+        --on-action: #fffaf6;
+        --success: #447050;
+        --code-keyword: #8a4277;
+        --code-string: #447050;
+        --focus: #a14c2c;
+        --shadow: 0 12px 36px #292c290a;
+      }
+      :root[data-theme='dark'] {
+        color-scheme: dark;
+        --canvas: #1c1f1d;
+        --surface: #232724;
+        --raised: #2c312c;
+        --hover: #353b34;
+        --ink: #e1e5dc;
+        --secondary: #b3bbad;
+        --muted: #98a18f;
+        --line: #353c33;
+        --control-line: #697461;
+        --accent: #e4af8f;
+        --accent-soft: #383029;
+        --action: #d6a685;
+        --on-action: #271e17;
+        --success: #a0c39b;
+        --code-keyword: #d3a2c7;
+        --code-string: #a0c39b;
+        --focus: #e4af8f;
+        --shadow: 0 12px 36px #00000016;
+      }
+      /* ===== Shared controls ===== */
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body { margin: 0; background: var(--canvas); color: var(--ink); font: 14px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      button, input, select, textarea { font: inherit; color: inherit; }
+      button { cursor: pointer; }
+      button, select, input { border: 1px solid var(--control-line); border-radius: 8px; background: var(--surface); }
+      button { min-height: 36px; padding: 7px 12px; }
+      button:hover { background: var(--hover); }
+      button:disabled { cursor: default; color: var(--muted); }
+      button:disabled:hover { background: var(--surface); }
+      :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+      input, select { padding: 8px 10px; min-width: 0; }
+      input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+      h1, h2, h3, p { margin: 0; }
+      h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.6px; line-height: 1.35; }
+      h2 { font-size: 15px; font-weight: 650; }
+      h3 { font-size: 14px; font-weight: 600; }
+      svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+      .symbol-library { position: absolute; width: 0; height: 0; overflow: hidden; }
+      .quiet { color: var(--secondary); font-size: 12px; }
+      .primary { background: var(--action); color: var(--on-action); border-color: transparent; font-weight: 600; }
+      .primary:hover { background: color-mix(in srgb, var(--action), var(--ink) 10%); }
+      .icon-button { width: 34px; min-height: 34px; padding: 0; display: inline-grid; place-items: center; background: transparent; border-color: transparent; color: var(--secondary); }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+      .segmented { display: inline-flex; background: var(--raised); padding: 3px; border-radius: 9px; gap: 3px; }
+      .segmented button { background: transparent; border-color: transparent; color: var(--secondary); min-height: 30px; padding: 3px 12px; font-size: 12px; }
+      .segmented button[aria-pressed='true'] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px #0000000c; }
+      .proposal-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 14px 28px; border-bottom: 1px solid var(--line); }
+      .proposal-bar > div { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+      .proposal-label { font-size: 11px; color: var(--secondary); }
+      .proposal-label strong { color: var(--ink); font-weight: 600; margin-right: 8px; }
+      .demo-note { max-width: 1100px; margin: 0 auto; padding: 18px 28px 0; color: var(--secondary); font-size: 12px; }
+      /* ===== Settings ===== */
+      .settings { max-width: 1100px; margin: 0 auto; padding: 0 28px 48px; }
+      .settings-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px 0; }
+      .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; }
+      .brand img { width: 27px; height: 27px; }
+      .brand-divider { margin: 0 7px; color: var(--muted); font-weight: 400; }
+      .save-status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--secondary); }
+      .save-status svg { color: var(--success); width: 15px; height: 15px; }
+      .settings-layout { display: grid; grid-template-columns: 172px minmax(0, 1fr); gap: 48px; padding-top: 22px; border-top: 1px solid var(--line); }
+      .settings-nav { display: flex; flex-direction: column; gap: 5px; align-self: start; }
+      .settings-nav button { display: flex; align-items: center; gap: 10px; text-align: left; border: 0; padding: 10px 12px; background: transparent; color: var(--secondary); font-size: 13px; }
+      .settings-nav button:hover { background: var(--raised); }
+      .settings-nav button[aria-current='page'] { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+      .nav-footer { margin: 40px 12px 0; font-size: 11px; color: var(--muted); }
+      main { min-width: 0; }
+      .page-heading { margin: 2px 0 26px; }
+      .page-heading p { color: var(--secondary); font-size: 13px; margin-top: 8px; }
+      .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+      .panel + .panel, .panel + details { margin-top: 20px; }
+      .panel-heading { padding: 17px 20px; display: flex; justify-content: space-between; align-items: center; gap: 16px; border-bottom: 1px solid var(--line); }
+      .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 19px 20px; }
+      .setting-row + .setting-row { border-top: 1px solid var(--line); }
+      .setting-row label { display: block; font-size: 13px; font-weight: 550; }
+      .setting-row p { margin-top: 4px; font-size: 12px; color: var(--secondary); }
+      .setting-row select { width: 180px; font-size: 12px; flex-shrink: 0; }
+      .appearance-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 28px; align-items: start; }
+      .appearance-grid .setting-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+      .appearance-grid .setting-row select { width: 100%; }
+      .theme-options { border: 0; padding: 0; margin: 0; display: flex; gap: 7px; width: 100%; }
+      .theme-options legend { font-size: 13px; font-weight: 550; margin-bottom: 12px; }
+      .theme-option { position: relative; flex: 1; min-width: 0; }
+      .theme-option input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+      .theme-option span { display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--control-line); border-radius: 8px; padding: 9px 6px; font-size: 12px; font-weight: 400; }
+      .theme-option input:checked + span { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+      .theme-option input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
+      .swatch { display: block; width: 11px; height: 11px; border-radius: 50%; border: 1px solid #92988a; background: #f5f4f0; }
+      .swatch.dark { background: #232724; }
+      .swatch.system { background: linear-gradient(90deg, #f5f4f0 50%, #232724 50%); }
+      .preview-caption { font-size: 11px; color: var(--secondary); margin-bottom: 10px; }
+      .mini-chat { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; box-shadow: var(--shadow); }
+      .mini-chat .chat-header { padding: 13px 14px; }
+      .mini-chat .chat-content { padding: 18px 14px; }
+      .mini-chat .chat-user { font-size: inherit; max-width: 95%; }
+      .mini-chat .chat-answer { font-size: inherit; }
+      .mini-chat .chat-answer p { margin-bottom: 10px; }
+      .mini-chat .composer { margin: 0 10px 10px; padding: 10px; }
+      .mini-chat .composer-bottom { margin-top: 18px; }
+      .model-label { font-size: 11px; color: var(--secondary); display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+      .model-mark { width: 17px; height: 17px; background: var(--accent-soft); color: var(--accent); display: inline-grid; place-items: center; border-radius: 5px; font-size: 11px; }
+      .section-note { color: var(--secondary); font-size: 12px; margin-top: 14px; }
+      .provider-row { display: flex; align-items: flex-start; gap: 12px; padding: 20px; }
+      .provider-row + .provider-row { border-top: 1px solid var(--line); }
+      .provider-logo { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 9px; font-size: 14px; color: var(--secondary); }
+      .provider-content { flex: 1; min-width: 0; }
+      .provider-content h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 4px; }
+      .badge { color: var(--secondary); background: var(--raised); font-weight: 400; font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+      .provider-url { font-size: 11px; color: var(--secondary); overflow-wrap: anywhere; }
+      .model-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 11px; }
+      .model-tags span { border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; color: var(--secondary); font-size: 11px; }
+      .edit-button { border-color: transparent; background: transparent; font-size: 12px; color: var(--secondary); }
+      .switch { appearance: none; width: 34px; height: 20px; padding: 0; border-radius: 20px; position: relative; background: var(--raised); flex-shrink: 0; cursor: pointer; }
+      .switch:checked { background: var(--action); border-color: var(--action); }
+      .switch::after { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; border-radius: 50%; background: var(--surface); }
+      .switch:checked::after { left: 16px; background: var(--on-action); }
+      details { padding: 15px 20px; border: 1px solid var(--line); border-radius: 10px; }
+      summary { cursor: pointer; font-size: 13px; }
+      details p { font-size: 12px; color: var(--secondary); margin-top: 10px; }
+      /* ===== Conversation ===== */
+      .chat-stage { max-width: 1044px; margin: 36px auto; display: grid; grid-template-columns: 1fr 380px; gap: 64px; align-items: center; padding: 0 28px; }
+      .chat-explanation h1 { margin-bottom: 14px; }
+      .chat-explanation p { color: var(--secondary); font-size: 13px; max-width: 350px; margin: 0 0 20px; }
+      .chat-explanation ul { padding-left: 18px; color: var(--secondary); font-size: 13px; line-height: 2.2; }
+      .chat-window { display: flex; flex-direction: column; height: 704px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); min-width: 0; }
+      .chat-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 12px 16px; }
+      .chat-title { font-size: 12px; font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .chat-header-actions { display: flex; gap: 2px; }
+      .model-trigger { display: flex; gap: 5px; align-items: center; padding: 10px 16px; color: var(--secondary); font-size: 11px; }
+      .model-trigger svg { width: 13px; height: 13px; }
+      .chat-content { padding: 16px 18px 24px; flex: 1; overflow-y: auto; min-height: 0; font-size: var(--reading-size, 14px); }
+      .chat-user { background: var(--raised); border-radius: 12px 12px 4px 12px; padding: 10px 13px; max-width: 90%; margin: 0 0 28px auto; width: fit-content; line-height: 1.65; }
+      .chat-answer { line-height: 1.8; }
+      .chat-answer h2 { font-size: 1.08em; margin: 0 0 10px; }
+      .chat-answer p { margin-bottom: 14px; }
+      .chat-answer ol { padding-left: 20px; margin: 12px 0 18px; }
+      .chat-answer li { margin: 5px 0; }
+      .chat-answer blockquote { margin: 16px 0; border-left: 2px solid var(--control-line); padding-left: 12px; color: var(--secondary); }
+      .answer-tools { display: flex; align-items: center; gap: 2px; margin-top: 12px; }
+      .answer-tools small { margin-left: auto; font-size: 10px; color: var(--muted); }
+      .composer { border: 1px solid var(--control-line); border-radius: 12px; padding: 12px; margin: 0 12px 8px; background: var(--surface); }
+      .composer:focus-within { border-color: var(--focus); }
+      .composer textarea { background: transparent; width: 100%; border: 0; padding: 0; min-height: 48px; resize: none; font-size: 13px; line-height: 1.7; outline: none; }
+      .composer-bottom { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; gap: 8px; }
+      .composer-role { color: var(--secondary); font-size: 11px; }
+      .send { min-height: 30px; width: 30px; padding: 0; display: grid; place-items: center; border-radius: 8px; }
+      .chat-hint { color: var(--muted); text-align: center; font-size: 10px; margin-bottom: 10px; }
+      /* ===== Proposal dialog ===== */
+      dialog { width: min(540px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); max-height: calc(100dvh - 40px); box-shadow: var(--shadow); }
+      dialog::backdrop { background: #121a1466; }
+      .dialog-panel { max-height: calc(100dvh - 42px); display: flex; flex-direction: column; }
+      .dialog-header, .dialog-footer { padding: 16px 22px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .dialog-header { border-bottom: 1px solid var(--line); }
+      .dialog-footer { border-top: 1px solid var(--line); justify-content: flex-end; }
+      .dialog-body { padding: 20px 22px; overflow-y: auto; }
+      .dialog-body label { display: block; margin: 15px 0 6px; font-size: 12px; font-weight: 550; }
+      .dialog-body label:first-child { margin-top: 0; }
+      .dialog-body input, .dialog-body select { width: 100%; font-size: 12px; }
+      .dialog-body .quiet { margin-top: 7px; }
+      .dialog-body h3 { margin: 22px 0 12px; padding-top: 18px; border-top: 1px solid var(--line); }
+      .model-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .model-fields label { margin-top: 0; }
+      @media (max-width: 880px) {
+        .settings-layout { grid-template-columns: 145px minmax(0, 1fr); gap: 24px; }
+        .appearance-grid { grid-template-columns: 1fr; }
+        .appearance-grid .setting-row { flex-direction: row; align-items: center; }
+        .appearance-grid .setting-row:first-child { flex-direction: column; align-items: stretch; }
+        .appearance-grid .setting-row select { width: 150px; }
+        .preview-column { max-width: 340px; }
+        .chat-stage { gap: 24px; grid-template-columns: 1fr 360px; }
+      }
+      @media (max-width: 620px) {
+        .proposal-bar { padding: 12px 16px; }
+        .settings { padding: 0 16px 28px; }
+        .demo-note { padding: 16px 16px 0; }
+        .settings-header { padding: 20px 0; }
+        .settings-layout { display: block; padding-top: 0; }
+        .settings-nav { flex-direction: row; overflow-x: auto; margin: 0 -16px 24px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+        .settings-nav button { flex-shrink: 0; padding: 8px 10px; }
+        .settings-nav svg, .nav-footer { display: none; }
+        .save-status { font-size: 11px; }
+        .brand-divider { margin: 0 2px; }
+        .setting-row, .appearance-grid .setting-row { align-items: stretch; flex-direction: column; gap: 12px; padding: 16px; }
+        .setting-row select, .appearance-grid .setting-row select { width: 100%; }
+        .provider-row { flex-wrap: wrap; padding: 16px; }
+        .provider-content { flex-basis: calc(100% - 50px); }
+        .edit-button { margin-left: auto; }
+        .panel-heading { padding: 16px; }
+        .chat-stage { display: block; margin: 24px auto; padding: 0 12px; }
+        .chat-explanation { display: none; }
+        .chat-window { width: 100%; max-width: 380px; margin: auto; height: min(740px, calc(100dvh - 170px)); min-height: 440px; }
+        .model-fields { grid-template-columns: 1fr; }
+      }
+      @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+    </style>
+  </head>
+  <body>
+    <svg class="symbol-library" aria-hidden="true"><defs>
+      <symbol id="sliders" viewBox="0 0 24 24"><path d="M4 7h5m4 0h7M4 17h9m4 0h3"/><circle cx="11" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></symbol>
+      <symbol id="plug" viewBox="0 0 24 24"><path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0Zm6 9v4"/></symbol>
+      <symbol id="chat" viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 3V6a2 2 0 0 1 2-2Z"/></symbol>
+      <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/></symbol>
+      <symbol id="folder" viewBox="0 0 24 24"><path d="M3 7V5h7l2 3h9v12H3Z"/></symbol>
+      <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+      <symbol id="arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+      <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M15 8V4H4v11h4"/></symbol>
+      <symbol id="refresh" viewBox="0 0 24 24"><path d="M20 5v5h-5M4 19v-5h5"/><path d="M5 9a7 7 0 0 1 12-4l3 5M4 14l3 5a7 7 0 0 0 12-4"/></symbol>
+      <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    </defs></svg>
+    <header class="proposal-bar">
+      <div><span class="proposal-label"><strong>SideMind</strong>视觉提案 · 01</span><div class="segmented" aria-label="查看界面"><button type="button" data-view="settings" aria-pressed="true">配置界面</button><button type="button" data-view="chat" aria-pressed="false">对话界面</button></div></div>
+      <div class="segmented" aria-label="预览主题"><button type="button" data-theme-choice="light" aria-pressed="true">浅色</button><button type="button" data-theme-choice="dark" aria-pressed="false">深色</button></div>
+    </header>
+    <p class="demo-note">独立视觉稿：可切换栏目、主题与字号，查看服务商表单。示例数据不会保存，也不会发起 API 请求。</p>
+    <div id="settingsView" class="settings">
+      <header class="settings-header"><div class="brand"><img src="../../icons/icon48.png" alt="" />SideMind<span class="brand-divider">/</span><span>设置</span></div><span class="save-status"><svg aria-hidden="true"><use href="#check" /></svg>自动保存 · 状态示意</span></header>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置栏目">
+          <button type="button" data-section="providers"><svg aria-hidden="true"><use href="#plug" /></svg>服务与模型</button>
+          <button type="button" data-section="roles"><svg aria-hidden="true"><use href="#chat" /></svg>助手角色</button>
+          <button type="button" data-section="conversation"><svg aria-hidden="true"><use href="#sliders" /></svg>对话偏好</button>
+          <button type="button" data-section="appearance" aria-current="page"><svg aria-hidden="true"><use href="#sun" /></svg>外观</button>
+          <button type="button" data-section="data"><svg aria-hidden="true"><use href="#folder" /></svg>数据与关于</button>
+          <p class="nav-footer">SideMind<br />留一点空间，专注思考。</p>
+        </nav>
+        <main>
+          <section id="appearance" data-panel>
+            <div class="page-heading"><h1>让阅读更舒服</h1><p>选择熟悉的外观，留意右侧的实际阅读效果。</p></div>
+            <div class="appearance-grid">
+              <div>
+                <div class="panel">
+                  <div class="setting-row"><fieldset class="theme-options"><legend>主题</legend><label class="theme-option"><input type="radio" name="theme" value="light" checked /><span><i class="swatch" aria-hidden="true"></i>浅色</span></label><label class="theme-option"><input type="radio" name="theme" value="dark" /><span><i class="swatch dark" aria-hidden="true"></i>深色</span></label><label class="theme-option"><input type="radio" name="theme" value="system" /><span><i class="swatch system" aria-hidden="true"></i>系统</span></label></fieldset></div>
+                  <div class="setting-row"><div><label for="readingSize">对话字号</label><p>只影响对话内容。</p></div><select id="readingSize"><option value="13">小 · 13px</option><option value="14" selected>默认 · 14px</option><option value="15">大 · 15px</option><option value="16">较大 · 16px</option></select></div>
+                  <div class="setting-row"><div><label for="readingFont">阅读字体</label><p>跟随设备，保持熟悉。</p></div><select id="readingFont"><option value="system-ui">系统默认</option><option value="Georgia, serif">衬线字体</option><option value="ui-monospace, monospace">等宽字体</option></select></div>
+                </div>
+                <p class="section-note">低饱和底色、清晰文字。强调色只在需要操作或辨认状态时出现。</p>
+              </div>
+              <aside class="preview-column" aria-label="实时阅读预览"><p class="preview-caption">对话预览</p><div class="mini-chat"><div class="chat-header"><span class="chat-title">把想法说清楚</span><svg aria-hidden="true"><use href="#plus" /></svg></div><div class="chat-content"><div class="chat-user">让这段话更清楚一点。</div><div class="model-label"><span class="model-mark">✳</span>写作助手</div><div class="chat-answer"><p>先说最重要的事，再补充背景。</p><p>保留具体信息，让每句话只表达一个意思。</p></div></div><div class="composer"><span class="quiet">继续聊聊…</span><div class="composer-bottom"><span class="composer-role">默认角色⌄</span><span class="send primary" aria-hidden="true"><svg><use href="#arrow" /></svg></span></div></div></div></aside>
+            </div>
+          </section>
+          <section id="providers" data-panel hidden>
+            <div class="page-heading"><h1>服务与模型</h1><p>连接你选择的服务，管理对话中可用的模型。</p></div>
+            <div class="panel"><div class="panel-heading"><h2>已添加的服务 <span class="badge">2</span></h2><button type="button" class="primary" data-open-provider>＋ 添加服务</button></div><div class="provider-row"><span class="provider-logo" aria-hidden="true">M</span><div class="provider-content"><h3>我的 AI 服务<span class="badge">Chat Completions</span></h3><p class="provider-url">api.example.com/v1</p><div class="model-tags"><span>通用模型</span><span>推理模型</span></div></div><button type="button" class="edit-button" data-open-provider>编辑</button></div><div class="provider-row"><span class="provider-logo" aria-hidden="true">L</span><div class="provider-content"><h3>本地模型<span class="badge">Chat Completions</span></h3><p class="provider-url">localhost:11434/v1</p><div class="model-tags"><span>本地助手</span></div></div><button type="button" class="edit-button" data-open-provider>编辑</button></div></div>
+            <p class="section-note">仅展示已配置的模型。连接检查结果在表单内显示，权限状态与连接结果分别表达。</p>
+          </section>
+          <section id="roles" data-panel hidden><div class="page-heading"><h1>助手角色</h1><p>把常用的工作方式保存成角色，对话时随时选择。</p></div><div class="panel"><div class="provider-row"><div class="provider-content"><h3>默认助手<span class="badge">内置</span></h3><p class="quiet">清楚、直接地回答问题。</p></div></div><div class="provider-row"><div class="provider-content"><h3>写作搭档</h3><p class="quiet">保留原意和语气，让表达更准确、自然。</p></div><span class="badge">示例角色</span></div></div><p class="section-note">角色列表采用两行摘要；完整指令在编辑时展开，避免长文本撑高列表。</p></section>
+          <section id="conversation" data-panel hidden><div class="page-heading"><h1>对话偏好</h1><p>常用设置一眼可见，模型参数按需调整。</p></div><div class="panel"><div class="setting-row"><div><label for="streamToggle">逐步显示回复</label><p>生成的内容会立即出现在对话中。</p></div><input id="streamToggle" class="switch" type="checkbox" checked /></div></div><details><summary>高级模型参数 <span class="quiet">· 按需设置</span></summary><p>温度、输出上限、推理强度与推理摘要保留在这里；各项使用短说明，并标注适用范围。</p></details><p class="section-note">此处开关只演示控件状态，不会写入插件设置。</p></section>
+          <section id="data" data-panel hidden><div class="page-heading"><h1>数据与关于</h1><p>清楚知道保存了什么，也方便带走自己的配置。</p></div><div class="panel"><div class="setting-row"><div><h3>配置备份</h3><p>包含服务、角色和偏好，不包含对话。</p></div><span class="badge">导入 / 导出 · 示意</span></div><div class="setting-row"><div><h3>SideMind</h3><p>对话保存在当前浏览器，配置通过 Chrome 同步。<br />发送消息时，内容会交给你选择的 AI 服务。</p></div></div></div></section>
+        </main>
+      </div>
+    </div>
+    <main id="chatView" class="chat-stage" hidden>
+      <div class="chat-explanation"><h1>让注意力回到内容</h1><p>保留熟悉的对话结构，减少固定区域和装饰的存在感。</p><ul><li>标题与模型各有层级，操作入口保持稳定。</li><li>用户消息用轻底色，回复给足阅读空间。</li><li>完成后的常驻状态收起，输入区更安静。</li><li>正文、操作图标与辅助信息分开定字号。</li></ul><p>右侧以 380px 面板展示。输入框仅供感受焦点和输入，不会发送。</p></div>
+      <div class="chat-window"><header class="chat-header"><span class="chat-title">把一段想法整理清楚</span><div class="chat-header-actions"><span class="icon-button" aria-label="新对话入口示意"><svg aria-hidden="true"><use href="#plus" /></svg></span><span class="icon-button" aria-label="历史入口示意"><svg aria-hidden="true"><use href="#clock" /></svg></span><button type="button" class="icon-button" id="openSettings" aria-label="返回配置预览"><svg aria-hidden="true"><use href="#sliders" /></svg></button></div></header><div class="model-trigger">通用模型 <span>· 我的 AI 服务</span><svg aria-hidden="true"><use href="#down" /></svg></div><div class="chat-content"><div class="chat-user">帮我整理一下这段文字，让表达更清楚。</div><div class="model-label"><span class="model-mark">✳</span>通用模型</div><article class="chat-answer"><h2>把重点放在前面</h2><p>先说结论，再补充必要的背景。每句话只表达一个意思。</p><ol><li>保留具体的信息。</li><li>删掉重复的表达。</li><li>让下一步更明确。</li></ol><p>例如，可以这样写：</p><blockquote>今天先完成设计方案，明天开始调整界面。</blockquote></article><div class="answer-tools"><button type="button" id="copyExample" class="icon-button" aria-label="复制示例回复"><svg aria-hidden="true"><use href="#copy" /></svg></button><span class="icon-button" aria-label="重新生成入口示意"><svg aria-hidden="true"><use href="#refresh" /></svg></span><small>1.2 秒 · 128 tokens</small></div><p id="copyStatus" class="quiet" role="status"></p></div><div class="composer"><label for="demoMessage" class="sr-only">体验输入框</label><textarea id="demoMessage" rows="2" placeholder="继续聊聊…"></textarea><div class="composer-bottom"><span class="composer-role">默认角色⌄</span><span class="send primary" aria-hidden="true"><svg><use href="#arrow" /></svg></span></div></div><p class="chat-hint">Enter 发送 · Shift + Enter 换行 · 本页为视觉示意</p></div>
+    </main>
+    <dialog id="providerDialog" aria-labelledby="dialogTitle"><div class="dialog-panel"><header class="dialog-header"><h2 id="dialogTitle">连接 AI 服务</h2><button type="button" class="icon-button" id="closeProvider" aria-label="关闭表单预览"><svg aria-hidden="true"><use href="#close" /></svg></button></header><div class="dialog-body"><p class="quiet">表单布局示意 · 不会保存或连接服务</p><label for="demoName">服务名称</label><input id="demoName" placeholder="例如：我的 AI 服务" /><label for="demoUrl">API 地址</label><input id="demoUrl" type="url" placeholder="https://api.example.com/v1" /><p class="quiet">填写 API 根地址，路径会自动补全。</p><label for="demoKey">API 密钥</label><input id="demoKey" type="password" autocomplete="off" placeholder="输入服务商提供的密钥" /><label for="demoProtocol">API 协议</label><select id="demoProtocol"><option>Chat Completions</option><option>Responses</option></select><h3>可用模型</h3><div class="model-fields"><div><label for="demoModelName">显示名称</label><input id="demoModelName" placeholder="例如：通用模型" /></div><div><label for="demoModelId">模型 ID</label><input id="demoModelId" placeholder="服务商要求的准确 ID" /></div></div></div><footer class="dialog-footer"><button type="button" id="cancelProvider">关闭预览</button><button type="button" class="primary" disabled>保存服务 · 示意</button></footer></div></dialog>
+    <script>
+      // ===== Local proposal interactions: no extension storage or network =====
+      const elements = {
+        root: document.documentElement,
+        settingsView: document.getElementById('settingsView'),
+        chatView: document.getElementById('chatView'),
+        providerDialog: document.getElementById('providerDialog'),
+        readingSize: document.getElementById('readingSize'),
+        readingFont: document.getElementById('readingFont'),
+        copyStatus: document.getElementById('copyStatus')
+      };
+      const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+      let selectedTheme = 'light';
+      function setTheme(theme) {
+        selectedTheme = theme;
+        const resolved = theme === 'system' ? (systemTheme.matches ? 'dark' : 'light') : theme;
+        elements.root.dataset.theme = resolved;
+        document.querySelectorAll('[data-theme-choice]').forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.dataset.themeChoice === resolved));
+        });
+        document.querySelectorAll('[name="theme"]').forEach((radio) => {
+          radio.checked = radio.value === theme;
+        });
+      }
+      function setView(view) {
+        elements.settingsView.hidden = view !== 'settings';
+        elements.chatView.hidden = view !== 'chat';
+        document.querySelectorAll('[data-view]').forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.dataset.view === view));
+        });
+      }
+      function selectSection(event) {
+        const id = event.currentTarget.dataset.section;
+        document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.id !== id; });
+        document.querySelectorAll('[data-section]').forEach((button) => {
+          if (button.dataset.section === id) button.setAttribute('aria-current', 'page');
+          else button.removeAttribute('aria-current');
+        });
+      }
+      function applyReadingSettings() {
+        document.querySelectorAll('.chat-content').forEach((content) => {
+          content.style.setProperty('--reading-size', `${elements.readingSize.value}px`);
+          content.style.fontFamily = elements.readingFont.value;
+        });
+      }
+      function openProvider() { elements.providerDialog.showModal(); }
+      function closeProvider() { elements.providerDialog.close(); }
+      async function copyExample() {
+        try {
+          await navigator.clipboard.writeText(document.querySelector('#chatView .chat-answer').innerText);
+          elements.copyStatus.textContent = '示例回复已复制';
+        } catch {
+          elements.copyStatus.textContent = '请选中示例文字后复制';
+        }
+      }
+      function setupEventListeners() {
+        document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));
+        document.querySelectorAll('[data-theme-choice]').forEach((button) => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+        document.querySelectorAll('[name="theme"]').forEach((radio) => radio.addEventListener('change', () => setTheme(radio.value)));
+        document.querySelectorAll('[data-section]').forEach((button) => button.addEventListener('click', selectSection));
+        document.querySelectorAll('[data-open-provider]').forEach((button) => button.addEventListener('click', openProvider));
+        elements.readingSize.addEventListener('change', applyReadingSettings);
+        elements.readingFont.addEventListener('change', applyReadingSettings);
+        document.getElementById('closeProvider').addEventListener('click', closeProvider);
+        document.getElementById('cancelProvider').addEventListener('click', closeProvider);
+        document.getElementById('openSettings').addEventListener('click', () => setView('settings'));
+        document.getElementById('copyExample').addEventListener('click', copyExample);
+        systemTheme.addEventListener('change', () => { if (selectedTheme === 'system') setTheme('system'); });
+      }
+      setupEventListeners();
+      applyReadingSettings();
+    </script>
+  </body>
+</html>

@@ -362,6 +362,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     showNotification = () => {};
     renderProviders = () => {};
     renderModelsList = () => {};
+    createIcon = () => ({});
     openDialog = () => {};
     setDialogBusy = () => {};
     updateEndpointPreview = () => {};
@@ -373,10 +374,11 @@ test('provider API selection survives save, reload, edit and legacy configuratio
   const value = value => ({ value });
   Object.assign(app.elements, {
     providerForm: { checkValidity: () => true, reset() {} },
-    providerModal: { classList: { add() {}, remove() {} } },
+    providerModal: { classList: { add() {}, remove() {} }, querySelector: () => ({ open: false }) },
+    providerDeleteBtn: { classList: { toggle() {} }, setAttribute() {} },
     providerName: value('OpenAI'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
     providerApiKey: value('test-key'), providerApiType: value('responses'),
-    toggleApiKey: { setAttribute() {} },
+    toggleApiKey: { setAttribute() {}, replaceChildren() {} },
     connectionStatus: { dataset: {} }, modelSuggestions: { replaceChildren() {} },
     modelsList: { querySelectorAll: () => [{ querySelector: () => value('test-model') }] }
   });

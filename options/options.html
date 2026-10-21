@@ -6,7 +6,6 @@
     <title>SideMind Settings</title>
     <link rel="stylesheet" href="../assets/css/ui.css" />
     <script src="../assets/js/ui.js"></script>
-    <link rel="stylesheet" href="../assets/css/fontawesome.min.css" />
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
@@ -24,21 +23,17 @@
       </header>
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="Settings sections">
-          <a href="#providers" aria-current="location"
-            ><i class="fas fa-plug" aria-hidden="true"></i>Services &amp; models</a
+          <a href="#providers" aria-current="page"
+            ><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plug"></use></svg>Services &amp; models</a
           >
-          <a href="#roles"><i class="fas fa-comment" aria-hidden="true"></i>Assistant roles</a>
-          <a href="#conversation"><i class="fas fa-sliders" aria-hidden="true"></i>Conversation</a>
-          <a href="#appearance"><i class="fas fa-palette" aria-hidden="true"></i>Appearance</a>
-          <a href="#data"><i class="fas fa-folder" aria-hidden="true"></i>Data &amp; about</a>
+          <a href="#roles"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#comment"></use></svg>Assistant roles</a>
+          <a href="#conversation"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>Conversation</a>
+          <a href="#appearance"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#sun"></use></svg>Appearance</a>
+          <a href="#data"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#folder"></use></svg>Data &amp; about</a>
           <p class="nav-note">Your workspace.<br />Your choice of AI.</p>
         </nav>
         <main class="options-main">
-          <div class="page-intro">
-            <p class="eyebrow">MAKE IT YOURS</p>
-            <h1>Your AI, your preferences.</h1>
-            <p>Connect your models and make SideMind feel right for you.</p>
-          </div>
+          <h1 class="sr-only">SideMind settings</h1>
           <section id="providers" class="section" aria-labelledby="providersHeading">
             <div class="section-heading">
               <div>
@@ -46,40 +41,38 @@
                 <p>Connect an AI provider using your own API key.</p>
               </div>
               <button id="addProviderBtn" class="btn btn-primary">
-                <i class="fas fa-plus" aria-hidden="true"></i>Add provider
+                <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>Add provider
               </button>
             </div>
-            <div id="providersList" class="providers-list"></div>
+            <div id="providersList" class="providers-list settings-card"></div>
           </section>
-          <section id="roles" class="section" aria-labelledby="rolesHeading">
+          <section id="roles" class="section" hidden aria-labelledby="rolesHeading">
             <div class="section-heading">
               <div>
                 <h2 id="rolesHeading">Assistant roles</h2>
                 <p>Reusable instructions for the way you like to work.</p>
               </div>
               <button id="addPromptBtn" class="btn btn-secondary">
-                <i class="fas fa-plus" aria-hidden="true"></i>Add role
+                <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>Add role
               </button>
             </div>
-            <div id="promptsList" class="prompts-list"></div>
+            <div id="promptsList" class="prompts-list settings-card"></div>
           </section>
-          <section id="conversation" class="section" aria-labelledby="conversationHeading">
+          <section id="conversation" class="section" hidden aria-labelledby="conversationHeading">
             <div class="section-heading">
               <div>
                 <h2 id="conversationHeading">Conversation</h2>
                 <p>Control how your assistant responds.</p>
               </div>
             </div>
-            <div class="parameter-group">
-              <label for="streamSelector">Stream Response</label>
-              <select id="streamSelector" class="select-input">
-                <option value="true" selected>Enabled (Streaming)</option>
-                <option value="false">Disabled (Complete Response)</option>
-              </select>
-              <small class="parameter-description"
-                >If enabled, the model response will be streamed as it's generated using server-sent
-                events.</small
-              >
+            <div class="settings-card">
+              <div class="setting-row">
+                <div>
+                  <label for="streamSelector">Show replies as they arrive</label>
+                  <p id="streamHelp">Read the response while your model is still writing.</p>
+                </div>
+                <input id="streamSelector" class="switch-input" type="checkbox" aria-describedby="streamHelp" />
+              </div>
             </div>
             <details class="advanced-settings">
               <summary>Advanced model parameters<span>Optional · varies by model</span></summary>
@@ -102,9 +95,8 @@
                     Use model default (omit temperature)
                   </label>
                   <small class="parameter-description"
-                    >Controls randomness in responses. Higher values like 0.8 make output more
-                    random, while lower values like 0.2 make it more focused and deterministic. Some
-                    reasoning models reject this parameter; use model default for those.</small
+                    >Lower values keep replies focused; higher values add variety. Choose model
+                    default for reasoning models that do not support temperature.</small
                   >
                 </div>
 
@@ -120,9 +112,7 @@
                   />
                   <p id="maxTokensError" class="field-error hidden" role="alert"></p>
                   <small id="maxTokensHelp" class="parameter-description"
-                    >Upper bound for visible output and reasoning tokens. Sent as
-                    max_completion_tokens for Chat Completions or max_output_tokens for Responses.
-                    Leave empty to use model default.</small
+                    >Limits the total output, including reasoning. Leave empty to use the model default.</small
                   >
                 </div>
 
@@ -136,9 +126,8 @@
                     <option value="high">High</option>
                   </select>
                   <small class="parameter-description"
-                    >Reasoning models only. Sent as reasoning.effort on the Responses API and as
-                    reasoning_effort on Chat Completions. Leave on model default if your provider
-                    rejects it.</small
+                    >For reasoning models. Higher effort can take longer. Use model default
+                    if your provider does not support this setting.</small
                   >
                 </div>
 
@@ -151,15 +140,14 @@
                     <option value="detailed">Detailed</option>
                   </select>
                   <small class="parameter-description"
-                    >Responses API only. Select Auto, Concise, or Detailed to show a reasoning
-                    summary in the sidebar for models that support it. Raw reasoning tokens are not
-                    exposed.</small
+                    >Responses API only. Show a summary for supported models; raw reasoning
+                    tokens are not available.</small
                   >
                 </div>
               </div>
             </details>
           </section>
-          <section id="appearance" class="section" aria-labelledby="appearanceHeading">
+          <section id="appearance" class="section" hidden aria-labelledby="appearanceHeading">
             <div class="section-heading">
               <div>
                 <h2 id="appearanceHeading">Appearance</h2>
@@ -168,57 +156,57 @@
             </div>
             <div class="appearance-layout">
               <div class="appearance-controls">
-                <div class="parameter-group">
-                  <label for="fontSizeSelector">Font Size</label>
-                  <select id="fontSizeSelector" class="select-input">
-                    <option value="13px">Small</option>
-                    <option value="14px" selected>Default</option>
-                    <option value="15px">Large</option>
-                    <option value="16px">Extra Large</option>
-                  </select>
-                  <small class="parameter-description"
-                    >Controls the base font size in the sidebar.</small
-                  >
-                </div>
-
-                <div class="parameter-group">
-                  <label for="fontFamilySelector">Font Family</label>
-                  <select id="fontFamilySelector" class="select-input">
-                    <option
-                      value='system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+                <div class="settings-card">
+                  <fieldset id="themeSelector" class="theme-selector">
+                    <legend>Theme</legend>
+                    <div class="theme-options">
+                      <label><input type="radio" name="theme" value="light" /><span><i class="theme-swatch light" aria-hidden="true"></i>Light</span></label>
+                      <label><input type="radio" name="theme" value="dark" /><span><i class="theme-swatch dark" aria-hidden="true"></i>Dark</span></label>
+                      <label><input type="radio" name="theme" value="system" /><span><i class="theme-swatch system" aria-hidden="true"></i>System</span></label>
+                    </div>
+                    <p class="parameter-description">Applies to SideMind and these settings.</p>
+                  </fieldset>
+                  <div class="parameter-group">
+                    <label for="fontSizeSelector">Conversation size</label>
+                    <select id="fontSizeSelector" class="select-input">
+                      <option value="13px">Small · 13px</option>
+                      <option value="14px" selected>Default · 14px</option>
+                      <option value="15px">Large · 15px</option>
+                      <option value="16px">Extra large · 16px</option>
+                    </select>
+                    <small class="parameter-description"
+                      >Changes conversation text, keeping controls compact.</small
                     >
-                      System Default
-                    </option>
-                    <option value='Georgia, "Times New Roman", Times, serif'>Serif</option>
-                    <option value='"Courier New", Courier, monospace'>Monospace</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                  <input
-                    type="text"
-                    id="customFontFamilyInput"
-                    class="text-input hidden"
-                    placeholder="Enter custom font family (e.g., 'Arial', 'Times New Roman')"
-                  />
-                  <small class="parameter-description"
-                    >Controls the font family used in the sidebar.</small
-                  >
-                </div>
+                  </div>
 
-                <div class="parameter-group">
-                  <label for="themeSelector">Theme</label>
-                  <select id="themeSelector" class="select-input">
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                    <option value="system">Follow System</option>
-                  </select>
-                  <small class="parameter-description"
-                    >Choose the color theme for the sidebar interface.</small
-                  >
+                  <div class="parameter-group">
+                    <label for="fontFamilySelector">Reading font</label>
+                    <select id="fontFamilySelector" class="select-input">
+                      <option
+                        value='system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+                      >
+                        System Default
+                      </option>
+                      <option value='Georgia, "Times New Roman", Times, serif'>Serif</option>
+                      <option value='"Courier New", Courier, monospace'>Monospace</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                    <input
+                      type="text"
+                      id="customFontFamilyInput"
+                      class="text-input hidden"
+                      aria-label="Custom reading font"
+                      placeholder="For example: Arial, sans-serif"
+                    />
+                    <small class="parameter-description"
+                      >Used for messages and the composer.</small
+                    >
+                  </div>
                 </div>
               </div>
               <div class="appearance-preview" aria-label="Live conversation preview">
                 <p class="preview-label">LIVE PREVIEW</p>
-                <div id="fontPreview" class="font-preview">
+                <div id="fontPreview" class="font-preview reading-content">
                   <div class="preview-user">Help me make this clearer.</div>
                   <div class="preview-assistant">
                     <span class="preview-name">SideMind</span>
@@ -228,19 +216,20 @@
                       to find.
                     </p>
                   </div>
+                  <pre class="preview-code"><code><span class="code-keyword">const</span> message = <span class="code-string">'Clearer.'</span>;</code></pre>
                   <div class="preview-composer">Ask a question…<span>↑</span></div>
                 </div>
               </div>
             </div>
           </section>
-          <section id="data" class="section" aria-labelledby="dataHeading">
+          <section id="data" class="section" hidden aria-labelledby="dataHeading">
             <div class="section-heading">
               <div>
                 <h2 id="dataHeading">Data &amp; about</h2>
                 <p>Take your setup with you.</p>
               </div>
             </div>
-            <div class="data-actions">
+            <div class="data-actions settings-card">
               <div>
                 <h3>Configuration backup</h3>
                 <p class="help-text">
@@ -267,7 +256,7 @@
               </dl>
               <p class="parameter-description">Change the opening shortcut at chrome://extensions/shortcuts. To ask about a passage, right-click selected text and choose “Ask SideMind”.</p>
             </details>
-            <div class="about-details">
+            <div class="about-details settings-card">
               <img src="../icons/icon128.png" alt="" />
               <div>
                 <h3>SideMind <span id="versionBadge" class="version-badge"></span></h3>
@@ -294,17 +283,17 @@
         <div class="modal-header">
           <h3 id="providerModalTitle">Add Service Provider</h3>
           <button class="modal-close-btn icon-btn" aria-label="Close">
-            <i class="fas fa-times"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
         <div class="modal-body">
           <form id="providerForm">
             <div class="form-group">
-              <label for="providerName">Provider Name</label>
-              <input type="text" id="providerName" required />
+              <label for="providerName">Provider name</label>
+              <input type="text" id="providerName" placeholder="For example: My AI service" required />
             </div>
             <div class="form-group">
-              <label for="providerBaseUrl">Base URL</label>
+              <label for="providerBaseUrl">API base URL</label>
               <input
                 type="url"
                 id="providerBaseUrl"
@@ -316,17 +305,16 @@
                 >Enter your provider’s API root. The endpoint is added automatically.</small
               ><small id="endpointPreview" class="endpoint-preview"></small>
             </div>
-            <div class="form-group">
-              <label for="providerApiType">API Type</label>
+            <div class="form-group protocol-group">
+              <label for="providerApiType">API protocol</label>
               <select id="providerApiType" class="select-input">
                 <option value="chat" selected>Chat Completions &mdash; /chat/completions</option>
                 <option value="responses">Responses &mdash; /responses</option>
               </select>
-              <small class="parameter-description"
-                >Chat Completions is the classic OpenAI-compatible endpoint. Responses is OpenAI's
-                newer API - choose it for providers that expose /responses (reasoning summaries,
-                instructions field).</small
-              >
+              <details class="field-help">
+                <summary>Which protocol should I choose?</summary>
+                <p>Chat Completions works with most compatible services. Choose Responses for a provider that exposes /responses. The request path is added automatically.</p>
+              </details>
             </div>
             <div class="form-group">
               <label for="providerApiKey">API Key</label>
@@ -344,38 +332,30 @@
                   aria-label="Show API key"
                   aria-pressed="false"
                 >
-                  <i class="fas fa-eye" aria-hidden="true"></i>
+                  <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#eye"></use></svg>
                 </button>
               </div>
               <div class="connection-check">
                 <button type="button" id="checkConnectionBtn" class="btn btn-small">
-                  <i class="fas fa-plug" aria-hidden="true"></i>Check connection
+                  <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plug"></use></svg>Check connection
                 </button>
                 <small id="connectionStatus" class="connection-status" role="status"></small>
               </div>
               <datalist id="modelSuggestions"></datalist>
             </div>
             <div class="form-group">
-              <label>Models</label
+              <h4 class="form-section-title">Available models</h4
               ><small class="parameter-description"
-                >Give each model a display name and the exact model ID required by your
-                provider.</small
+                >Choose a Model ID from suggestions, or enter it exactly as your provider lists it.</small
               >
-              <div id="modelsList" class="models-list">
-                <div class="model-item">
-                  <input type="text" placeholder="Model Name" class="model-name" required />
-                  <input type="text" placeholder="Model ID" class="model-id" required />
-                  <button type="button" class="btn-remove-model" aria-label="Remove model">
-                    <i class="fas fa-trash-alt"></i>
-                  </button>
-                </div>
-              </div>
+              <div id="modelsList" class="models-list"></div>
               <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
             </div>
           </form>
         </div>
         <p class="modal-error hidden" role="alert"></p>
         <div class="modal-footer">
+          <button id="providerDeleteBtn" class="btn btn-danger modal-delete hidden">Delete provider</button>
           <button id="providerCancelBtn" class="btn btn-secondary">Cancel</button>
           <button id="providerSaveBtn" class="btn btn-primary">Save provider</button>
         </div>
@@ -387,7 +367,7 @@
         <div class="modal-header">
           <h3 id="promptModalTitle">Add Assistant Role</h3>
           <button class="modal-close-btn icon-btn" aria-label="Close">
-            <i class="fas fa-times"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
         <div class="modal-body">
@@ -409,6 +389,7 @@
         </div>
         <p class="modal-error hidden" role="alert"></p>
         <div class="modal-footer">
+          <button id="promptDeleteBtn" class="btn btn-danger modal-delete hidden">Delete role</button>
           <button id="promptCancelBtn" class="btn btn-secondary">Cancel</button>
           <button id="promptSaveBtn" class="btn btn-primary">Save role</button>
         </div>
@@ -419,7 +400,7 @@
         <div class="modal-header">
           <h3 id="confirmTitle"></h3>
           <button class="modal-close-btn icon-btn" aria-label="Cancel">
-            <i class="fas fa-times" aria-hidden="true"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
         <div class="modal-body"><p id="confirmDescription"></p></div>

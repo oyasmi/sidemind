@@ -130,7 +130,8 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 
 ### User Experience
 - Shared light, dark and system themes across chat and settings
-- Task-oriented settings with automatic save feedback and a live appearance preview
+- Focused settings sections with direct links, browser history, automatic save feedback and a live appearance preview
+- Warm neutral light and charcoal dark palettes, compact controls, and local SVG icons without icon fonts
 - Keyboard shortcuts (Enter to send, Shift+Enter for new line, Esc to stop)
 - Open the sidebar with Alt+Shift+S, start a chat with Ctrl/Cmd+Shift+O, and focus the input with Shift+Esc
 - Right-click selected webpage text to add it and its source to your current draft; review and send when ready

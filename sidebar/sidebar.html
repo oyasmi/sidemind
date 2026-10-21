@@ -6,7 +6,6 @@
     <title>SideMind</title>
     <link rel="stylesheet" href="../assets/css/ui.css" />
     <script src="../assets/js/ui.js"></script>
-    <link rel="stylesheet" href="../assets/css/fontawesome.min.css" />
     <link rel="stylesheet" href="sidebar.css" />
   </head>
   <body>
@@ -15,7 +14,7 @@
         <div class="brand"><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
         <div class="header-right">
           <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat (Ctrl/⌘ + Shift + O)">
-            <i class="fas fa-plus" aria-hidden="true"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>
           </button>
           <button
             id="chatHistoryBtn"
@@ -24,14 +23,14 @@
             title="Chat history"
             aria-haspopup="dialog"
           >
-            <i class="fas fa-clock" aria-hidden="true"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#clock"></use></svg>
           </button>
           <button id="optionsBtn" class="icon-btn" aria-label="Settings" title="Settings">
-            <i class="fas fa-cog" aria-hidden="true"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>
           </button>
         </div>
         <div class="model-control">
-          <label for="modelSelector">Model</label>
+          <label for="modelSelector" class="sr-only">Model</label>
           <select id="modelSelector" class="model-selector">
             <option value="">Choose a model</option>
           </select>
@@ -46,7 +45,7 @@
           class="scroll-bottom-btn hidden"
           aria-label="View latest response"
         >
-          <i class="fas fa-arrow-down" aria-hidden="true"></i><span>View latest</span>
+          <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#arrow-down"></use></svg><span>View latest</span>
         </button>
         <div id="undoBar" class="undo-bar hidden" role="status">
           <span id="undoText" class="undo-text"></span
@@ -56,6 +55,7 @@
       </main>
 
       <footer class="input-container">
+        <div id="notifications" class="notification-region" role="status" aria-live="polite"></div>
         <div id="storageStatus" class="storage-status hidden" role="status">
           <span id="storageStatusText"></span><button id="retryStorageBtn" class="undo-btn" type="button">Retry save</button>
         </div>
@@ -66,7 +66,7 @@
           <label for="messageInput" class="sr-only">Message</label>
           <textarea
             id="messageInput"
-            class="message-input"
+            class="message-input reading-content"
             placeholder="Ask a question…"
             rows="2"
             aria-describedby="inputHint"
@@ -86,8 +86,8 @@
               disabled
               data-state="send"
             >
-              <i class="fas fa-arrow-up send-icon" aria-hidden="true"></i
-              ><i class="fas fa-stop stop-icon" aria-hidden="true"></i>
+              <svg class="ui-icon send-icon" aria-hidden="true"><use href="../assets/icons.svg#arrow-up"></use></svg>
+              <svg class="ui-icon stop-icon" aria-hidden="true"><use href="../assets/icons.svg#stop"></use></svg>
             </button>
           </div>
         </div>
@@ -100,7 +100,7 @@
         <div class="modal-header">
           <h3 id="historyTitle">Your conversations</h3>
           <button class="close-btn icon-btn" aria-label="Close history">
-            <i class="fas fa-times" aria-hidden="true"></i>
+            <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
         <div class="history-search">
@@ -121,7 +121,6 @@
         </div>
       </div>
     </dialog>
-    <div id="notifications" class="notification-region" role="status" aria-live="polite"></div>
     <script src="marked.umd.js"></script>
     <script src="highlight.min.js"></script>
     <script src="sidebar.js"></script>

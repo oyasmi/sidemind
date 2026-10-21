@@ -50,6 +50,7 @@ before(async () => {
         '.css': 'text/css',
         '.js': 'text/javascript',
         '.png': 'image/png',
+        '.svg': 'image/svg+xml',
         '.woff2': 'font/woff2'
       };
       const contents = readFileSync(path);
@@ -238,6 +239,16 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
   return { page, errors };
 }
 
+async function openSettingsSection(page, section) {
+  await page.locator(`.settings-nav a[href="#${section}"]`).click();
+  await page.locator(`#${section}`).waitFor({ state: 'visible' });
+}
+
+async function setTheme(page, theme) {
+  await openSettingsSection(page, 'appearance');
+  await page.locator(`#themeSelector input[value="${theme}"]`).check();
+}
+
 async function startResponse(page, text = 'Explain this carefully.') {
   await page.locator('#messageInput').fill(text);
   await page.locator('#messageInput').press('Enter');
@@ -267,7 +278,7 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
       );
     }
     if (kind === 'options') {
-      await page.locator('#themeSelector').selectOption('dark');
+      await setTheme(page, 'dark');
       assert.equal(
         await page.evaluate(() => document.documentElement.classList.contains('dark-theme')),
         true
@@ -285,6 +296,88 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
     assert.deepEqual(errors, []);
     await page.close();
   }
+});
+
+browserTest('settings navigation restores deep links, history and the visible narrow-screen section', async () => {
+  const { page, errors } = await openPage('options');
+  assert.equal(await page.locator('.options-main > section:visible').count(), 1);
+  await page.goto(`${baseUrl}/options/options.html#appearance`);
+  await page.locator('#appearance').waitFor({ state: 'visible' });
+  await openSettingsSection(page, 'roles');
+  await page.goBack();
+  await page.locator('#appearance').waitFor({ state: 'visible' });
+  await page.goForward();
+  await page.locator('#roles').waitFor({ state: 'visible' });
+  await page.reload();
+  await page.locator('#roles').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('.settings-nav [aria-current="page"]').getAttribute('href'), '#roles');
+  await page.setViewportSize({ width: 320, height: 600 });
+  await openSettingsSection(page, 'data');
+  const inView = await page.locator('.settings-nav').evaluate((nav) => {
+    const bounds = nav.getBoundingClientRect();
+    const active = nav.querySelector('[aria-current]').getBoundingClientRect();
+    // scrollLeft is integral, while glyph layout can end on a fractional pixel.
+    return active.left >= bounds.left - 1 && active.right <= bounds.right + 1;
+  });
+  assert.equal(inView, true);
+  await page.goto(`${baseUrl}/options/options.html#unknown`);
+  await page.locator('#providers').waitFor({ state: 'visible' });
+  assert.equal(new URL(page.url()).hash, '#providers');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('theme choices follow the system and the streaming switch saves its actual state', async () => {
+  const { page, errors } = await openPage('options');
+  await setTheme(page, 'system');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForFunction(() => getComputedStyle(document.body).backgroundColor === 'rgb(28, 31, 29)');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.waitForFunction(() => getComputedStyle(document.body).backgroundColor === 'rgb(245, 244, 240)');
+  await setTheme(page, 'light');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), 'rgb(245, 244, 240)');
+  await openSettingsSection(page, 'conversation');
+  await page.locator('#streamSelector').uncheck();
+  await page.waitForFunction(() => window.__storage.sync.config.stream === false);
+  await page.locator('#streamSelector').check();
+  await page.waitForFunction(() => window.__storage.sync.config.stream === true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('reading preferences leave controls compact and completion feedback settles quietly', async () => {
+  const { page, errors } = await openPage('sidebar', {
+    ...fixtureConfig, fontSize: '16px', fontFamily: 'Georgia, serif'
+  });
+  assert.equal(await page.locator('#messageInput').evaluate((node) => getComputedStyle(node).fontSize), '16px');
+  assert.equal(await page.locator('#sendBtn').evaluate((node) => getComputedStyle(node).fontSize), '14px');
+  await page.waitForFunction(() => document.querySelector('#newChatBtn .ui-icon').getBBox().width > 0);
+  assert.equal(await page.locator('#generationStatus').isVisible(), false);
+  await startResponse(page);
+  await delta(page, 'A readable answer.');
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.message-bubble').last().evaluate((node) => getComputedStyle(node).fontSize), '16px');
+  await page.waitForFunction(() => document.querySelector('#generationStatus').dataset.state === 'idle');
+  assert.equal(await page.locator('#generationStatus').isVisible(), false);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('provider dialogs keep their actions reachable on short narrow screens', async () => {
+  const { page, errors } = await openPage('options');
+  await page.setViewportSize({ width: 320, height: 480 });
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  for (let index = 0; index < 4; index++) await page.locator('#addModelBtn').click();
+  const footer = await page.locator('#providerModal .modal-footer').boundingBox();
+  assert.ok(footer.y >= 0 && footer.y + footer.height <= 480);
+  assert.equal(await page.locator('#providerModal .modal-body').evaluate((node) => node.scrollHeight > node.clientHeight), true);
+  await page.locator('#providerCancelBtn').click();
+  await page.locator('#confirmAccept').click();
+  assert.equal(await page.locator('#providerModal').evaluate((node) => node.open), false);
+  assert.deepEqual(errors, []);
+  await page.close();
 });
 
 browserTest('Enter during generation retains the next draft; stop awaits cleanup', async () => {
@@ -481,6 +574,7 @@ browserTest(
   'settings autosave is debounced and invalid token limits do not overwrite saved values',
   async () => {
     const { page, errors } = await openPage('options');
+    await openSettingsSection(page, 'conversation');
     await page.locator('#conversation .advanced-settings summary').click();
     for (const value of ['1', '12', '120'])
       await page.locator('#maxCompletionTokensInput').fill(value);
@@ -554,6 +648,7 @@ browserTest(
   'dirty dialogs confirm discard, trap focus, and return focus to the opener',
   async () => {
     const { page, errors } = await openPage('options');
+    await openSettingsSection(page, 'roles');
     await page.locator('#addPromptBtn').click();
     assert.equal(
       await page.locator('#promptName').evaluate((node) => node === document.activeElement),
@@ -775,6 +870,7 @@ browserTest(
   'configuration exports omit API keys by default and include them only when selected',
   async () => {
     const { page, errors } = await openPage('options');
+    await openSettingsSection(page, 'data');
     const download = page.waitForEvent('download');
     await page.locator('#exportBtn').click();
     const exported = JSON.parse(readFileSync(await (await download).path(), 'utf8'));
@@ -818,12 +914,14 @@ browserTest(
       settings.on('pageerror', (error) => errors.push(error.message));
       await settings.goto(`chrome-extension://${id}/options/options.html`);
       await settings.waitForFunction(() => document.querySelector('#versionBadge').textContent);
-      await settings.locator('#themeSelector').selectOption('dark');
+      await settings.waitForFunction(() => document.querySelector('.settings-nav .ui-icon').getBBox().width > 0);
+      await chat.waitForFunction(() => document.querySelector('#newChatBtn .ui-icon').getBBox().width > 0);
+      await setTheme(settings, 'dark');
       await settings.locator('#fontSizeSelector').selectOption('16px');
       await chat.waitForFunction(
         () =>
           document.documentElement.classList.contains('dark-theme') &&
-          getComputedStyle(document.body).fontSize === '16px'
+          getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px'
       );
       assert.equal(
         await settings.locator('#versionBadge').textContent(),
@@ -861,6 +959,7 @@ browserTest(
   'pending preference changes merge with external model selections and transactional saves',
   async () => {
     const { page, errors } = await openPage('options');
+    await openSettingsSection(page, 'appearance');
     await page.locator('#fontSizeSelector').selectOption('16px');
     await page.evaluate(async () => {
       const latest = structuredClone(window.__storage.sync.config);
@@ -871,7 +970,8 @@ browserTest(
     await page.waitForFunction(() => window.__storage.sync.config.fontSize === '16px');
     assert.equal(await page.evaluate(() => window.__storage.sync.config.selectedModel), null);
     // Opening a transaction while a preference save is pending must save both.
-    await page.locator('#themeSelector').selectOption('dark');
+    await setTheme(page, 'dark');
+    await openSettingsSection(page, 'roles');
     await page.locator('#addPromptBtn').click();
     await page.locator('#promptName').fill('Concise');
     await page.locator('#promptContent').fill('Keep answers concise.');
@@ -1045,7 +1145,8 @@ browserTest('selected text and source append to a draft once and never auto-send
 
 browserTest('UTF-8 sync quota errors keep role edits available for correction', async () => {
   const { page, errors } = await openPage('options');
-  await page.locator('#addPromptBtn').click();
+  await openSettingsSection(page, 'roles');
+    await page.locator('#addPromptBtn').click();
   await page.locator('#promptName').fill('Large role');
   await page.locator('#promptContent').fill('中文'.repeat(2500));
   await page.locator('#promptSaveBtn').click();
@@ -1714,6 +1815,55 @@ browserTest('settings check a provider connection and suggest its model IDs', as
   await page.close();
 });
 
+browserTest('changing connection details discards an older check result', async () => {
+  const { page, errors } = await openPage('options');
+  await page.evaluate(() => {
+    window.fetch = () => new Promise((resolve) => {
+      window.__finishCheck = () => resolve(Response.json({ data: [{ id: 'outdated-model' }] }));
+    });
+  });
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  await page.locator('#checkConnectionBtn').click();
+  await page.waitForFunction(() => Boolean(window.__finishCheck));
+  await page.locator('#providerApiKey').fill('new-key');
+  await page.evaluate(async () => {
+    window.__finishCheck();
+    await new Promise(requestAnimationFrame);
+  });
+  assert.equal(await page.locator('#connectionStatus').textContent(), '');
+  assert.equal(await page.locator('#modelSuggestions option').count(), 0);
+  assert.equal(await page.locator('#checkConnectionBtn').isEnabled(), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('role deletion confirms intent and keeps failed deletion visible in the editor', async () => {
+  const { page, errors } = await openPage('options', {
+    ...fixtureConfig,
+    selectedSystemPrompt: 'custom',
+    systemPrompts: [...fixtureConfig.systemPrompts, { id: 'custom', name: 'My role', content: 'Be concise.' }]
+  });
+  await openSettingsSection(page, 'roles');
+  await page.getByRole('button', { name: 'Edit My role' }).click();
+  await page.getByRole('button', { name: 'Delete My role', exact: true }).click();
+  await page.locator('#confirmCancel').click();
+  assert.equal(await page.locator('#promptModal').evaluate((node) => node.open), true);
+  await page.evaluate(() => { window.__failSave = true; });
+  await page.getByRole('button', { name: 'Delete My role', exact: true }).click();
+  await page.locator('#confirmAccept').click();
+  await page.waitForFunction(() => document.querySelector('#promptModal .modal-error').textContent.includes('not deleted'));
+  assert.equal(await page.locator('#promptModal .modal-error').isVisible(), true);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.systemPrompts.length), 2);
+  await page.evaluate(() => { window.__failSave = false; });
+  await page.getByRole('button', { name: 'Delete My role', exact: true }).click();
+  await page.locator('#confirmAccept').click();
+  await page.waitForFunction(() => !document.querySelector('#promptModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.selectedSystemPrompt), 'default');
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.systemPrompts.length), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
 browserTest('a provider not yet allowed on this device can be allowed from its row', async () => {
   const { page, errors } = await openPage('options');
   await page.evaluate(() => {
@@ -1749,7 +1899,8 @@ browserTest('deleting a provider releases host access no other provider uses', a
     chrome.permissions.remove = async ({ origins }) => { window.__removed.push(...origins); return true; };
   });
   for (const name of ['Twin provider', 'Other provider']) {
-    await page.getByRole('button', { name: `Delete ${name}` }).click();
+    await page.getByRole('button', { name: `Edit ${name}` }).click();
+    await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click();
     await page.locator('#confirmAccept').click();
     await page.waitForFunction((name) => !window.__storage.sync.config.providers.some((p) => p.name === name), name);
   }

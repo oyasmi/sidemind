@@ -126,3 +126,14 @@ function canonicalJSON(value) {
 }
 
 const sameValue = (a, b) => canonicalJSON(a) === canonicalJSON(b);
+
+// ===== Shared icons =====
+function createIcon(name, className = '') {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', `ui-icon${className ? ` ${className}` : ''}`);
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', `../assets/icons.svg#${name}`);
+  svg.appendChild(use);
+  return svg;
+}

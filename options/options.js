@@ -20,10 +20,12 @@ let config = structuredClone(DEFAULT_CONFIG);
 let editingProviderId = null;
 let editingPromptId = null;
 let saveTimer = null;
+let saveFeedbackTimer = null;
 let saveQueue = Promise.resolve();
 let saveRevision = 0;
 let dialogSnapshot = '';
 let dialogBusy = false;
+let connectionCheckRevision = 0;
 let confirmResolver = null;
 let dialogOpener = null;
 const pendingPreferenceKeys = new Set();
@@ -32,14 +34,11 @@ const elements = {};
 // ===== Initialization =====
 document.addEventListener('DOMContentLoaded', async () => {
   cacheElements();
+  showSettingsSection();
   await loadConfig();
   setupEventListeners();
   renderUI();
   elements.versionBadge.textContent = `v${chrome.runtime.getManifest().version}`;
-  const observer = new IntersectionObserver(updateActiveSection, {
-    rootMargin: '-20% 0px -55% 0px'
-  });
-  document.querySelectorAll('main > section').forEach((section) => observer.observe(section));
 });
 
 function cacheElements() {
@@ -86,8 +85,10 @@ function cacheElements() {
     'promptContent',
     'providerSaveBtn',
     'providerCancelBtn',
+    'providerDeleteBtn',
     'promptSaveBtn',
     'promptCancelBtn',
+    'promptDeleteBtn',
     'confirmModal',
     'confirmTitle',
     'confirmDescription',
@@ -121,12 +122,12 @@ function setupEventListeners() {
   elements.providerBaseUrl.addEventListener('input', updateEndpointPreview);
   elements.providerApiType.addEventListener('change', updateEndpointPreview);
   elements.checkConnectionBtn.addEventListener('click', checkConnection);
-  [elements.providerBaseUrl, elements.providerApiKey].forEach((field) =>
-    field.addEventListener('input', () => setConnectionStatus(''))
-  );
+  elements.providerApiKey.addEventListener('input', resetConnectionCheck);
   elements.toggleApiKey.addEventListener('click', toggleApiKey);
   elements.providerSaveBtn.addEventListener('click', saveProvider);
   elements.promptSaveBtn.addEventListener('click', savePrompt);
+  elements.providerDeleteBtn.addEventListener('click', handleDeleteProvider);
+  elements.promptDeleteBtn.addEventListener('click', handleDeletePrompt);
   elements.providerCancelBtn.addEventListener('click', () =>
     requestCloseDialog(elements.providerModal)
   );
@@ -162,16 +163,23 @@ function setupEventListeners() {
     savePrompt();
   });
   window.addEventListener('pagehide', flushPendingSave);
+  window.addEventListener('hashchange', showSettingsSection);
   chrome.storage.onChanged.addListener(handleConfigurationChange);
 }
 
-function updateActiveSection(entries) {
-  const visible = entries.find((entry) => entry.isIntersecting);
-  if (!visible) return;
+function showSettingsSection() {
+  const sections = Array.from(document.querySelectorAll('.options-main > section'));
+  const section = sections.find((item) => `#${item.id}` === location.hash) || sections[0];
+  if (location.hash !== `#${section.id}`) history.replaceState(null, '', `#${section.id}`);
+  sections.forEach((item) => { item.hidden = item !== section; });
   document.querySelectorAll('.settings-nav a').forEach((link) => {
-    if (link.hash === `#${visible.target.id}`) link.setAttribute('aria-current', 'location');
-    else link.removeAttribute('aria-current');
+    if (link.hash === `#${section.id}`) {
+      link.setAttribute('aria-current', 'page');
+      link.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    } else link.removeAttribute('aria-current');
   });
+  // Hash navigation can otherwise keep the scroll position of a long section.
+  window.scrollTo(0, 0);
 }
 
 // ===== Storage and feedback =====
@@ -197,9 +205,13 @@ async function loadConfig() {
 
 function setSaveStatus(text, status = '') {
   if (!elements.saveStatus) return;
+  clearTimeout(saveFeedbackTimer);
   elements.saveStatus.textContent = text;
   elements.saveStatus.dataset.state = status;
   elements.saveBtn.classList.toggle('hidden', status !== 'error');
+  if (status === 'saved') {
+    saveFeedbackTimer = setTimeout(() => setSaveStatus('Changes save automatically'), 3000);
+  }
 }
 
 function queueSave(key) {
@@ -334,11 +346,23 @@ function createProviderElement(provider) {
   details.textContent = normalizeBaseUrl(provider.baseUrl || '');
   const models = document.createElement('div');
   models.className = 'provider-models';
-  models.textContent = `${provider.models.length} model${provider.models.length === 1 ? '' : 's'} · ${provider.models.map((model) => model.name).join(', ')}`;
+  provider.models.slice(0, 3).forEach((model) => {
+    const tag = document.createElement('span');
+    tag.className = 'model-tag';
+    tag.textContent = model.name;
+    tag.title = `${model.name} · ${model.id}`;
+    models.appendChild(tag);
+  });
+  if (provider.models.length > 3) {
+    const more = document.createElement('span');
+    more.className = 'model-tag';
+    more.textContent = `+${provider.models.length - 3} more`;
+    models.appendChild(more);
+  }
+  models.setAttribute('aria-label', `${provider.models.length} configured models`);
   info.append(name, details, models, createAccessNotice(provider));
   const actions = createItemActions(
     () => openProviderModal(provider),
-    () => deleteProvider(provider.id),
     provider.name
   );
   item.append(info, actions);
@@ -379,20 +403,15 @@ function releaseProviderAccess(baseUrl, remaining) {
     .catch((error) => console.error('Releasing provider access:', error));
 }
 
-function createItemActions(edit, remove, name) {
+function createItemActions(edit, name) {
   const actions = document.createElement('div');
   actions.className = 'provider-actions';
-  [
-    ['Edit', 'btn-edit', edit],
-    ['Delete', 'btn-remove', remove]
-  ].forEach(([label, className, handler]) => {
-    const button = document.createElement('button');
-    button.className = className;
-    button.textContent = label;
-    button.setAttribute('aria-label', `${label} ${name}`);
-    button.addEventListener('click', handler);
-    actions.appendChild(button);
-  });
+  const button = document.createElement('button');
+  button.className = 'btn-edit';
+  button.textContent = 'Edit';
+  button.setAttribute('aria-label', `Edit ${name}`);
+  button.addEventListener('click', edit);
+  actions.appendChild(button);
   return actions;
 }
 
@@ -422,7 +441,6 @@ function renderPrompts() {
       item.appendChild(
         createItemActions(
           () => openPromptModal(prompt),
-          () => deletePrompt(prompt.id),
           prompt.name
         )
       );
@@ -433,7 +451,7 @@ function renderPrompts() {
 function renderParameters() {
   renderTemperature();
   elements.maxCompletionTokensInput.value = config.max_completion_tokens || '';
-  elements.streamSelector.value = String(config.stream !== false);
+  elements.streamSelector.checked = config.stream !== false;
   elements.reasoningEffortSelector.value = config.reasoning_effort || '';
   elements.reasoningSummarySelector.value = config.reasoning_summary || 'off';
   elements.fontSizeSelector.value = config.fontSize || '14px';
@@ -446,7 +464,9 @@ function renderParameters() {
   elements.customFontFamilyInput.value =
     elements.fontFamilySelector.value === 'custom' ? config.fontFamily : '';
   toggleCustomFontInputVisibility();
-  elements.themeSelector.value = config.theme || 'system';
+  elements.themeSelector.querySelectorAll('input').forEach((radio) => {
+    radio.checked = radio.value === (config.theme || 'system');
+  });
   elements.maxTokensError.classList.add('hidden');
   elements.maxCompletionTokensInput.removeAttribute('aria-invalid');
 }
@@ -466,6 +486,12 @@ function openDialog(dialog) {
   dialogOpener = document.activeElement;
   dialog.showModal();
   dialog.querySelector('input, textarea')?.focus();
+}
+
+function restoreDialogFocus(fallback) {
+  const target = [dialogOpener, fallback, document.querySelector('.settings-nav [aria-current]')]
+    .find((element) => element?.isConnected && element.getClientRects().length);
+  target?.focus();
 }
 
 async function requestCloseDialog(dialog) {
@@ -505,8 +531,11 @@ function showDialogError(dialog, text) {
   error.classList.remove('hidden');
 }
 
-function setDialogBusy(dialog, busy) {
+function setDialogBusy(dialog, busy, label = 'Saving…') {
   dialogBusy = busy;
+  dialog.setAttribute('aria-busy', String(busy));
+  const saveButton = dialog.querySelector('.btn-primary');
+  saveButton.textContent = busy ? label : dialog === elements.providerModal ? 'Save provider' : 'Save role';
   dialog.querySelectorAll('button').forEach((button) => {
     button.disabled = busy;
   });
@@ -559,18 +588,21 @@ function openProviderModal(provider = null) {
   elements.providerApiKey.type = 'password';
   elements.toggleApiKey.setAttribute('aria-pressed', 'false');
   elements.toggleApiKey.setAttribute('aria-label', 'Show API key');
+  elements.toggleApiKey.replaceChildren(createIcon('eye'));
+  elements.providerDeleteBtn.classList.toggle('hidden', !provider);
+  elements.providerDeleteBtn.setAttribute('aria-label', `Delete ${provider?.name || 'provider'}`);
+  elements.providerModal.querySelector('.field-help').open = false;
   renderModelsList(provider?.models || []);
   updateEndpointPreview();
-  setConnectionStatus('');
-  elements.modelSuggestions.replaceChildren();
   openDialog(elements.providerModal);
 }
 
 function closeProviderModal() {
+  resetConnectionCheck();
   elements.providerModal.close();
   elements.providerForm.reset();
   editingProviderId = null;
-  (dialogOpener?.isConnected ? dialogOpener : elements.addProviderBtn)?.focus();
+  restoreDialogFocus(elements.addProviderBtn);
 }
 
 function renderModelsList(models) {
@@ -587,6 +619,10 @@ function createModelField(name = '', id = '') {
     ['model-name', 'Display name', name],
     ['model-id', 'Model ID', id]
   ].forEach(([className, label, value]) => {
+    const field = document.createElement('label');
+    field.className = 'model-field';
+    const caption = document.createElement('span');
+    caption.textContent = label;
     const input = document.createElement('input');
     input.className = className;
     input.type = 'text';
@@ -595,7 +631,8 @@ function createModelField(name = '', id = '') {
     input.value = value;
     input.required = true;
     if (className === 'model-id') input.setAttribute('list', 'modelSuggestions');
-    item.appendChild(input);
+    field.append(caption, input);
+    item.appendChild(field);
   });
   // Picking an ID from the suggestions is usually all a model needs
   const [nameInput, idInput] = item.querySelectorAll('input');
@@ -627,12 +664,13 @@ function addModelField() {
 }
 
 function updateEndpointPreview() {
+  resetConnectionCheck();
   const base = normalizeBaseUrl(elements.providerBaseUrl.value);
   const endpoint =
     elements.providerApiType.value === 'responses' ? '/responses' : '/chat/completions';
   elements.endpointPreview.textContent = base
     ? `Request URL: ${base}${endpoint}`
-    : 'Your request URL will appear here.';
+    : '';
 }
 
 function setConnectionStatus(text, status = '') {
@@ -640,9 +678,17 @@ function setConnectionStatus(text, status = '') {
   elements.connectionStatus.dataset.state = status;
 }
 
+function resetConnectionCheck() {
+  connectionCheckRevision++;
+  setConnectionStatus('');
+  elements.modelSuggestions.replaceChildren();
+  elements.checkConnectionBtn.disabled = false;
+}
+
 // Lists the provider's models: it proves the URL and key work before the
 // first chat, and fills the Model ID suggestions.
 async function checkConnection() {
+  const revision = ++connectionCheckRevision;
   const baseUrl = normalizeBaseUrl(elements.providerBaseUrl.value);
   const apiKey = elements.providerApiKey.value.trim();
   let validUrl = false;
@@ -659,7 +705,9 @@ async function checkConnection() {
   elements.checkConnectionBtn.disabled = true;
   setConnectionStatus('Checking…', 'saving');
   try {
-    if (!(await access)) {
+    const allowed = await access;
+    if (revision !== connectionCheckRevision) return;
+    if (!allowed) {
       setConnectionStatus('Chrome did not grant access to this provider.', 'error');
       return;
     }
@@ -667,8 +715,10 @@ async function checkConnection() {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       signal: AbortSignal.timeout(15000)
     });
+    if (revision !== connectionCheckRevision) return;
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
+      if (revision !== connectionCheckRevision) return;
       const detail = redact(payload?.error?.message || response.statusText || '');
       setConnectionStatus(
         [401, 403].includes(response.status)
@@ -681,6 +731,7 @@ async function checkConnection() {
       return;
     }
     const payload = await response.json();
+    if (revision !== connectionCheckRevision) return;
     const listed = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
     const ids = [...new Set(listed.map((model) => model?.id || model?.name).filter((id) => typeof id === 'string' && id))].sort();
     elements.modelSuggestions.replaceChildren(
@@ -693,6 +744,7 @@ async function checkConnection() {
       'saved'
     );
   } catch (error) {
+    if (revision !== connectionCheckRevision) return;
     setConnectionStatus(
       error.name === 'TimeoutError'
         ? 'The provider did not answer within 15 seconds.'
@@ -700,7 +752,7 @@ async function checkConnection() {
       'error'
     );
   } finally {
-    elements.checkConnectionBtn.disabled = false;
+    if (revision === connectionCheckRevision) elements.checkConnectionBtn.disabled = false;
   }
 }
 
@@ -709,6 +761,7 @@ function toggleApiKey() {
   elements.providerApiKey.type = visible ? 'text' : 'password';
   elements.toggleApiKey.setAttribute('aria-pressed', String(visible));
   elements.toggleApiKey.setAttribute('aria-label', visible ? 'Hide API key' : 'Show API key');
+  elements.toggleApiKey.replaceChildren(createIcon(visible ? 'eye-slash' : 'eye'));
 }
 
 async function saveProvider() {
@@ -821,10 +874,27 @@ async function deleteProvider(id) {
   const candidate = structuredClone(config);
   candidate.providers = candidate.providers.filter((item) => item.id !== id);
   repairSelection(candidate);
-  if (await saveConfig(candidate)) {
-    releaseProviderAccess(provider.baseUrl, candidate.providers);
-    renderProviders();
-  } else showNotification('Provider was not deleted. Try again.', 'error');
+  setDialogBusy(elements.providerModal, true, 'Deleting…');
+  try {
+    if (await saveConfig(candidate)) {
+      releaseProviderAccess(provider.baseUrl, candidate.providers);
+      renderProviders();
+      return true;
+    }
+    showDialogError(elements.providerModal, 'Provider was not deleted. Try again.');
+  } finally {
+    setDialogBusy(elements.providerModal, false);
+  }
+}
+
+async function handleDeleteProvider() {
+  if (dialogBusy) return;
+  try {
+    if (await deleteProvider(editingProviderId)) closeProviderModal();
+  } catch (error) {
+    console.error('Deleting provider:', error);
+    showDialogError(elements.providerModal, 'Could not delete this provider. Please try again.');
+  }
 }
 
 // ===== Assistant roles =====
@@ -836,6 +906,8 @@ function openPromptModal(prompt = null) {
   elements.promptForm.reset();
   elements.promptName.value = prompt?.name || '';
   elements.promptContent.value = prompt?.content || '';
+  elements.promptDeleteBtn.classList.toggle('hidden', !prompt || prompt.isDefault);
+  elements.promptDeleteBtn.setAttribute('aria-label', `Delete ${prompt?.name || 'role'}`);
   openDialog(elements.promptModal);
 }
 
@@ -843,7 +915,7 @@ function closePromptModal() {
   elements.promptModal.close();
   elements.promptForm.reset();
   editingPromptId = null;
-  (dialogOpener?.isConnected ? dialogOpener : elements.addPromptBtn)?.focus();
+  restoreDialogFocus(elements.addPromptBtn);
 }
 
 async function savePrompt() {
@@ -891,8 +963,26 @@ async function deletePrompt(id) {
   const candidate = structuredClone(config);
   candidate.systemPrompts = candidate.systemPrompts.filter((item) => item.id !== id);
   repairSelection(candidate);
-  if (await saveConfig(candidate)) renderPrompts();
-  else showNotification('Role was not deleted. Try again.', 'error');
+  setDialogBusy(elements.promptModal, true, 'Deleting…');
+  try {
+    if (await saveConfig(candidate)) {
+      renderPrompts();
+      return true;
+    }
+    showDialogError(elements.promptModal, 'Role was not deleted. Try again.');
+  } finally {
+    setDialogBusy(elements.promptModal, false);
+  }
+}
+
+async function handleDeletePrompt() {
+  if (dialogBusy) return;
+  try {
+    if (await deletePrompt(editingPromptId)) closePromptModal();
+  } catch (error) {
+    console.error('Deleting role:', error);
+    showDialogError(elements.promptModal, 'Could not delete this role. Please try again.');
+  }
 }
 
 // ===== Parameters and appearance =====
@@ -931,7 +1021,7 @@ function updateMaxCompletionTokens() {
 }
 
 function updateStream() {
-  config.stream = elements.streamSelector.value === 'true';
+  config.stream = elements.streamSelector.checked;
   queueSave('stream');
 }
 function updateReasoningEffort() {
@@ -973,8 +1063,8 @@ function applyTheme() {
   applyThemeClass(config.theme);
   cacheAppearance(config);
 }
-function updateTheme() {
-  config.theme = elements.themeSelector.value;
+function updateTheme(event) {
+  config.theme = event.target.value;
   applyTheme();
   queueSave('theme');
 }

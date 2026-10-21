@@ -54,6 +54,7 @@ const MAX_MARKDOWN_CACHE_SIZE = 100;
 const MAX_MARKDOWN_CACHE_CHARS = 1000000;
 let markdownCacheChars = 0;
 const renderedMarkdown = new WeakMap();
+let generationStatusTimer = null;
 const sessionSearchCache = new Map();
 let historySearchTimer = null;
 
@@ -1209,7 +1210,7 @@ function createMessageElement(message) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
-  avatar.innerHTML = `<i class="fas fa-${MESSAGE_ICONS[message.role] || 'robot'}"></i>`;
+  avatar.appendChild(createIcon(MESSAGE_ICONS[message.role] || 'robot'));
 
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
@@ -1226,7 +1227,7 @@ function createMessageElement(message) {
   wrapper.className = 'message-wrapper';
 
   const bubble = document.createElement('div');
-  bubble.className = 'message-bubble';
+  bubble.className = 'message-bubble reading-content';
 
   const parts = displayParts(message);
 
@@ -1458,7 +1459,7 @@ function decorateCodeBlocks(container) {
     button.type = 'button';
     button.className = 'code-copy-btn';
     button.setAttribute('aria-label', 'Copy code');
-    button.innerHTML = '<i class="fas fa-copy"></i>';
+    button.replaceChildren(createIcon('copy'));
     button.addEventListener('click', () => copyCode(pre, button));
 
     toolbar.appendChild(button);
@@ -1516,13 +1517,13 @@ async function copyText(text, button, label) {
     await navigator.clipboard.writeText(text);
     button.classList.add('copied');
     button.setAttribute('aria-label', 'Copied');
-    button.innerHTML = '<i class="fas fa-check"></i>';
+    button.replaceChildren(createIcon('check'));
     announce('Copied to clipboard.');
 
     setTimeout(() => {
       button.classList.remove('copied');
       button.setAttribute('aria-label', label);
-      button.innerHTML = '<i class="fas fa-copy"></i>';
+      button.replaceChildren(createIcon('copy'));
     }, 2000);
   } catch (error) {
     console.error('Copy failed:', error);
@@ -1539,7 +1540,7 @@ function createMessageActions(message) {
   copyBtn.className = 'copy-btn';
   copyBtn.setAttribute('aria-label', 'Copy message');
   copyBtn.title = 'Copy message';
-  copyBtn.innerHTML = '<i class="fas fa-copy"></i>';
+  copyBtn.replaceChildren(createIcon('copy'));
   copyBtn.addEventListener('click', () => copyMessage(message, copyBtn));
   actions.appendChild(copyBtn);
 
@@ -1551,7 +1552,7 @@ function createMessageActions(message) {
     editBtn.className = 'edit-btn';
     editBtn.setAttribute('aria-label', 'Edit message');
     editBtn.setAttribute('title', 'Edit message');
-    editBtn.innerHTML = '<i class="fas fa-pen"></i>';
+    editBtn.replaceChildren(createIcon('pen'));
     editBtn.addEventListener('click', () => startEditing(message));
     actions.appendChild(editBtn);
   }
@@ -1561,7 +1562,7 @@ function createMessageActions(message) {
   regenBtn.className = 'regenerate-btn';
   regenBtn.setAttribute('aria-label', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
-  regenBtn.innerHTML = '<i class="fas fa-redo"></i>';
+  regenBtn.replaceChildren(createIcon('redo'));
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
 
   // Cost of the turn: how long it took and what it burned
@@ -1769,7 +1770,7 @@ async function regenerateMessage(message, button) {
   if (!session) return;
 
   button.classList.add('regenerating');
-  button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  button.replaceChildren(createIcon('spinner', 'spinning'));
 
   try {
     const index = session.messages.findIndex((m) => m.id === message.id);
@@ -1808,7 +1809,7 @@ async function regenerateMessage(message, button) {
     }
   } finally {
     button.classList.remove('regenerating');
-    button.innerHTML = '<i class="fas fa-redo"></i>';
+    button.replaceChildren(createIcon('redo'));
   }
 }
 
@@ -2164,7 +2165,7 @@ function renderWelcomeMessage() {
   const hasModel = Boolean(provider && state.config.selectedModel && !needsKey);
   const mark = document.createElement('div');
   mark.className = 'welcome-mark';
-  mark.innerHTML = '<i class="fas fa-comment" aria-hidden="true"></i>';
+  mark.appendChild(createIcon('comment'));
   const heading = document.createElement('h2');
   heading.textContent = hasProviders ? 'A little space to think.' : 'Make room for your next idea.';
   const body = document.createElement('p');
@@ -2298,6 +2299,8 @@ function updateInputState() {
     : hasConfig
       ? 'Ask a question…'
       : 'Connect a provider and choose a model…';
+  clearTimeout(generationStatusTimer);
+  elements.generationStatus.dataset.state = state.isStreaming ? 'active' : hasConfig ? 'idle' : 'setup';
   elements.generationStatus.textContent = state.isStreaming
     ? 'Generating · you can draft your next message'
     : hasConfig
@@ -2308,11 +2311,11 @@ function updateInputState() {
 }
 
 function applyFontSettings(appearance = state.config) {
-  document.documentElement.style.setProperty('--font-size', appearance.fontSize || '14px');
+  document.documentElement.style.setProperty('--reading-font-size', appearance.fontSize || '14px');
   if (appearance.fontFamily) {
-    document.documentElement.style.setProperty('--font-family', appearance.fontFamily);
+    document.documentElement.style.setProperty('--reading-font-family', appearance.fontFamily);
   } else {
-    document.documentElement.style.removeProperty('--font-family');
+    document.documentElement.style.removeProperty('--reading-font-family');
   }
 }
 
@@ -2347,6 +2350,7 @@ function updateModelSelector() {
 
     elements.modelSelector.appendChild(optgroup);
   });
+  elements.modelSelector.title = elements.modelSelector.selectedOptions[0]?.textContent || 'Choose a model';
 }
 
 function updateSystemPromptSelector() {
@@ -2371,6 +2375,7 @@ function updateSystemPromptSelector() {
 
 function handleModelChange(event) {
   const selectedValue = event.target.value;
+  elements.modelSelector.title = event.target.selectedOptions[0]?.textContent || 'Choose a model';
 
   if (!selectedValue) {
     state.config.selectedModel = null;
@@ -2634,7 +2639,7 @@ function renderChatHistory() {
       button.className = `icon-btn${icon === 'trash-alt' ? ' delete-chat-btn' : ''}`;
       button.setAttribute('aria-label', label);
       button.title = label;
-      button.innerHTML = `<i class="fas fa-${icon}" aria-hidden="true"></i>`;
+      button.appendChild(createIcon(icon));
       button.addEventListener('click', handler);
       actions.appendChild(button);
     });
@@ -3536,6 +3541,13 @@ function cleanupStreaming(messageId) {
         : message?.completionUnconfirmed
           ? 'Response received · completion unconfirmed'
           : 'Response complete';
+  const hasNotice = message?.error || wasAborted || message?.incompleteReason || message?.completionUnconfirmed;
+  elements.generationStatus.dataset.state = hasNotice ? 'notice' : 'complete';
+  if (!hasNotice) {
+    generationStatusTimer = setTimeout(() => {
+      elements.generationStatus.dataset.state = 'idle';
+    }, 3000);
+  }
 }
 
 function finalizeTiming(messageId) {
