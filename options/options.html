@@ -281,81 +281,87 @@
     <dialog id="providerModal" aria-labelledby="providerModalTitle">
       <div class="modal-panel">
         <div class="modal-header">
-          <h3 id="providerModalTitle">Add Service Provider</h3>
+          <div class="provider-modal-title">
+            <span class="provider-modal-icon" aria-hidden="true"><svg class="ui-icon"><use href="../assets/icons.svg#plug"></use></svg></span>
+            <div>
+              <h3 id="providerModalTitle">Connect a provider</h3>
+              <p>Make your preferred AI service available in SideMind.</p>
+            </div>
+          </div>
           <button class="modal-close-btn icon-btn" aria-label="Close">
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
         <div class="modal-body">
           <form id="providerForm">
-            <div class="form-group">
-              <label for="providerName">Provider name</label>
-              <input type="text" id="providerName" placeholder="For example: My AI service" required />
-            </div>
-            <div class="form-group">
-              <label for="providerBaseUrl">API base URL</label>
-              <input
-                type="url"
-                id="providerBaseUrl"
-                aria-describedby="endpointPreview"
-                placeholder="https://api.example.com/v1"
-                required
-              />
-              <small class="parameter-description"
-                >Enter your provider’s API root. The endpoint is added automatically.</small
-              ><small id="endpointPreview" class="endpoint-preview"></small>
-            </div>
-            <div class="form-group protocol-group">
-              <label for="providerApiType">API protocol</label>
-              <select id="providerApiType" class="select-input">
-                <option value="chat" selected>Chat Completions &mdash; /chat/completions</option>
-                <option value="responses">Responses &mdash; /responses</option>
-              </select>
-              <details class="field-help">
-                <summary>Which protocol should I choose?</summary>
-                <p>Chat Completions works with most compatible services. Choose Responses for a provider that exposes /responses. The request path is added automatically.</p>
-              </details>
-            </div>
-            <div class="form-group">
-              <label for="providerApiKey">API Key</label>
-              <div class="key-input">
-                <input
-                  type="password"
-                  id="providerApiKey"
-                  autocomplete="off"
-                  spellcheck="false"
-                  required
-                /><button
-                  type="button"
-                  id="toggleApiKey"
-                  class="icon-btn"
-                  aria-label="Show API key"
-                  aria-pressed="false"
-                >
-                  <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#eye"></use></svg>
+            <section class="provider-section" aria-labelledby="connectionHeading">
+              <div class="provider-section-heading">
+                <h4 id="connectionHeading">Connection</h4>
+                <p>Your service address, protocol and credentials.</p>
+              </div>
+              <div class="provider-fields">
+                <div class="form-group">
+                  <label for="providerName">Provider name</label>
+                  <input type="text" id="providerName" placeholder="For example: My AI service" required />
+                </div>
+                <div class="form-group protocol-group">
+                  <label for="providerApiType">API protocol</label>
+                  <select id="providerApiType" class="select-input">
+                    <option value="chat" selected>Chat Completions</option>
+                    <option value="responses">Responses</option>
+                  </select>
+                  <details class="field-help">
+                    <summary>Which protocol should I choose?</summary>
+                    <p>Chat Completions works with most compatible services. Choose Responses for a provider that exposes /responses. The request path is added automatically.</p>
+                  </details>
+                </div>
+                <div class="form-group">
+                  <label for="providerBaseUrl">API base URL</label>
+                  <input
+                    type="url"
+                    id="providerBaseUrl"
+                    aria-describedby="baseUrlHelp endpointPreview"
+                    placeholder="https://api.example.com/v1"
+                    required
+                  />
+                  <small id="baseUrlHelp" class="parameter-description">Enter the API root. The endpoint is added automatically.</small>
+                  <small id="endpointPreview" class="endpoint-preview"></small>
+                </div>
+                <div class="form-group">
+                  <label for="providerApiKey">API key</label>
+                  <div class="key-input">
+                    <input type="password" id="providerApiKey" autocomplete="off" spellcheck="false" required />
+                    <button type="button" id="toggleApiKey" class="icon-btn" aria-label="Show API key" aria-pressed="false">
+                      <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#eye"></use></svg>
+                    </button>
+                  </div>
+                  <div class="connection-check">
+                    <button type="button" id="checkConnectionBtn" class="btn btn-small">
+                      <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plug"></use></svg>Check connection
+                    </button>
+                    <small id="connectionStatus" class="connection-status" role="status"></small>
+                  </div>
+                  <datalist id="modelSuggestions"></datalist>
+                </div>
+              </div>
+            </section>
+            <section class="provider-section" aria-labelledby="modelsHeading">
+              <div class="provider-section-heading models-heading">
+                <div>
+                  <h4 id="modelsHeading">Available models</h4>
+                  <p>Enter the exact Model ID, or check the connection for suggestions.</p>
+                </div>
+                <button type="button" id="addModelBtn" class="btn btn-small">
+                  <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>Add model
                 </button>
               </div>
-              <div class="connection-check">
-                <button type="button" id="checkConnectionBtn" class="btn btn-small">
-                  <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plug"></use></svg>Check connection
-                </button>
-                <small id="connectionStatus" class="connection-status" role="status"></small>
-              </div>
-              <datalist id="modelSuggestions"></datalist>
-            </div>
-            <div class="form-group">
-              <h4 class="form-section-title">Available models</h4
-              ><small class="parameter-description"
-                >Choose a Model ID from suggestions, or enter it exactly as your provider lists it.</small
-              >
               <div id="modelsList" class="models-list"></div>
-              <button type="button" id="addModelBtn" class="btn btn-small">Add Model</button>
-            </div>
+            </section>
           </form>
         </div>
         <p class="modal-error hidden" role="alert"></p>
         <div class="modal-footer">
-          <button id="providerDeleteBtn" class="btn btn-danger modal-delete hidden">Delete provider</button>
+          <button id="providerDeleteBtn" class="btn btn-danger modal-delete hidden"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#trash-alt"></use></svg><span>Delete provider</span></button>
           <button id="providerCancelBtn" class="btn btn-secondary">Cancel</button>
           <button id="providerSaveBtn" class="btn btn-primary">Save provider</button>
         </div>
@@ -389,7 +395,7 @@
         </div>
         <p class="modal-error hidden" role="alert"></p>
         <div class="modal-footer">
-          <button id="promptDeleteBtn" class="btn btn-danger modal-delete hidden">Delete role</button>
+          <button id="promptDeleteBtn" class="btn btn-danger modal-delete hidden"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#trash-alt"></use></svg><span>Delete role</span></button>
           <button id="promptCancelBtn" class="btn btn-secondary">Cancel</button>
           <button id="promptSaveBtn" class="btn btn-primary">Save role</button>
         </div>

@@ -1899,13 +1899,39 @@ browserTest('deleting a provider releases host access no other provider uses', a
     chrome.permissions.remove = async ({ origins }) => { window.__removed.push(...origins); return true; };
   });
   for (const name of ['Twin provider', 'Other provider']) {
-    await page.getByRole('button', { name: `Edit ${name}` }).click();
-    await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click();
+    if (name === 'Twin provider') {
+      await page.getByRole('button', { name: `Edit ${name}` }).click();
+      await page.locator('#providerDeleteBtn').click();
+    } else {
+      await page.locator('#providers').getByRole('button', { name: `Delete ${name}`, exact: true }).click();
+    }
     await page.locator('#confirmAccept').click();
     await page.waitForFunction((name) => !window.__storage.sync.config.providers.some((p) => p.name === name), name);
   }
   // provider.test is still used by the first provider
   assert.deepEqual(await page.evaluate(() => window.__removed), ['https://other.test/*']);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('deleting from the provider list supports cancellation and a failed-save retry', async () => {
+  const { page, errors } = await openPage('options');
+  const remove = page.getByRole('button', { name: 'Delete Test provider', exact: true });
+  await remove.click();
+  await page.locator('#confirmCancel').click();
+  assert.equal(await page.locator('.provider-item').count(), 1);
+  await page.evaluate(() => { window.__failSave = true; });
+  await remove.click();
+  await page.locator('#confirmAccept').click();
+  await page.waitForFunction(() => document.querySelector('#notifications').textContent.includes('not deleted'));
+  assert.equal(await remove.isEnabled(), true);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.providers.length), 1);
+  await page.evaluate(() => { window.__failSave = false; });
+  await remove.click();
+  await page.locator('#confirmAccept').click();
+  await page.waitForFunction(() => window.__storage.sync.config.providers.length === 0);
+  assert.equal(await page.locator('#providerModal').evaluate((node) => node.open), false);
+  assert.equal(await page.locator('.provider-item').count(), 0);
   assert.deepEqual(errors, []);
   await page.close();
 });

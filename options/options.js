@@ -363,7 +363,8 @@ function createProviderElement(provider) {
   info.append(name, details, models, createAccessNotice(provider));
   const actions = createItemActions(
     () => openProviderModal(provider),
-    provider.name
+    provider.name,
+    () => handleDeleteProvider(provider.id)
   );
   item.append(info, actions);
   return item;
@@ -403,15 +404,24 @@ function releaseProviderAccess(baseUrl, remaining) {
     .catch((error) => console.error('Releasing provider access:', error));
 }
 
-function createItemActions(edit, name) {
+function createItemActions(edit, name, remove = null) {
   const actions = document.createElement('div');
   actions.className = 'provider-actions';
-  const button = document.createElement('button');
-  button.className = 'btn-edit';
-  button.textContent = 'Edit';
-  button.setAttribute('aria-label', `Edit ${name}`);
-  button.addEventListener('click', edit);
-  actions.appendChild(button);
+  [
+    ['Edit', 'pen', 'btn-edit', edit],
+    ['Delete', 'trash-alt', 'btn-remove', remove]
+  ].forEach(([label, icon, className, handler]) => {
+    if (!handler) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    const text = document.createElement('span');
+    text.textContent = label;
+    button.append(createIcon(icon), text);
+    button.setAttribute('aria-label', `${label} ${name}`);
+    button.addEventListener('click', handler);
+    actions.appendChild(button);
+  });
   return actions;
 }
 
@@ -576,6 +586,7 @@ function normalizeBaseUrl(url) {
 }
 
 function openProviderModal(provider = null) {
+  if (dialogBusy) return;
   editingProviderId = provider?.id || null;
   document.getElementById('providerModalTitle').textContent = provider
     ? 'Edit provider'
@@ -874,26 +885,38 @@ async function deleteProvider(id) {
   const candidate = structuredClone(config);
   candidate.providers = candidate.providers.filter((item) => item.id !== id);
   repairSelection(candidate);
-  setDialogBusy(elements.providerModal, true, 'Deleting…');
+  const inDialog = elements.providerModal.open;
+  if (inDialog) setDialogBusy(elements.providerModal, true, 'Deleting…');
+  else {
+    dialogBusy = true;
+    elements.providersList.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+  }
   try {
     if (await saveConfig(candidate)) {
       releaseProviderAccess(provider.baseUrl, candidate.providers);
       renderProviders();
       return true;
     }
-    showDialogError(elements.providerModal, 'Provider was not deleted. Try again.');
+    if (inDialog) showDialogError(elements.providerModal, 'Provider was not deleted. Try again.');
+    else showNotification('Provider was not deleted. Try again.', 'error');
   } finally {
-    setDialogBusy(elements.providerModal, false);
+    if (inDialog) setDialogBusy(elements.providerModal, false);
+    else {
+      dialogBusy = false;
+      elements.providersList.querySelectorAll('button').forEach((button) => { button.disabled = false; });
+    }
   }
 }
 
-async function handleDeleteProvider() {
+async function handleDeleteProvider(id) {
   if (dialogBusy) return;
+  const providerId = typeof id === 'string' ? id : editingProviderId;
   try {
-    if (await deleteProvider(editingProviderId)) closeProviderModal();
+    if (await deleteProvider(providerId) && elements.providerModal.open) closeProviderModal();
   } catch (error) {
     console.error('Deleting provider:', error);
-    showDialogError(elements.providerModal, 'Could not delete this provider. Please try again.');
+    if (elements.providerModal.open) showDialogError(elements.providerModal, 'Could not delete this provider. Please try again.');
+    else showNotification('Could not delete this provider. Please try again.', 'error');
   }
 }
 
