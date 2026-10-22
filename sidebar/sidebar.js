@@ -47,6 +47,8 @@ const state = {
 // Message element cache
 const messageElementCache = new Map();
 const elementMessages = new WeakMap();
+const modelDividers = new WeakMap();
+let latestAssistantElement = null;
 
 // Simplified markdown cache with automatic size control
 const markdownCache = new Map();
@@ -56,7 +58,14 @@ let markdownCacheChars = 0;
 const renderedMarkdown = new WeakMap();
 let generationStatusTimer = null;
 const sessionSearchCache = new Map();
+const MAX_SESSION_SEARCH_CACHE_SIZE = 500;
+const MAX_SESSION_SEARCH_CACHE_CHARS = 1000000;
+let sessionSearchCacheChars = 0;
 let historySearchTimer = null;
+const HISTORY_PAGE_SIZE = 50;
+let historyVisibleCount = HISTORY_PAGE_SIZE;
+let historyLastQuery = '';
+let historyRenderVersion = 0;
 
 // ----------------------------------------
 // Throttled streaming updates
@@ -64,18 +73,20 @@ let historySearchTimer = null;
 // A stream can deliver dozens of deltas per second and each repaint re-parses
 // the whole message. Coalesce them into one repaint per interval instead.
 const STREAM_RENDER_INTERVAL = 60;
+const MAX_STREAM_RENDER_INTERVAL = 240;
 const pendingDisplayUpdates = new Set();
 let streamRenderTimer = null;
+let streamRenderCost = 0;
 
 function scheduleMessageDisplay(messageId) {
-  sessionSearchCache.delete(state.currentSessionId);
+  invalidateSessionSearch(state.currentSessionId);
   pendingDisplayUpdates.add(messageId);
   if (streamRenderTimer !== null) return;
 
   streamRenderTimer = setTimeout(() => {
     streamRenderTimer = null;
     flushMessageDisplays();
-  }, STREAM_RENDER_INTERVAL);
+  }, Math.max(STREAM_RENDER_INTERVAL, Math.min(MAX_STREAM_RENDER_INTERVAL, streamRenderCost * 4)));
 }
 
 function flushMessageDisplays() {
@@ -88,20 +99,24 @@ function flushMessageDisplays() {
 
   const ids = [...pendingDisplayUpdates];
   pendingDisplayUpdates.clear();
+  const started = performance.now();
   ids.forEach((id) => updateMessageDisplay(id));
+  streamRenderCost = performance.now() - started;
 }
 
 // Simple cache cleanup
 function clearOldCacheEntries() {
   // Clean message cache for non-current sessions
   if (state.currentSessionId && state.sessions[state.currentSessionId]) {
-    const currentMessages = new Set(
-      state.sessions[state.currentSessionId].messages.map((m) => m.id)
+    const currentMessages = new Map(
+      state.sessions[state.currentSessionId].messages.map((message) => [message.id, message])
     );
 
-    for (const [messageId] of messageElementCache) {
-      if (!currentMessages.has(messageId)) {
+    for (const [messageId, element] of messageElementCache) {
+      if (currentMessages.get(messageId) !== elementMessages.get(element)) {
         messageElementCache.delete(messageId);
+        pendingDisplayUpdates.delete(messageId);
+        deferredDisplays.delete(messageId);
       }
     }
   }
@@ -302,10 +317,7 @@ async function loadFromStorage() {
     showNotification('Could not load settings. Reload SideMind to try again.');
   }
   try {
-    const localResult = await withStorageLock(async () => {
-      await writeLocalChanges(true, { scanAll: true });
-      return chrome.storage.local.get(null);
-    });
+    const localResult = await withStorageLock(() => writeLocalChanges(true, { scanAll: true }));
     const revs = {};
     Object.entries(localResult).forEach(([key, entry]) => {
       if (!key.startsWith(SESSION_PREFIX)) return;
@@ -381,6 +393,8 @@ function retryStorageSave() {
 // follow each other (`handleStoredChanges`), so such overlaps are rare. Drafts
 // and the selected chat are last writer wins.
 let savedSessions = {};
+let savedSessionRefs = {};
+const dirtySessionIds = new Set();
 let savedRevs = {};
 let savedDrafts = {};
 let savedCurrentSessionId = null;
@@ -396,9 +410,17 @@ const LEGACY_BACKUP_KEY = 'backup:sessions-v1';
 
 function rememberSaved(sessions, revs, drafts, currentSessionId) {
   savedSessions = Object.fromEntries(Object.entries(sessions).map(([id, s]) => [id, JSON.stringify(s)]));
+  savedSessionRefs = { ...sessions };
+  dirtySessionIds.clear();
   savedRevs = { ...revs };
   savedDrafts = { ...drafts };
   savedCurrentSessionId = currentSessionId;
+}
+
+function markSessionDirty(sessionId = state.currentSessionId) {
+  if (!sessionId) return;
+  dirtySessionIds.add(sessionId);
+  invalidateSessionSearch(sessionId);
 }
 
 function withStorageLock(task) {
@@ -412,8 +434,16 @@ function collectChanges(includeSessions) {
   const nextDrafts = { ...state.drafts };
   if (includeSessions) {
     Object.entries(state.sessions).forEach(([id, session]) => {
+      // Only the visible chat can be edited without an explicit mutation
+      // marker. New/replaced chats and marked background edits are also read.
+      // Before a chat is selected, retain the full diff used during recovery.
+      if (state.currentSessionId && id !== state.currentSessionId &&
+          !dirtySessionIds.has(id) && savedSessionRefs[id] === session) return;
       const json = JSON.stringify(session);
-      if (savedSessions[id] === json) return;
+      if (savedSessions[id] === json) {
+        dirtySessionIds.delete(id);
+        return;
+      }
       snapshots[id] = json;
       changes.sessions[id] = { base: savedSessions[id] ?? null, baseRev: savedRevs[id], mine: JSON.parse(json) };
     });
@@ -601,6 +631,8 @@ function replaceSessionContent(live, next) {
     const existing = known.get(message.id);
     if (!existing) return message;
     if (!sameValue(existing, message)) {
+      const element = messageElementCache.get(message.id);
+      if (element && elementMessages.get(element) === existing) messageElementCache.delete(message.id);
       Object.keys(existing).forEach((key) => delete existing[key]);
       Object.assign(existing, message);
     }
@@ -618,8 +650,10 @@ function adoptStored(id, entry) {
   if (live) replaceSessionContent(live, entry.session);
   else state.sessions[id] = entry.session;
   savedSessions[id] = JSON.stringify(state.sessions[id]);
+  savedSessionRefs[id] = state.sessions[id];
   savedRevs[id] = entry.rev;
-  sessionSearchCache.clear();
+  dirtySessionIds.delete(id);
+  invalidateSessionSearch(id);
   if (current) renderMessages();
   if (elements.chatHistoryDropdown?.open) renderChatHistory();
   return true;
@@ -638,14 +672,19 @@ function settleSaved(changes, snapshots, sessions) {
     const live = state.sessions[id];
     if (sameValue(entry.session, mine) || !live) {
       savedSessions[id] = snapshots[id];
+      savedSessionRefs[id] = live;
       savedRevs[id] = entry.rev;
+      if (!live || JSON.stringify(live) === snapshots[id]) dirtySessionIds.delete(id);
+      else dirtySessionIds.add(id);
     } else if (JSON.stringify(live) !== snapshots[id] || !adoptStored(id, entry)) {
       resave = true;
     }
   });
   Object.keys(changes.removed).forEach((id) => {
     delete savedSessions[id];
+    delete savedSessionRefs[id];
     delete savedRevs[id];
+    dirtySessionIds.delete(id);
   });
   if (resave) debouncedSave();
 }
@@ -654,6 +693,7 @@ function settleSaved(changes, snapshots, sessions) {
 // was removed). Chats this page has unsaved changes in are left for the merge
 // of its next save.
 function followStoredSession(id, entry) {
+  if (entry && entry.rev === savedRevs[id]) return;
   const live = state.sessions[id];
   const unsaved = live && JSON.stringify(live) !== savedSessions[id];
   if (!entry) {
@@ -661,13 +701,14 @@ function followStoredSession(id, entry) {
     if (live && !unsaved && id !== state.currentSessionId) {
       delete state.sessions[id];
       delete savedSessions[id];
+      delete savedSessionRefs[id];
       delete savedRevs[id];
-      sessionSearchCache.clear();
+      dirtySessionIds.delete(id);
+      invalidateSessionSearch(id);
       if (elements.chatHistoryDropdown?.open) renderChatHistory();
     }
     return;
   }
-  if (entry.rev === savedRevs[id]) return; // already in step, e.g. this page's own write
   if (unsaved || (id in savedSessions && !live)) return; // merged when this page saves
   adoptStored(id, entry);
 }
@@ -766,6 +807,15 @@ async function writeLocalChanges(includeSessions, { scanAll = false } = {}) {
   }
   const leftovers = [...pending, ...(legacyTable ? ['sessions'] : [])];
   if (leftovers.length || staleMarks) await chrome.storage.local.remove([...leftovers, 'appliedPending']);
+  // Reuse the recovered tables on startup instead of reading every transcript
+  // (and the legacy backup) a second time while still holding the lock.
+  if (scanAll) {
+    return {
+      drafts: own.drafts,
+      currentSessionId: selected,
+      ...Object.fromEntries(Object.entries(own.sessions).map(([id, entry]) => [SESSION_PREFIX + id, entry]))
+    };
+  }
 }
 
 // A closing page cannot wait for the lock or a read, and must not rewrite the
@@ -828,16 +878,16 @@ function queueLocalSave(includeSessions, scanAll = false) {
   return storageWriteQueue;
 }
 
-function saveToStorage() {
+function saveToStorage(sessionId = state.currentSessionId) {
   clearTimeout(saveTimeout);
-  sessionSearchCache.clear();
+  markSessionDirty(sessionId);
   return queueLocalSave(true);
 }
 
 // Debounced save
 let saveTimeout = null;
 function debouncedSave() {
-  sessionSearchCache.clear();
+  markSessionDirty();
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => saveToStorage(), 1000);
 }
@@ -1019,6 +1069,7 @@ function isBlankSession(sessionId) {
 
 // Makes `sessionId` the visible chat. Callers stop any running stream first.
 function activateSession(sessionId) {
+  markSessionDirty();
   if (sessionId !== state.currentSessionId && isBlankSession(state.currentSessionId)) {
     delete state.sessions[state.currentSessionId];
   }
@@ -1080,6 +1131,7 @@ async function deleteSession(sessionId) {
   removed.messages?.forEach((msg) => messageElementCache.delete(msg.id));
   delete state.sessions[sessionId];
   delete state.drafts[sessionId];
+  invalidateSessionSearch(sessionId);
 
   // Switch to the most recent remaining chat, or start a new one
   if (wasCurrent) {
@@ -1097,7 +1149,7 @@ async function deleteSession(sessionId) {
     if (removedDraft) state.drafts[sessionId] = removedDraft;
     // Deleting the open chat moved away from it; undoing moves back.
     if (wasCurrent) activateSession(sessionId);
-    else saveToStorage();
+    else saveToStorage(sessionId);
     if (elements.chatHistoryDropdown.open) renderChatHistory();
   });
 
@@ -1153,9 +1205,12 @@ function renderMessages() {
   // Every caller either replaces the transcript or appends to it; neither is a
   // state an open editor should survive
   cancelEditing(false);
+  clearOldCacheEntries();
 
   const session = state.sessions[state.currentSessionId];
   if (!session || session.messages.length === 0) {
+    elements.messagesList.replaceChildren();
+    latestAssistantElement = null;
     showWelcomeMessage();
     return;
   }
@@ -1163,21 +1218,11 @@ function renderMessages() {
   hideWelcomeMessage();
 
   const previousScroll = elements.messagesList.scrollTop;
-  const fragment = document.createDocumentFragment();
+  const children = [];
   let lastModel = null;
   const latestAssistant = session.messages.findLast((message) => message.role === 'assistant');
 
   session.messages.forEach((message) => {
-    // Mark where the conversation changed model, so a mixed transcript can be
-    // read for what it is
-    if (message.role === 'assistant' && message.modelUsed) {
-      if (lastModel && message.modelUsed !== lastModel) {
-        const divider = createModelDivider(message.modelUsed);
-        if (divider) fragment.appendChild(divider);
-      }
-      lastModel = message.modelUsed;
-    }
-
     let messageElement = messageElementCache.get(message.id);
 
     // Ids are only unique within a chat (another chat can hold a message with
@@ -1188,13 +1233,72 @@ function renderMessages() {
       messageElementCache.set(message.id, messageElement);
     }
 
-    messageElement.classList.toggle('latest', message.id === latestAssistant?.id);
-    fragment.appendChild(messageElement);
+    // Keep unchanged messages and model dividers attached. Moving the entire
+    // transcript through a fragment invalidates layout even when it is cached.
+    if (message.role === 'assistant' && message.modelUsed) {
+      if (lastModel && message.modelUsed !== lastModel) {
+        let divider = modelDividers.get(messageElement);
+        if (!divider) {
+          divider = createModelDivider(message.modelUsed);
+          if (divider) modelDividers.set(messageElement, divider);
+        }
+        if (divider) children.push(divider);
+      }
+      lastModel = message.modelUsed;
+    }
+    children.push(messageElement);
   });
 
-  elements.messagesList.replaceChildren(fragment);
-  elements.messagesList.scrollTop = previousScroll;
-  scrollToBottom();
+  const latest = messageElementCache.get(latestAssistant?.id) || null;
+  if (latest !== latestAssistantElement) {
+    latestAssistantElement?.classList.remove('latest');
+    latest?.classList.add('latest');
+    latestAssistantElement = latest;
+  }
+
+  if (reconcileChildren(elements.messagesList, children)) {
+    elements.messagesList.scrollTop = previousScroll;
+    scrollToBottom();
+  }
+}
+
+// Preserve attached nodes wherever possible, including when only the tail of
+// a streamed Markdown document changes. New trailing nodes attach in one batch.
+function reconcileChildren(container, children) {
+  let cursor = container.firstChild;
+  let changed = false;
+  const retained = new Set(children);
+  for (let i = 0; i < children.length; i += 1) {
+    const child = children[i];
+    // Remove obsolete siblings before inserting a replacement. Otherwise all
+    // later retained blocks would be moved ahead of the obsolete node, which
+    // resets scroll positions and focus even though their identity survives.
+    while (cursor && cursor !== child && !retained.has(cursor)) {
+      const next = cursor.nextSibling;
+      cursor.remove();
+      cursor = next;
+      changed = true;
+    }
+    if (child === cursor) {
+      cursor = cursor.nextSibling;
+    } else if (cursor) {
+      container.insertBefore(child, cursor);
+      changed = true;
+    } else {
+      const fragment = document.createDocumentFragment();
+      children.slice(i).forEach((node) => fragment.appendChild(node));
+      container.appendChild(fragment);
+      changed = true;
+      break;
+    }
+  }
+  while (cursor) {
+    const next = cursor.nextSibling;
+    cursor.remove();
+    cursor = next;
+    changed = true;
+  }
+  return changed;
 }
 
 // `system` is how failures are surfaced in the transcript - it used to borrow
@@ -1875,7 +1979,7 @@ function renderMarkdown(text, cache = true) {
 
 // Keep provider-generated markup inside the transcript: no forms, autofocus,
 // style overrides or executable URLs can become part of the surrounding UI.
-function sanitizeMarkdown(html) {
+function sanitizeMarkdown(html, asFragment = false) {
   const template = document.createElement('template');
   template.innerHTML = html;
   const allowedTags = new Set([
@@ -1957,7 +2061,7 @@ function sanitizeMarkdown(html) {
       node.removeAttribute('src');
     }
   });
-  return template.innerHTML;
+  return asFragment ? template.content : template.innerHTML;
 }
 
 const deferredDisplays = new Set();
@@ -1967,6 +2071,33 @@ const deferredDisplays = new Set();
 function renderMessageMarkdown(container, text, finished) {
   const previous = renderedMarkdown.get(container);
   if (previous?.text === text && previous.finished === finished) return;
+  if (previous?.text === text && finished) {
+    // The last streamed frame is already sanitized. Add final controls without
+    // parsing it again or resetting table scroll positions and loaded images.
+    decorateMarkdown(container, true);
+    renderedMarkdown.set(container, { text, finished });
+    return;
+  }
+  if (!finished) {
+    try {
+      // Parse the complete source so references, lists and incomplete fences
+      // keep standard Markdown semantics. Only replace changed top-level
+      // blocks, and avoid serializing/reparsing the sanitized DOM every frame.
+      const fragment = sanitizeMarkdown(marked.parse(text), true);
+      const blocks = Array.from(fragment.childNodes, (node) => node.nodeType === 1 ? node.outerHTML : node.textContent);
+      decorateMarkdown(fragment, false);
+      const children = Array.from(fragment.childNodes);
+      const existing = container.childNodes;
+      blocks.forEach((block, index) => {
+        if (previous?.blocks?.[index] === block && existing[index]) children[index] = existing[index];
+      });
+      reconcileChildren(container, children);
+      renderedMarkdown.set(container, { text, finished, blocks });
+      return;
+    } catch (error) {
+      console.error('Streaming markdown error:', error);
+    }
+  }
   container.innerHTML = renderMarkdown(text, finished);
   decorateMarkdown(container, finished);
   renderedMarkdown.set(container, { text, finished });
@@ -1980,7 +2111,7 @@ function resumeSelectedDisplays() {
 
 function decorateMarkdown(container, finished = true) {
   container.querySelectorAll('table').forEach((table) => {
-    if (table.parentElement.classList.contains('table-scroll')) return;
+    if (table.parentElement?.classList.contains('table-scroll')) return;
     const wrapper = document.createElement('div');
     wrapper.className = 'table-scroll';
     wrapper.tabIndex = 0;
@@ -2278,11 +2409,14 @@ function updateScrollButton() {
   button.querySelector('span').textContent = state.isStreaming ? 'Follow response' : 'View latest';
 }
 
+let textareaResizeFrame = null;
+
 function autoResizeTextarea() {
   const textarea = elements.messageInput;
-  if (!textarea) return;
+  if (!textarea || textareaResizeFrame !== null) return;
 
-  requestAnimationFrame(() => {
+  textareaResizeFrame = requestAnimationFrame(() => {
+    textareaResizeFrame = null;
     textarea.style.height = 'auto';
     const newHeight = Math.min(
       Math.max(textarea.scrollHeight + 2, 62),
@@ -2645,12 +2779,16 @@ function openChatHistory() {
   closeModelPicker(false);
   clearTimeout(historySearchTimer);
   elements.historySearch.value = '';
+  historyVisibleCount = HISTORY_PAGE_SIZE;
   renderChatHistory();
   elements.chatHistoryDropdown.showModal();
   elements.historySearch.focus();
 }
 
 function closeChatHistory() {
+  clearTimeout(historySearchTimer);
+  historyRenderVersion += 1;
+  elements.chatHistoryList.setAttribute('aria-busy', 'false');
   elements.chatHistoryDropdown.close();
 }
 
@@ -2705,45 +2843,75 @@ function describeModel(modelUsed) {
 function updateSessionTitle() {
   const session = state.sessions[state.currentSessionId];
   const title = session?.title || 'New Chat';
-  elements.sessionTitle.textContent = session?.messages.length ? title : 'SideMind';
+  const visibleTitle = session?.messages.length ? title : 'SideMind';
+  if (elements.sessionTitle.textContent !== visibleTitle) elements.sessionTitle.textContent = visibleTitle;
   elements.sessionTitle.title = title;
-  document.title = `${title} · SideMind`;
+  const pageTitle = `${title} · SideMind`;
+  if (document.title !== pageTitle) document.title = pageTitle;
 }
 
 function scheduleHistorySearch() {
   clearTimeout(historySearchTimer);
+  historyRenderVersion += 1;
   historySearchTimer = setTimeout(renderChatHistory, 150);
 }
 
-function sessionSearchText(id) {
-  if (!sessionSearchCache.has(id)) {
-    const session = state.sessions[id];
-    sessionSearchCache.set(id, `${session.title} ${session.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase());
-  }
-  return sessionSearchCache.get(id);
+function invalidateSessionSearch(id) {
+  const text = sessionSearchCache.get(id);
+  if (text !== undefined) sessionSearchCacheChars -= text.length;
+  sessionSearchCache.delete(id);
 }
 
-function renderChatHistory() {
-  elements.chatHistoryList.replaceChildren();
+function sessionSearchText(id) {
+  if (sessionSearchCache.has(id)) return sessionSearchCache.get(id);
+  const session = state.sessions[id];
+  const text = `${session.title} ${session.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase();
+  if (text.length <= MAX_SESSION_SEARCH_CACHE_CHARS / 4) {
+    while (sessionSearchCache.size >= MAX_SESSION_SEARCH_CACHE_SIZE || sessionSearchCacheChars + text.length > MAX_SESSION_SEARCH_CACHE_CHARS) {
+      invalidateSessionSearch(sessionSearchCache.keys().next().value);
+    }
+    sessionSearchCache.set(id, text);
+    sessionSearchCacheChars += text.length;
+  }
+  return text;
+}
+
+async function renderChatHistory() {
+  const version = ++historyRenderVersion;
   const query = elements.historySearch.value.trim().toLocaleLowerCase();
-  const sessionIds = Object.keys(state.sessions)
-    // Blank chats left behind by older versions are not worth a row
-    .filter((id) => id === state.currentSessionId || !isBlankSession(id))
-    .filter((id) => !query || sessionSearchText(id).includes(query))
-    .sort((a, b) => new Date(state.sessions[b].timestamp) - new Date(state.sessions[a].timestamp));
+  if (query !== historyLastQuery) historyVisibleCount = HISTORY_PAGE_SIZE;
+  historyLastQuery = query;
+  const sessionIds = [];
+  const candidates = Object.keys(state.sessions);
+  elements.chatHistoryList.setAttribute('aria-busy', 'true');
+  let sliceStarted = performance.now();
+  for (const id of candidates) {
+    if (query && performance.now() - sliceStarted >= 8) {
+      // Large body searches yield to typing, scrolling and stream consumption.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (version !== historyRenderVersion) return;
+      sliceStarted = performance.now();
+    }
+    if (!state.sessions[id] || (id !== state.currentSessionId && isBlankSession(id))) continue;
+    if (!query || sessionSearchText(id).includes(query)) sessionIds.push(id);
+  }
+  const timestamps = new Map(sessionIds.map((id) => [id, Date.parse(state.sessions[id].timestamp)]));
+  sessionIds.sort((a, b) => timestamps.get(b) - timestamps.get(a));
+  const fragment = document.createDocumentFragment();
   if (!sessionIds.length) {
     const empty = document.createElement('p');
     empty.className = 'chat-history-empty';
     empty.textContent = query
       ? 'No matching conversations. Try another search.'
       : 'Your conversations will appear here.';
-    elements.chatHistoryList.appendChild(empty);
+    elements.chatHistoryList.replaceChildren(empty);
+    elements.chatHistoryList.setAttribute('aria-busy', 'false');
     return;
   }
   let lastGroup = '';
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  sessionIds.forEach((sessionId) => {
+  sessionIds.slice(0, historyVisibleCount).forEach((sessionId) => {
     const session = state.sessions[sessionId];
     const date = new Date(session.timestamp);
     const days = Math.floor((today - date) / 86400000);
@@ -2753,7 +2921,7 @@ function renderChatHistory() {
       const heading = document.createElement('h4');
       heading.className = 'history-group';
       heading.textContent = group;
-      elements.chatHistoryList.appendChild(heading);
+      fragment.appendChild(heading);
       lastGroup = group;
     }
     const item = document.createElement('div');
@@ -2786,8 +2954,25 @@ function renderChatHistory() {
       actions.appendChild(button);
     });
     item.append(content, actions);
-    elements.chatHistoryList.appendChild(item);
+    fragment.appendChild(item);
   });
+  if (sessionIds.length > historyVisibleCount) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'history-load-more btn btn-secondary';
+    more.textContent = 'Show more conversations';
+    more.addEventListener('click', loadMoreChatHistory);
+    fragment.appendChild(more);
+  }
+  elements.chatHistoryList.replaceChildren(fragment);
+  elements.chatHistoryList.setAttribute('aria-busy', 'false');
+}
+
+async function loadMoreChatHistory() {
+  const previousCount = historyVisibleCount;
+  historyVisibleCount += HISTORY_PAGE_SIZE;
+  await renderChatHistory();
+  elements.chatHistoryList.querySelectorAll('.chat-history-content')[previousCount]?.focus({ preventScroll: true });
 }
 
 function renameSession(sessionId, item) {
@@ -2816,7 +3001,7 @@ function renameSession(sessionId, item) {
       if (!cancelled && input.value.trim()) {
         session.title = input.value.trim();
         updateSessionTitle();
-        saveToStorage();
+        saveToStorage(sessionId);
       }
       renderChatHistory();
       elements.historySearch.focus();
@@ -2877,6 +3062,7 @@ async function sendMessageToAPI() {
   state.userScrolledUp = false;
   state.abortController = new AbortController();
   state.isStreaming = true;
+  streamRenderCost = 0;
   updateInputState();
 
   // Create assistant message
@@ -3002,11 +3188,7 @@ async function streamResponse(provider, assistantMessage, signal) {
     watchdog.dispose();
   }
 
-  // Final processing
-  pendingDisplayUpdates.delete(assistantMessage.id);
-  flushMessageDisplays();
-  processThinkTags(assistantMessage);
-  updateMessageDisplay(assistantMessage.id);
+  // cleanupStreaming finalizes both successful and interrupted responses once.
 }
 
 const REQUEST_TIMEOUT_MS = 120000;
@@ -3396,7 +3578,7 @@ function lexCodeRanges(text) {
 }
 
 function processThinkTags(message) {
-  if (!message.content) return;
+  if (!message.content || !/<think(?:ing)?>/.test(message.content)) return;
 
   const text = message.content;
   let ranges;

@@ -1125,9 +1125,9 @@ browserTest('folded reasoning skips parsing and catches up immediately on expans
   const { page, errors } = await openPage();
   await startResponse(page);
   await page.evaluate(() => {
-    const parse = renderMarkdown;
+    const parse = marked.parse;
     window.__parseCalls = 0;
-    renderMarkdown = (...args) => { window.__parseCalls++; return parse(...args); };
+    window.marked = { ...marked, parse: (...args) => { window.__parseCalls++; return parse(...args); } };
     for (let i = 0; i < 30; i++) {
       state.currentStreamingMessage.reasoning = `**Reasoning ${i}**\n\n` + 'Detailed explanation. '.repeat(4000);
       updateMessageDisplay(state.currentStreamingMessage.id);
@@ -2024,3 +2024,166 @@ browserTest('deleting from the provider list supports cancellation and a failed-
   assert.deepEqual(errors, []);
   await page.close();
 });
+
+browserTest('appending messages preserves attached transcript nodes and regeneration releases discarded nodes', async () => {
+  const { page, errors } = await openPage();
+  await startResponse(page);
+  await delta(page, 'The original answer.');
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.isStreaming);
+  const unchanged = await page.evaluate(() => {
+    const list = elements.messagesList;
+    const observer = new MutationObserver(() => {});
+    observer.observe(list, { childList: true });
+    renderMessages();
+    const count = observer.takeRecords().length;
+    observer.disconnect();
+    window.__firstQuestion = list.firstElementChild;
+    return count;
+  });
+  assert.equal(unchanged, 0, 'rendering unchanged messages does not detach them');
+  for (let i = 0; i < 4; i++) {
+    await page.locator('.message.assistant .regenerate-btn').click();
+    await page.waitForFunction(() => state.isStreaming);
+    await delta(page, `Replacement ${i}.`);
+    await page.evaluate(() => window.__stream.complete());
+    await page.waitForFunction(() => !state.isStreaming);
+    assert.deepEqual(await page.evaluate(() => ({
+      cache: messageElementCache.size,
+      messages: state.sessions[state.currentSessionId].messages.length,
+      detached: [...messageElementCache.values()].filter((node) => !node.isConnected).length,
+      sameQuestion: elements.messagesList.firstElementChild === window.__firstQuestion
+    })), { cache: 2, messages: 2, detached: 0, sameQuestion: true });
+  }
+  await page.locator('#undoBtn').click();
+  await page.waitForFunction(() => document.querySelector('.message.assistant .message-content').textContent.trim() === 'Replacement 2.');
+  assert.equal(await page.evaluate(() => messageElementCache.size), 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('streaming preserves completed Markdown blocks and applies late reference definitions', async () => {
+  const { page, errors } = await openPage();
+  await page.route('https://images.example.test/**', (route) => route.fulfill({
+    contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>'
+  }));
+  await startResponse(page);
+  await page.evaluate(() => window.__stream.delta('Stable paragraph.\n\n[Reference][target]\n\n| Left | Right |\n| - | - |\n| a | b |\n\n![Example](https://images.example.test/preview.svg)\n\n```javascript\nconst value = 1;'));
+  await page.waitForFunction(() => document.querySelector('.message.assistant pre code')?.textContent.includes('const value = 1;'));
+  await page.locator('.message-content .remote-image-btn').click();
+  await page.evaluate(() => {
+    const content = document.querySelector('.message.assistant .message-content');
+    window.__stableParagraph = content.firstElementChild;
+    window.__loadedImage = content.querySelector('img[src]');
+    window.__table = content.querySelector('.table-scroll');
+    window.__table.querySelector('table').style.width = '1000px';
+    window.__table.scrollLeft = 120;
+  });
+  await page.evaluate(() => window.__stream.delta('\n```\n\n[target]: https://example.com/late\n\nA final paragraph.'));
+  await page.waitForFunction(() => document.querySelector('.message.assistant a')?.href === 'https://example.com/late');
+  assert.equal(await page.evaluate(() => document.querySelector('.message.assistant .message-content').firstElementChild === window.__stableParagraph), true);
+  assert.equal(await page.locator('.message.assistant pre').count(), 1);
+  assert.deepEqual(await page.evaluate(() => ({
+    sameImage: document.querySelector('.message-content img[src]') === window.__loadedImage,
+    sameTable: document.querySelector('.table-scroll') === window.__table,
+    scrollLeft: window.__table.scrollLeft
+  })), { sameImage: true, sameTable: true, scrollLeft: 120 });
+  await page.evaluate(() => {
+    const parse = marked.parse;
+    window.__finalParseCalls = 0;
+    window.marked = { ...marked, parse: (...args) => { window.__finalParseCalls++; return parse(...args); } };
+    window.__stream.complete();
+  });
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.evaluate(() => window.__finalParseCalls), 0, 'finishing unchanged Markdown does not parse it again');
+  assert.equal(await page.evaluate(() => document.querySelector('.message.assistant .message-content').firstElementChild === window.__stableParagraph), true);
+  assert.equal(await page.locator('.message.assistant .code-copy-btn').count(), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('history pages remain searchable and renaming an inactive chat persists without evicting other search entries', async () => {
+  const timestamp = new Date().toISOString();
+  const sessions = Object.fromEntries(Array.from({ length: 125 }, (_, i) => [`h${i}`, {
+    title: `Conversation ${i}`, timestamp, messages: [{ id: `q${i}`, role: 'user', content: i === 124 ? 'A rare pineapple.' : 'An ordinary question.', timestamp }]
+  }]));
+  const { page, errors } = await openPage('sidebar', fixtureConfig, { sessions, currentSessionId: 'h0' });
+  await page.locator('#chatHistoryBtn').click();
+  assert.equal(await page.locator('.chat-history-item').count(), 50);
+  await page.getByRole('button', { name: 'Show more conversations' }).click();
+  assert.equal(await page.locator('.chat-history-item').count(), 100);
+  await page.locator('#historySearch').fill('pineapple');
+  await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
+  assert.match(await page.locator('.chat-history-title').textContent(), /124/);
+  await page.evaluate(() => sessionSearchText('h1'));
+  await page.getByRole('button', { name: 'Rename chat' }).click();
+  await page.locator('.history-rename-input').fill('Renamed conversation');
+  await page.locator('.history-rename-input').press('Enter');
+  await page.evaluate(() => storageWriteQueue);
+  assert.equal(await page.evaluate(() => window.__storage.local['session:h124'].session.title), 'Renamed conversation');
+  assert.equal(await page.evaluate(() => sessionSearchCache.has('h1')), true);
+  await page.locator('#historySearch').fill('renamed conversation');
+  await page.waitForFunction(() => document.querySelector('.chat-history-title')?.textContent === 'Renamed conversation');
+  assert.equal(await page.locator('.chat-history-item').count(), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+// Opt-in measurements, without timing assertions that depend on the host CPU.
+if (process.env.SIDEMIND_BENCHMARK) {
+  browserTest('sidebar performance benchmark', async (t) => {
+    const { page, errors } = await openPage();
+    await startResponse(page);
+    const report = await page.evaluate(async () => {
+      const measure = (run, count = 7) => {
+        run();
+        const samples = Array.from({ length: count }, () => {
+          const started = performance.now();
+          run();
+          return performance.now() - started;
+        }).sort((a, b) => a - b);
+        return +samples[Math.floor(samples.length / 2)].toFixed(2);
+      };
+      const paragraph = '### Example\n\nA paragraph with **bold text**, `inline code`, and a [link](https://example.com).\n\n- First point\n- Second point\n\n';
+      const message = state.currentStreamingMessage;
+      const results = { userAgent: navigator.userAgent, streamRender: [], storageDiff: [], history: [], conversation: [] };
+      for (const chars of [10000, 50000, 100000]) {
+        const text = paragraph.repeat(Math.ceil(chars / paragraph.length)).slice(0, chars);
+        let suffix = 0;
+        const medianMs = measure(() => {
+          message.content = text + (++suffix);
+          updateMessageDisplay(message.id);
+        });
+        results.streamRender.push({ chars, medianMs });
+      }
+      await handleStopGeneration();
+      await storageWriteQueue;
+      for (const count of [10, 100, 500]) {
+        const content = 'Historical content. '.repeat(5000);
+        state.sessions = Object.fromEntries(Array.from({ length: count }, (_, i) => [`s${i}`, {
+          title: `Chat ${i}`, timestamp: new Date().toISOString(), messages: [{ id: `q${i}`, role: 'user', content }]
+        }]));
+        state.currentSessionId = 's0';
+        rememberSaved(state.sessions, {}, {}, 's0');
+        results.storageDiff.push({ count, charsPerSession: content.length, medianMs: measure(() => collectChanges(true), 5) });
+        elements.historySearch.value = '';
+        results.history.push({ count, medianMs: measure(() => renderChatHistory(), 5), rows: elements.chatHistoryList.querySelectorAll('.chat-history-item').length });
+      }
+      for (const count of [50, 200, 500]) {
+        state.sessions = { chat: { title: 'Bench', timestamp: new Date().toISOString(), messages: Array.from({ length: count }, (_, i) => ({
+          id: `m${i}`, role: i % 2 ? 'assistant' : 'user', content: paragraph.repeat(4), timestamp: new Date().toISOString()
+        })) } };
+        state.currentSessionId = 'chat';
+        messageElementCache.clear();
+        const started = performance.now();
+        renderMessages();
+        const coldMs = +(performance.now() - started).toFixed(2);
+        results.conversation.push({ count, coldMs, cachedMedianMs: measure(() => renderMessages(), 5) });
+      }
+      return results;
+    });
+    t.diagnostic(JSON.stringify(report));
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+}

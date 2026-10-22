@@ -983,6 +983,10 @@ body {
   color: var(--text-secondary);
   font-weight: 600;
 }
+.history-load-more {
+  display: block;
+  margin: 12px auto;
+}
 .chat-history-item {
   display: flex;
   align-items: center;

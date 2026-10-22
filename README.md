@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.0-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.4.1-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 
@@ -204,6 +204,19 @@ previews. These checks exercise draft preservation, stream reading, stop/retry,
 selection, history, modal focus, local save recovery, configuration size limits,
 code expansion/copy, Markdown exports, shortcuts and import previews.
 The suite uses fixture providers and makes no real AI requests.
+
+Run the optional performance measurements with the same Playwright setup:
+
+```bash
+SIDEMIND_BENCHMARK=1 \
+PLAYWRIGHT_MODULE=/tmp/sidemind-browser-tests/node_modules/playwright \
+  node --test --test-name-pattern="sidebar performance benchmark" tests/ui.test.cjs
+```
+
+The benchmark reports median main-thread work for streaming Markdown, local
+save diffing, history rows and repeated transcript rendering. It uses synthetic
+data and excludes provider latency and real storage I/O. See
+[the performance notes](docs/performance.md) for the changes and remaining limits.
 
 Build the extension package with `./build.sh`.
 

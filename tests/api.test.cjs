@@ -1112,3 +1112,42 @@ test('pages open in the last applied theme before settings load', () => {
   assert.deepEqual([...classes], []);
   assert.deepEqual(JSON.parse(store['sidemind:appearance']), { theme: 'system', fontSize: '15px' });
 });
+
+test('saving the active chat skips unchanged inactive transcripts and persists marked background edits', async () => {
+  const { store, context, data } = storageContext();
+  store.state.sessions.a = chat([msg('u1', 'active')]);
+  store.state.sessions.b = chat([msg('u2', 'background')]);
+  store.state.currentSessionId = 'a';
+  await store.writeLocalChanges(true);
+  let backgroundReads = 0;
+  let backgroundContent = 'background';
+  Object.defineProperty(store.state.sessions.b.messages[0], 'content', {
+    enumerable: true,
+    get() { backgroundReads += 1; return backgroundContent; }
+  });
+  store.state.sessions.a.messages[0].content = 'active edit';
+  await store.writeLocalChanges(true);
+  assert.equal(backgroundReads, 0, 'unchanged history is not serialized on every save');
+  assert.equal(data['session:a'].session.messages[0].content, 'active edit');
+  backgroundContent = 'background edit';
+  vm.runInContext("markSessionDirty('b');", context);
+  await store.writeLocalChanges(true);
+  assert.equal(data['session:b'].session.messages[0].content, 'background edit');
+});
+
+test('a recovered storage scan returns the tables after folding pending writes', async () => {
+  const { store, data } = storageContext({
+    'session:a': { rev: 'old', session: chat([msg('u1', 'question')]) },
+    currentSessionId: 'a',
+    'pending:closed': {
+      sessions: { a: { base: JSON.stringify(chat([msg('u1', 'question')])), baseRev: 'old', mine: chat([msg('u1', 'question'), msg('a1', 'answer')]) } },
+      removed: {}, drafts: { a: 'recovered draft' }, currentSessionId: 'a'
+    }
+  });
+  const recovered = await scan(store);
+  assert.deepEqual(plain(recovered['session:a']), data['session:a']);
+  assert.deepEqual(plain(recovered.drafts), { a: 'recovered draft' });
+  assert.equal(recovered.currentSessionId, 'a');
+  assert.equal(recovered['session:a'].session.messages[1].content, 'answer');
+  assert.deepEqual(pendingKeys(data), []);
+});
