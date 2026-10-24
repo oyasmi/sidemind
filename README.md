@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.1-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.4.2-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 
@@ -99,6 +99,48 @@ If a response reaches its output limit, SideMind keeps the partial answer and
 shows a message explaining how to increase the limit.
 See the [official OpenAI Responses API documentation](https://developers.openai.com/api/reference/responses/overview).
 
+Generation settings have three scopes: **Default for new providers → Provider → Model**.
+Choose the scope in **Settings → Conversation**. An override can inherit its parent,
+use the model default (omit the parameter), or send a custom value. `None` reasoning
+effort explicitly disables reasoning where the model supports it; it differs from
+omitting the parameter. Effort choices include `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`; availability depends on the model. Responses also supports
+the optional reasoning context setting. New defaults omit model-specific parameters.
+Upgrading preserves previous values on existing providers; **Use inherited settings**
+removes those overrides.
+
+Responses history preserves structured output, encrypted reasoning and assistant
+phases when the provider returns them. Opaque reasoning is reused only within a
+compatible provider, model and role context. Stopped or unconfirmed responses retain
+their visible text. A completed item or a third-party `[DONE]` alone does not confirm
+that a Responses request completed. Inline `<think>` parsing is an explicit provider
+compatibility option: new providers use structured text, existing Chat providers keep
+their previous behavior, and Responses defaults to preserving literal answer text.
+
+### Images and files
+
+Use the attachment button, paste an image, or drop files onto the composer. You can
+send attachments with or without text. Images support PNG, JPEG, WEBP and static GIF.
+Both APIs accept images and PDF; the selected model must support those inputs.
+Responses additionally accepts supported text/code files, Office documents,
+presentations and spreadsheets. Non-PDF documents are generally processed as text;
+convert documents to PDF when embedded images and charts matter.
+
+SideMind keeps originals in this browser's IndexedDB and references in local chat
+history and drafts. Files are sent to your selected provider only when you send a
+message, and follow-up requests can resend earlier attachments. Reloading, retrying,
+editing and undo retain the originals. Image previews and original downloads are
+available from the attachment cards. Markdown exports list attachment metadata;
+download originals separately.
+
+SideMind's initial limits are **10 attachments per message**, **10 MiB per file**,
+**20 MiB of originals across the entire request history**, and **30 MiB encoded request
+size**. These are extension limits; providers and models may impose lower limits.
+Unsupported or missing attachments stop preparation and keep your draft. Unreferenced
+originals are collected after a grace period of at least 24 hours; references,
+pending saves and active undo windows protect retained files. This release adds
+attachment inputs, without tool calling or image/file generation.
+
 - **OpenAI** - GPT-3/4/5 (Chat Completions or Responses)
 - **Anthropic Claude** - Claude family
 - **Google Gemini** - Gemini Pro models
@@ -120,7 +162,8 @@ See the [official OpenAI Responses API documentation](https://developers.openai.
 - Real-time streaming responses (Chat Completions + Responses APIs)
 - Thinking/reasoning display, including Responses API reasoning summaries, `reasoning_content` /
   `reasoning` fields, and inline `<think>` tags (shown as reasoning while they stream)
-- Configurable reasoning effort and summary detail
+- Generation settings at default, provider and model scopes; reasoning effort, summaries and context
+- Image and document inputs, original downloads, persistent attachment drafts and undo
 - Markdown rendering
 - Syntax highlighting for 36 languages, with per-block copy buttons
 - Code toolbars stay visible during horizontal scrolling; long completed blocks can expand or collapse
@@ -188,6 +231,8 @@ node --test tests/api.test.cjs tests/background.test.cjs
 The checks cover provider selection, request formats, multi-turn history, both
 response modes, SSE chunk boundaries, cancellation, request and idle timeouts,
 terminal events, output limits, and the selection context menu.
+They also cover structured Responses replay, compatible context boundaries,
+authoritative snapshots, false completion markers and generation-setting migration.
 Browser interaction checks use optional Playwright tooling installed outside the
 extension (no runtime dependencies or build step):
 
@@ -204,6 +249,10 @@ previews. These checks exercise draft preservation, stream reading, stop/retry,
 selection, history, modal focus, local save recovery, configuration size limits,
 code expansion/copy, Markdown exports, shortcuts and import previews.
 The suite uses fixture providers and makes no real AI requests.
+Attachment checks use real IndexedDB, clipboard/drop events and file inputs, including
+reload, download, edit/undo, cancelled preparation, save failure recovery and cross-page
+collection protection. The MV3 extension smoke test also restores a saved image and
+opens its preview under Chrome's extension CSP.
 
 Run the optional performance measurements with the same Playwright setup:
 

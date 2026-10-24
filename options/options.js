@@ -6,11 +6,12 @@ const DEFAULT_CONFIG = {
   selectedProvider: null,
   selectedModel: null,
   selectedSystemPrompt: 'default',
-  temperature: 0.7,
+  temperature: null,
   max_completion_tokens: '',
   stream: true,
   reasoning_effort: '',
   reasoning_summary: 'off',
+  reasoning_context: null,
   systemPrompts: [
     { id: 'default', name: 'Default', content: 'You are a helpful assistant.', isDefault: true }
   ],
@@ -18,6 +19,8 @@ const DEFAULT_CONFIG = {
 };
 let config = structuredClone(DEFAULT_CONFIG);
 let editingProviderId = null;
+const pendingParameterChanges = new Map();
+let generationScope = 'global';
 let editingPromptId = null;
 let saveTimer = null;
 let saveFeedbackTimer = null;
@@ -53,6 +56,11 @@ function cacheElements() {
     'importFile',
     'providersList',
     'promptsList',
+    'generationScope',
+    'generationScopeHelp',
+    'resetGenerationScope',
+    'reasoningContextSelector',
+    'providerThinkTags',
     'temperatureSlider',
     'temperatureValue',
     'temperatureDefaultToggle',
@@ -108,6 +116,9 @@ function setupEventListeners() {
   elements.exportBtn.addEventListener('click', exportConfig);
   elements.importBtn.addEventListener('click', () => elements.importFile.click());
   elements.importFile.addEventListener('change', importConfig);
+  elements.generationScope.addEventListener('change', handleGenerationScopeChange);
+  elements.resetGenerationScope.addEventListener('click', resetGenerationScope);
+  elements.reasoningContextSelector.addEventListener('change', updateReasoningContext);
   elements.temperatureSlider.addEventListener('input', updateTemperatureMode);
   elements.temperatureDefaultToggle.addEventListener('change', updateTemperatureMode);
   elements.maxCompletionTokensInput.addEventListener('input', updateMaxCompletionTokens);
@@ -187,16 +198,22 @@ async function loadConfig() {
   try {
     const result = await chrome.storage.sync.get(['config']);
     if (result.config) {
-      config = { ...structuredClone(DEFAULT_CONFIG), ...result.config };
+      config = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...result.config });
     } else {
       const local = await chrome.storage.local.get(['config']);
       if (local.config) {
-        config = { ...structuredClone(DEFAULT_CONFIG), ...local.config };
+        config = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...local.config });
         assertConfigFitsSync(config);
         await chrome.storage.sync.set({ config });
         await chrome.storage.local.remove(['config']);
       }
     }
+    await GenerationSettings.withLock(async () => {
+      const latest = await chrome.storage.sync.get(['config']);
+      const migrated = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...(latest.config || config) });
+      if (!sameValue(latest.config, migrated)) { assertConfigFitsSync(migrated); await chrome.storage.sync.set({ config: migrated }); }
+      config = migrated;
+    });
   } catch (error) {
     console.error('Loading configuration:', error);
     showNotification(error.name === 'SyncQuotaError' ? error.message : 'Could not load settings. Reload this page to try again.', 'error');
@@ -241,7 +258,9 @@ async function saveConfig(candidate = config, replace = false) {
   lastSaveError = '';
   clearTimeout(saveTimer);
   saveTimer = null;
-  const snapshot = structuredClone(candidate);
+  const snapshot = GenerationSettings.migrate(candidate);
+  const baseline = structuredClone(config);
+  const parameterChanges = replace ? new Map() : new Map(pendingParameterChanges);
   const revision = ++saveRevision;
   setSaveStatus('Saving changes…', 'saving');
   // Merge just the edited fields with the latest sync configuration. A model
@@ -255,16 +274,17 @@ async function saveConfig(candidate = config, replace = false) {
         );
   const keys = Array.from(new Set([...changedKeys, ...pendingPreferenceKeys]));
   let written;
-  const write = saveQueue.then(async () => {
+  const write = saveQueue.then(() => GenerationSettings.withLock(async () => {
     const latest = await chrome.storage.sync.get(['config']);
-    written = { ...structuredClone(DEFAULT_CONFIG), ...(latest?.config || config) };
+    written = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...(latest?.config || config) });
     keys.forEach((key) => {
-      written[key] = snapshot[key];
+      written[key] = key === 'providers' && !replace ? mergeConfigEdit(baseline[key], snapshot[key], written[key]) : snapshot[key];
     });
+    parameterChanges.forEach((change) => applyParameterChange(written, change));
     repairSelection(written);
     assertConfigFitsSync(written);
     await chrome.storage.sync.set({ config: written });
-  });
+  }));
   saveQueue = write.catch(() => {});
   try {
     await write;
@@ -274,7 +294,10 @@ async function saveConfig(candidate = config, replace = false) {
     const unsaved = Object.fromEntries(
       Array.from(pendingPreferenceKeys).map((key) => [key, config[key]])
     );
+    if (replace) pendingParameterChanges.clear();
+    parameterChanges.forEach((change, key) => { if (pendingParameterChanges.get(key) === change) pendingParameterChanges.delete(key); });
     config = { ...written, ...unsaved };
+    pendingParameterChanges.forEach((change) => applyParameterChange(config, change));
     if (revision === saveRevision) setSaveStatus('All changes saved', 'saved');
     return true;
   } catch (error) {
@@ -292,7 +315,8 @@ function handleConfigurationChange(changes, area) {
   const unsaved = Object.fromEntries(
     Array.from(pendingPreferenceKeys).map((key) => [key, config[key]])
   );
-  config = { ...structuredClone(DEFAULT_CONFIG), ...changes.config.newValue, ...unsaved };
+  config = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...changes.config.newValue, ...unsaved });
+  pendingParameterChanges.forEach((change) => applyParameterChange(config, change));
   applyTheme();
   updateFontPreview();
   const editing = document.activeElement?.matches('input, textarea, select');
@@ -458,12 +482,135 @@ function renderPrompts() {
   });
 }
 
-function renderParameters() {
+// Merge only edited provider/model fields with the latest version under the lock.
+function mergeConfigEdit(base, mine, latest) {
+  if (sameValue(base, mine)) return structuredClone(latest);
+  if (Array.isArray(base) && Array.isArray(mine) && Array.isArray(latest) &&
+      [...base, ...mine, ...latest].every((item) => item && typeof item.id === 'string')) {
+    const before = new Map(base.map((item) => [item.id, item]));
+    const edited = new Map(mine.map((item) => [item.id, item]));
+    const current = new Map(latest.map((item) => [item.id, item]));
+    return [...new Set([...mine.map((item) => item.id), ...latest.map((item) => item.id)])]
+      .filter((id) => edited.has(id) || !before.has(id))
+      .map((id) => mergeConfigEdit(before.get(id), edited.get(id), current.get(id)))
+      .filter(Boolean);
+  }
+  if (base && mine && latest && !Array.isArray(mine) && typeof mine === 'object' && typeof latest === 'object') {
+    const result = {};
+    new Set([...Object.keys(base), ...Object.keys(mine), ...Object.keys(latest)]).forEach((key) => {
+      const value = mergeConfigEdit(base[key], mine[key], latest[key]);
+      if (value !== undefined) result[key] = value;
+    });
+    return result;
+  }
+  return structuredClone(mine);
+}
+
+function generationTarget(configuration = config, scope = generationScope, create = false) {
+  if (scope === 'global') return configuration;
+  let ids;
+  try { ids = JSON.parse(scope); } catch { return null; }
+  const provider = configuration.providers.find((item) => item.id === ids[0]);
+  const owner = ids.length === 2 ? provider?.models.find((item) => item.id === ids[1]) : provider;
+  if (!owner) return null;
+  if (create) owner.parameters ||= {};
+  return owner.parameters || {};
+}
+
+function effectiveGeneration() {
+  let ids = [];
+  try { if (generationScope !== 'global') ids = JSON.parse(generationScope); } catch {}
+  const provider = config.providers.find((item) => item.id === ids[0]);
+  return GenerationSettings.resolve(config, provider, ids[1]);
+}
+
+function applyParameterChange(configuration, change) {
+  const target = generationTarget(configuration, change.scope, true);
+  if (!target) return;
+  if (change.remove) delete target[change.key];
+  else target[change.key] = change.value;
+}
+
+function setGenerationParameter(key, value, remove = false) {
+  const change = { scope: generationScope, key, value, remove };
+  applyParameterChange(config, change);
+  pendingParameterChanges.set(JSON.stringify([generationScope, key]), change);
+  queueSave('generationVersion');
+  renderGenerationParameters();
+}
+
+function handleGenerationScopeChange() {
+  generationScope = elements.generationScope.value;
+  renderGenerationParameters();
+}
+
+function resetGenerationScope() {
+  GenerationSettings.KEYS.forEach((key) => setGenerationParameter(key, GenerationSettings.DEFAULTS[key], generationScope !== 'global'));
+}
+
+function updateReasoningContext() {
+  setGenerationParameter('reasoning_context', elements.reasoningContextSelector.value || null);
+}
+
+function renderGenerationParameters() {
+  const selector = elements.generationScope;
+  if (!selector) return;
+  const options = [new Option('Default for new providers', 'global')];
+  config.providers.forEach((provider) => {
+    options.push(new Option(provider.name, JSON.stringify([provider.id])));
+    provider.models.forEach((model) => options.push(new Option(`${provider.name} / ${model.name}`, JSON.stringify([provider.id, model.id]))));
+  });
+  selector.replaceChildren(...options);
+  if (!options.some((option) => option.value === generationScope)) generationScope = 'global';
+  selector.value = generationScope;
+  const { values, origins } = effectiveGeneration();
+  const target = generationTarget();
+  const controls = {
+    stream: elements.streamSelector, temperature: elements.temperatureSlider,
+    max_completion_tokens: elements.maxCompletionTokensInput,
+    reasoning_effort: elements.reasoningEffortSelector, reasoning_summary: elements.reasoningSummarySelector,
+    reasoning_context: elements.reasoningContextSelector
+  };
+  elements.streamSelector.checked = values.stream;
   renderTemperature();
-  elements.maxCompletionTokensInput.value = config.max_completion_tokens || '';
-  elements.streamSelector.checked = config.stream !== false;
-  elements.reasoningEffortSelector.value = config.reasoning_effort || '';
-  elements.reasoningSummarySelector.value = config.reasoning_summary || 'off';
+  elements.maxCompletionTokensInput.value = values.max_completion_tokens ?? '';
+  elements.reasoningEffortSelector.value = values.reasoning_effort || '';
+  elements.reasoningSummarySelector.value = values.reasoning_summary || 'off';
+  elements.reasoningContextSelector.value = values.reasoning_context || '';
+  Object.entries(controls).forEach(([key, control]) => {
+    const container = control.closest('.parameter-group, .setting-row');
+    let mode = container.querySelector('.parameter-mode');
+    let origin = container.querySelector('.parameter-origin');
+    if (!mode) {
+      mode = document.createElement('select');
+      mode.className = 'select-input parameter-mode';
+      mode.setAttribute('aria-label', `${key.replaceAll('_', ' ')} override`);
+      mode.append(new Option('Inherit', 'inherit'));
+      if (key !== 'stream') mode.append(new Option('Use model default (not sent)', 'default'));
+      mode.append(new Option('Custom', 'custom'));
+      mode.addEventListener('change', () => {
+        const fallback = key === 'temperature' ? 0.7 : key === 'max_completion_tokens' ? 4096 : key === 'reasoning_effort' ? 'medium' : key === 'reasoning_summary' ? 'auto' : key === 'reasoning_context' ? 'auto' : true;
+        setGenerationParameter(key, mode.value === 'default' ? null : effectiveGeneration().values[key] ?? fallback, mode.value === 'inherit');
+      });
+      origin = document.createElement('small');
+      origin.className = 'parameter-description parameter-origin';
+      container.append(mode, origin);
+    }
+    mode.hidden = generationScope === 'global';
+    const inherited = generationScope !== 'global' && !(key in target);
+    mode.value = inherited ? 'inherit' : target[key] == null && key !== 'stream' ? 'default' : 'custom';
+    control.disabled = inherited || (key !== 'stream' && values[key] == null);
+    if (generationScope === 'global' && key !== 'temperature') control.disabled = false;
+    origin.textContent = `Effective value from ${origins[key] || 'model default'}`;
+    origin.hidden = generationScope === 'global';
+    if (key === 'temperature') elements.temperatureDefaultToggle.disabled = inherited;
+  });
+  elements.generationScopeHelp.textContent = 'Model overrides take priority over provider settings. Upgraded providers keep their previous values; use inherited settings to reset them.';
+  elements.resetGenerationScope.textContent = generationScope === 'global' ? 'Use model defaults' : 'Use inherited settings';
+}
+
+function renderParameters() {
+  renderGenerationParameters();
   elements.fontSizeSelector.value = config.fontSize || '14px';
   const fonts = Array.from(elements.fontFamilySelector.options).map((option) => option.value);
   elements.fontFamilySelector.value = !config.fontFamily
@@ -596,6 +743,7 @@ function openProviderModal(provider = null) {
   elements.providerBaseUrl.value = provider?.baseUrl || '';
   elements.providerApiKey.value = provider?.apiKey || '';
   elements.providerApiType.value = provider?.apiType === 'responses' ? 'responses' : 'chat';
+  if (elements.providerThinkTags) elements.providerThinkTags.checked = provider?.reasoningFormat === 'think-tags' || (!provider?.reasoningFormat && provider && provider.apiType !== 'responses');
   elements.providerApiKey.type = 'password';
   elements.toggleApiKey.setAttribute('aria-pressed', 'false');
   elements.toggleApiKey.setAttribute('aria-label', 'Show API key');
@@ -787,10 +935,15 @@ async function saveProvider() {
     baseUrl: normalizeBaseUrl(elements.providerBaseUrl.value),
     apiKey: elements.providerApiKey.value.trim(),
     apiType: elements.providerApiType.value === 'responses' ? 'responses' : 'chat',
-    models: Array.from(elements.modelsList.querySelectorAll('.model-item')).map((item) => ({
-      name: item.querySelector('.model-name').value.trim(),
-      id: item.querySelector('.model-id').value.trim()
-    }))
+    reasoningFormat: elements.providerThinkTags?.checked ? 'think-tags' : 'structured',
+    models: Array.from(elements.modelsList.querySelectorAll('.model-item')).map((item) => {
+      const id = item.querySelector('.model-id').value.trim();
+      const previous = config.providers.find((provider) => provider.id === editingProviderId)?.models.find((model) => model.id === id);
+      return {
+        name: item.querySelector('.model-name').value.trim(), id,
+        ...(previous?.parameters ? { parameters: structuredClone(previous.parameters) } : {})
+      };
+    })
   };
   if (
     !data.name ||
@@ -839,6 +992,7 @@ async function saveProvider() {
     const candidate = structuredClone(config);
     const index = candidate.providers.findIndex((provider) => provider.id === data.id);
     const previousUrl = candidate.providers[index]?.baseUrl;
+    if (candidate.providers[index]?.parameters) data.parameters = candidate.providers[index].parameters;
     if (index === -1) candidate.providers.push(data);
     else candidate.providers[index] = data;
     repairSelection(candidate);
@@ -1011,23 +1165,23 @@ async function handleDeletePrompt() {
 
 // ===== Parameters and appearance =====
 function isTemperatureOmitted() {
-  return config.temperature == null || config.temperature === '';
+  return effectiveGeneration().values.temperature == null;
 }
 
 function renderTemperature() {
   const omitted = isTemperatureOmitted();
   elements.temperatureDefaultToggle.checked = omitted;
   elements.temperatureSlider.disabled = omitted;
-  elements.temperatureSlider.value = omitted ? '0.7' : String(config.temperature);
-  elements.temperatureValue.textContent = omitted ? 'Model default' : String(config.temperature);
+  elements.temperatureSlider.value = omitted ? '0.7' : String(effectiveGeneration().values.temperature);
+  elements.temperatureValue.textContent = omitted ? 'Model default' : String(effectiveGeneration().values.temperature);
 }
 
 function updateTemperatureMode() {
-  config.temperature = elements.temperatureDefaultToggle.checked
+  const value = elements.temperatureDefaultToggle.checked
     ? null
     : Number(elements.temperatureSlider.value);
   renderTemperature();
-  queueSave('temperature');
+  setGenerationParameter('temperature', value);
 }
 
 function updateMaxCompletionTokens() {
@@ -1040,21 +1194,17 @@ function updateMaxCompletionTokens() {
       'Enter a positive whole number, or leave empty for the model default.';
     return;
   }
-  config.max_completion_tokens = value;
-  queueSave('max_completion_tokens');
+  setGenerationParameter('max_completion_tokens', value ? Number(value) : null);
 }
 
 function updateStream() {
-  config.stream = elements.streamSelector.checked;
-  queueSave('stream');
+  setGenerationParameter('stream', elements.streamSelector.checked);
 }
 function updateReasoningEffort() {
-  config.reasoning_effort = elements.reasoningEffortSelector.value;
-  queueSave('reasoning_effort');
+  setGenerationParameter('reasoning_effort', elements.reasoningEffortSelector.value || null);
 }
 function updateReasoningSummary() {
-  config.reasoning_summary = elements.reasoningSummarySelector.value;
-  queueSave('reasoning_summary');
+  setGenerationParameter('reasoning_summary', elements.reasoningSummarySelector.value === 'off' ? null : elements.reasoningSummarySelector.value);
 }
 function updateFontSize() {
   config.fontSize = elements.fontSizeSelector.value;
@@ -1124,7 +1274,7 @@ async function importConfig(event) {
     const imported = JSON.parse(await file.text());
     if (!validateConfig(imported))
       throw new Error('This file does not contain a valid SideMind configuration.');
-    const candidate = { ...structuredClone(DEFAULT_CONFIG), ...imported };
+    const candidate = GenerationSettings.migrate({ ...structuredClone(DEFAULT_CONFIG), ...imported });
     candidate.providers = candidate.providers.map((provider) => ({
       ...provider,
       baseUrl: normalizeBaseUrl(provider.baseUrl)
@@ -1197,8 +1347,10 @@ function validateConfig(value) {
     }
     return (
       (!provider.apiType || ['chat', 'responses'].includes(provider.apiType)) &&
+      (!provider.reasoningFormat || ['structured', 'think-tags'].includes(provider.reasoningFormat)) &&
+      (!provider.parameters || GenerationSettings.valid(provider.parameters)) &&
       uniqueIds(provider.models) &&
-      provider.models.every((model) => model && validText(model.id) && validText(model.name))
+      provider.models.every((model) => model && validText(model.id) && validText(model.name) && (!model.parameters || GenerationSettings.valid(model.parameters)))
     );
   });
   const promptsValid = value.systemPrompts.every(
@@ -1207,6 +1359,8 @@ function validateConfig(value) {
   );
   return (
     providersValid &&
+    (!value.generationVersion || value.generationVersion === GenerationSettings.VERSION) &&
+    (!value.reasoning_context || ['auto', 'current_turn', 'all_turns'].includes(value.reasoning_context)) &&
     promptsValid &&
     uniqueIds(value.providers) &&
     uniqueIds(value.systemPrompts) &&
@@ -1217,7 +1371,7 @@ function validateConfig(value) {
         value.temperature <= 2)) &&
     (value.max_completion_tokens == null ||
       value.max_completion_tokens === '' ||
-      (typeof value.max_completion_tokens === 'string' &&
+      ((typeof value.max_completion_tokens === 'string' || typeof value.max_completion_tokens === 'number') &&
         /^[1-9]\d*$/.test(value.max_completion_tokens) &&
         Number.isSafeInteger(Number(value.max_completion_tokens)))) &&
     (value.stream == null || typeof value.stream === 'boolean') &&
@@ -1225,7 +1379,7 @@ function validateConfig(value) {
     (!value.fontSize || ['13px', '14px', '15px', '16px'].includes(value.fontSize)) &&
     (!value.fontFamily || typeof value.fontFamily === 'string') &&
     (!value.reasoning_effort ||
-      ['minimal', 'low', 'medium', 'high'].includes(value.reasoning_effort)) &&
+      GenerationSettings.EFFORTS.includes(value.reasoning_effort)) &&
     (!value.reasoning_summary ||
       ['off', 'auto', 'concise', 'detailed'].includes(value.reasoning_summary))
   );

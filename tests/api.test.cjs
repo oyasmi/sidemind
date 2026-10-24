@@ -13,6 +13,9 @@ function loadScript(file, globals = {}) {
   });
   vm.runInContext(readFileSync(resolve(__dirname, '..', 'sidebar/marked.umd.js'), 'utf8'), context);
   vm.runInContext(readFileSync(resolve(__dirname, '..', 'assets/js/ui.js'), 'utf8'), context);
+  for (const dependency of ['assets/js/generation-settings.js', 'sidebar/responses.js', 'sidebar/attachments.js']) {
+    vm.runInContext(readFileSync(resolve(__dirname, '..', dependency), 'utf8'), context);
+  }
   vm.runInContext(readFileSync(resolve(__dirname, '..', file), 'utf8'), context);
   return context;
 }
@@ -57,7 +60,7 @@ function sseResponse(events, { crlf = false, multiline = false } = {}) {
     const json = JSON.stringify(event, null, multiline ? 2 : undefined);
     return `: heartbeat${newline}event: ${event.type || 'message'}${newline}` +
       json.split('\n').map(line => `data: ${line}`).join(newline) + newline + newline;
-  }).join('') + `data: [DONE]${newline}${newline}`;
+  }).join('') + (events.some(event => event.type?.startsWith('response.') || event.type === 'error') ? '' : `data: [DONE]${newline}${newline}`);
   const bytes = new TextEncoder().encode(source);
   // One byte per chunk exercises UTF-8, CRLF, JSON and event boundary splits.
   let index = 0;
@@ -113,7 +116,7 @@ test('request bodies map history, instructions and parameters for each API', () 
 
 test('optional parameters and empty instructions are omitted', () => {
   const { app } = sidebar();
-  Object.assign(app.state.config, { temperature: '', max_completion_tokens: 'invalid', selectedSystemPrompt: 'missing' });
+  Object.assign(app.state.config, { temperature: '', max_completion_tokens: null, selectedSystemPrompt: 'missing' });
   const body = app.buildResponsesRequestBody();
   for (const key of ['instructions', 'temperature', 'max_output_tokens', 'reasoning']) {
     assert.equal(Object.hasOwn(body, key), false);
@@ -175,7 +178,7 @@ test('non-streaming Responses reads all text, refusals, summaries and usage', as
   data.output.push({ type: 'message', content: [{ type: 'refusal', refusal: 'Refused' }] });
   const message = {};
   await app.processNonStream(Response.json(data), message, new AbortController().signal, app.getAdapter({ apiType: 'responses' }));
-  assert.equal(message.content, '完整回答Refused');
+  assert.equal(message.content, '完整回答\n\nRefused');
   assert.equal(message.reasoning, 'First\n\nSecond');
   assert.equal(message.usage.reasoning, 3);
   app.applyResponsesResponse({ output_text: 'Compatible server' }, message);
@@ -288,7 +291,7 @@ test('API failures propagate and release the stream reader', async () => {
   const { app } = sidebar();
   const adapter = app.getAdapter({ apiType: 'responses' });
   for (const event of [
-    { type: 'response.failed', response: { error: { message: 'Provider failed' } } },
+    { type: 'response.failed', response: { status: 'failed', error: { message: 'Provider failed' } } },
     { type: 'error', message: 'Provider failed' },
     { error: { message: 'Provider failed' } }
   ]) {
@@ -1150,4 +1153,113 @@ test('a recovered storage scan returns the tables after folding pending writes',
   assert.equal(recovered.currentSessionId, 'a');
   assert.equal(recovered['session:a'].session.messages[1].content, 'answer');
   assert.deepEqual(pendingKeys(data), []);
+});
+
+// These exercise the production adapter through actual request/response bodies.
+test('Responses replays structured output within a compatible history segment', async () => {
+  const context = sidebar();
+  const { app } = context;
+  const provider = { id: 'provider', apiType: 'responses', baseUrl: 'https://example.com/v1', models: [{ id: 'test-model' }] };
+  Object.assign(app.state.config, { providers: [provider], selectedProvider: provider.id, stream: false });
+  const outputItems = [
+    { id: 'rs_1', type: 'reasoning', status: 'completed', summary: [], encrypted_content: 'opaque' },
+    { id: 'msg_1', type: 'message', status: 'completed', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'Checking.', annotations: [] }] },
+    { id: 'msg_2', type: 'message', status: 'completed', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'Done.', annotations: [] }] }
+  ];
+  context.fetch = async () => Response.json({ id: 'resp_1', status: 'completed', output: outputItems });
+  const answer = app.state.currentStreamingMessage;
+  await app.streamResponse(provider, answer, new AbortController().signal);
+  app.state.currentStreamingMessage = null;
+  app.state.sessions.session.messages.push({ id: 'next', role: 'user', content: 'Continue' });
+  const input = plain(app.buildResponsesRequestBody().input);
+  assert.equal(input.find(item => item.type === 'reasoning').encrypted_content, 'opaque');
+  assert.deepEqual(input.filter(item => item.phase).map(item => item.phase), ['commentary', 'final_answer']);
+  assert.equal(input.find(item => item.id === 'msg_1').status, 'completed', 'replayed output messages keep the required id/status wire fields');
+  assert.equal(answer.content, 'Checking.\n\nDone.');
+  app.state.config.selectedModel = 'other-model - provider';
+  assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false);
+  app.state.config.selectedModel = 'test-model - provider';
+  app.state.sessions.session.messages.push({ id: 'other', role: 'assistant', content: 'Other model answered', protocol: { source: { ...answer.protocol.source, modelId: 'other-model' } } });
+  assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false, 'switching back does not jump across an incompatible segment');
+  app.state.sessions.session.messages.pop();
+  answer.outcome = 'stopped';
+  assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false, 'interrupted reasoning is never reused');
+});
+
+test('Responses snapshots recover text and failure usage without duplicate content', async () => {
+  const { app } = sidebar();
+  const message = { id: 'pending' };
+  const adapter = app.getAdapter({ apiType: 'responses' });
+  const events = [
+    { type: 'response.output_text.delta', output_index: 0, item_id: 'm', content_index: 0, delta: 'Hel', sequence_number: 0 },
+    { type: 'response.output_text.delta', output_index: 0, item_id: 'm', content_index: 0, delta: 'Hel', sequence_number: 0 },
+    { type: 'response.output_text.done', output_index: 0, item_id: 'm', content_index: 0, text: 'Hello', sequence_number: 1 },
+    { type: 'response.content_part.done', output_index: 0, item_id: 'm', content_index: 0, part: { type: 'output_text', text: 'Hello world' }, sequence_number: 2 },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'm', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Hello world!' }] }, sequence_number: 3 }
+  ];
+  await app.processStream(sseResponse(events), message, new AbortController().signal, adapter);
+  assert.equal(message.content, 'Hello world!');
+  assert.equal(message.outcome, 'unconfirmed', 'an item done cannot confirm response completion');
+  const failure = { type: 'response.failed', response: { status: 'failed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Final available text' }] }], usage: { input_tokens: 4, output_tokens: 5, total_tokens: 9 }, error: { code: 'server_error', message: 'Provider failed', param: 'input' } } };
+  assert.throws(() => app.applyResponsesStreamEvent(failure, message), error => error.code === 'server_error' && error.param === 'input');
+  assert.equal(message.content, 'Final available text');
+  assert.equal(message.usage.total, 9);
+  assert.equal(message.outcome, 'failed');
+});
+
+test('Responses requires a valid terminal response and clears superseded delta text', async () => {
+  const { app } = sidebar();
+  const adapter = app.getAdapter({ apiType: 'responses' });
+  const message = {};
+  await app.processStream(new Response('data: {"type":"response.output_text.delta","delta":"Partial"}\n\ndata: [DONE]\n\n'), message, new AbortController().signal, adapter);
+  assert.equal(message.outcome, 'unconfirmed');
+  assert.notEqual(message.streamComplete, true);
+  assert.match(app.responseCompletionNotice(message), /not confirmed/);
+  for (const terminal of [{ type: 'response.completed' }, { type: 'response.completed', response: { status: 'incomplete', output: [] } }]) {
+    assert.throws(() => app.applyResponsesStreamEvent(terminal, {}), /API Error/);
+  }
+  assert.throws(() => app.applyResponsesResponse({ status: 'in_progress', output: [] }, {}), /Unsupported response status/);
+  app.applyResponsesStreamEvent({ type: 'response.completed', response: { status: 'completed', output: [] } }, message);
+  assert.equal(message.content, '');
+  assert.equal(message.reasoning, '');
+  assert.equal(message.outcome, 'completed');
+  assert.equal(message.completionUnconfirmed, undefined);
+});
+
+test('structured Responses text is never reclassified as inline reasoning', () => {
+  const { app } = sidebar();
+  const message = { reasoningFormat: 'structured' };
+  app.applyResponsesResponse({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '<think>literal</think>' }] }] }, message);
+  app.processThinkTags(message);
+  assert.equal(message.content, '<think>literal</think>');
+  assert.equal(message.reasoning, '');
+  message.reasoningFormat = 'think-tags';
+  app.processThinkTags(message);
+  assert.equal(message.reasoning, 'literal');
+  assert.equal(message.protocol.output[0].content[0].text, '<think>literal</think>', 'compatibility projection preserves the original protocol output');
+});
+
+test('generation migration preserves old providers while new defaults and model overrides stay isolated', () => {
+  const context = loadScript('options/options.js');
+  const settings = vm.runInContext('GenerationSettings', context);
+  const legacy = { temperature: 0.7, stream: true, reasoning_effort: 'high', providers: [{ id: 'a', name: 'A', models: [{ id: 'one', name: 'One' }, { id: 'two', name: 'Two' }] }] };
+  const migrated = settings.migrate(legacy);
+  assert.deepEqual(plain(settings.migrate(migrated)), plain(migrated));
+  assert.equal(migrated.temperature, null);
+  assert.equal(migrated.providers[0].parameters.temperature, 0.7);
+  assert.equal(migrated.providers[0].reasoningFormat, 'think-tags');
+  migrated.providers[0].models[0].parameters = { temperature: null, reasoning_effort: 'none' };
+  assert.equal(settings.resolve(migrated, migrated.providers[0], 'one').values.reasoning_effort, 'none');
+  assert.equal(settings.resolve(migrated, migrated.providers[0], 'one').values.temperature, null);
+  assert.equal(settings.resolve(migrated, migrated.providers[0], 'two').values.reasoning_effort, 'high');
+  assert.equal(settings.resolve(migrated, { models: [] }, 'new').values.reasoning_effort, null);
+  for (const effort of ['none', 'xhigh', 'max']) assert.equal(settings.valid({ reasoning_effort: effort }), true);
+  assert.equal(settings.valid({ stream: null }), false);
+  const merge = vm.runInContext('mergeConfigEdit', context);
+  const base = [{ id: 'a', name: 'A', parameters: { temperature: 0.7 }, models: [{ id: 'one', name: 'One' }] }];
+  const mine = structuredClone(base); mine[0].name = 'Renamed';
+  const theirs = structuredClone(base); theirs[0].models[0].parameters = { reasoning_effort: 'max' };
+  const merged = plain(merge(base, mine, theirs));
+  assert.equal(merged[0].name, 'Renamed');
+  assert.equal(merged[0].models[0].parameters.reasoning_effort, 'max');
 });

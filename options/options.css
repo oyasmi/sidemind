@@ -1,3 +1,12 @@
+/* ===== Generation scope ===== */
+.generation-scope { margin: 16px 0; }
+.parameter-mode { margin-top: 8px; width: 100%; }
+.parameter-mode[hidden] { display: none; }
+.parameter-origin { display: block; margin-top: 4px; }
+.parameter-origin[hidden] { display: none; }
+.setting-row:has(.parameter-mode) { flex-wrap: wrap; }
+.setting-row > .parameter-origin { flex-basis: 100%; }
+
 /* ===== Settings layout ===== */
 .settings-shell {
   max-width: 1100px;

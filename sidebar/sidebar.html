@@ -6,6 +6,7 @@
     <title>SideMind</title>
     <link rel="stylesheet" href="../assets/css/ui.css" />
     <script src="../assets/js/ui.js"></script>
+    <script src="../assets/js/generation-settings.js"></script>
     <link rel="stylesheet" href="sidebar.css" />
   </head>
   <body>
@@ -72,7 +73,10 @@
         <div id="generationStatus" class="generation-status" role="status" aria-live="polite">
           Ready when you are
         </div>
-        <div class="composer">
+        <div class="composer" id="composer">
+          <input id="attachmentInput" type="file" multiple hidden />
+          <div id="draftAttachments" class="attachment-list" aria-label="Attachments"></div>
+          <div id="attachmentStatus" class="attachment-status" role="status" hidden><span>Preparing attachments…</span><button id="cancelAttachmentsBtn" type="button" class="undo-btn">Cancel</button></div>
           <label for="messageInput" class="sr-only">Message</label>
           <textarea
             id="messageInput"
@@ -82,6 +86,7 @@
             aria-describedby="inputHint"
           ></textarea>
           <div class="composer-toolbar">
+            <button id="attachBtn" class="icon-btn" type="button" aria-label="Attach images or files" title="Attach images or files"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg></button>
             <div class="role-control">
               <label for="systemPromptSelector">Role</label
               ><select id="systemPromptSelector" class="system-prompt-selector">
@@ -101,7 +106,7 @@
             </button>
           </div>
         </div>
-        <p id="inputHint" class="input-hint">Enter to send · Shift + Enter for a new line</p>
+        <p id="inputHint" class="input-hint">Enter to send · Shift + Enter for a new line<br />Attachments are sent to your selected provider, including on follow-up turns.</p>
       </footer>
     </div>
 
@@ -131,8 +136,14 @@
         </div>
       </div>
     </dialog>
+    <dialog id="attachmentPreviewDialog" class="attachment-preview-dialog" aria-label="Image preview">
+      <form method="dialog"><button class="btn btn-small" aria-label="Close image preview">Close</button></form>
+      <img alt="" />
+    </dialog>
     <script src="marked.umd.js"></script>
     <script src="highlight.min.js"></script>
+    <script src="responses.js"></script>
+    <script src="attachments.js"></script>
     <script src="sidebar.js"></script>
   </body>
 </html>

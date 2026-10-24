@@ -70,6 +70,8 @@ sidemind/
 │   ├── sidebar.html
 │   ├── sidebar.css
 │   ├── sidebar.js         # Core app logic
+│   ├── responses.js       # Responses reducer, projection and replay (no DOM/network)
+│   ├── attachments.js     # IndexedDB originals, validation and request hydration
 │   ├── marked.umd.js      # Markdown parser (vendor)
 │   └── highlight.min.js   # Syntax highlighter (vendor)
 ├── options/               # Configuration page
@@ -95,7 +97,7 @@ plus an option in the provider modal (`options/options.html`).
 ```javascript
 // Streaming is dispatched through the adapter, never inlined
 const adapter = getAdapter(provider);
-const body = adapter.buildRequestBody();
+const body = await adapter.buildRequestBody(context);
 const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
 ```
 
@@ -103,6 +105,11 @@ const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
 - Single global `state` object as source of truth
 - Direct mutation, then debounced save via `saveToStorage()`
 - Reactive rendering: call render functions after state changes
+- Responses output is retained in `message.protocol`; `content` and `reasoning` are projections.
+- Draft readers use `normalizeDraft()` to accept legacy strings and `{ text, attachments }`.
+- Generation parameters resolve through `GenerationSettings`: defaults, provider, then model.
+- Attachment bytes stay in IndexedDB. Chat messages, drafts and unload stashes contain references only.
+- Prepare requests before clearing a draft or truncating edited/regenerated history.
 
 ### DOM Handling
 - Cache elements in `elements` object on init

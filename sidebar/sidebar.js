@@ -14,11 +14,12 @@ const state = {
     selectedProvider: null,
     selectedModel: null,
     selectedSystemPrompt: 'default',
-    temperature: 0.7,
+    temperature: null,
     max_completion_tokens: '',
     stream: true,
     reasoning_effort: '',
     reasoning_summary: 'off',
+    reasoning_context: null,
     theme: 'system',
     systemPrompts: [
       {
@@ -30,6 +31,7 @@ const state = {
     ]
   },
   isStreaming: false,
+  isPreparing: false,
   currentStreamingMessage: null,
   userScrolledUp: false,
   abortController: null,
@@ -150,6 +152,11 @@ const elements = {
 // APPLICATION INITIALIZATION
 // ========================================
 
+marked.use({ renderer: { html(token) {
+  const html = typeof token === 'string' ? token : token.text;
+  return html.replace(/<\/?think(?:ing)?>/g, (tag) => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+} } });
+
 // ui.js already applied the cached theme; fonts are this page's own setting.
 try {
   applyFontSettings(cachedAppearance());
@@ -164,6 +171,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initializeUI();
   await initializeSelectionImport();
 
+  setTimeout(cleanupAttachments, 5000);
   console.log('SideMind initialized successfully');
 });
 
@@ -204,7 +212,13 @@ function cacheElements() {
     'sessionTitle',
     'storageStatus',
     'storageStatusText',
-    'retryStorageBtn'
+    'retryStorageBtn',
+    'composer',
+    'attachBtn',
+    'attachmentInput',
+    'draftAttachments',
+    'attachmentStatus',
+    'cancelAttachmentsBtn'
   ].forEach((id) => {
     elements[id] = document.getElementById(id);
   });
@@ -229,6 +243,7 @@ function setupEventListeners() {
 
   elements.messageInput.addEventListener('input', handleInputChange);
   elements.messageInput.addEventListener('keydown', handleInputKeydown);
+  setupAttachmentListeners();
 
   elements.chatHistoryBtn.addEventListener('click', openChatHistory);
   elements.closeBtn.addEventListener('click', closeChatHistory);
@@ -250,7 +265,7 @@ function setupEventListeners() {
   // Listen for config changes
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes.config) {
-      state.config = { ...state.config, ...changes.config.newValue, ...pendingConfigChanges };
+      state.config = { ...state.config, ...GenerationSettings.migrate(changes.config.newValue), ...pendingConfigChanges };
       updateModelSelector();
       updateSystemPromptSelector();
       updateInputState();
@@ -308,7 +323,16 @@ async function loadFromStorage() {
     }
 
     if (result.config) {
-      state.config = { ...state.config, ...result.config };
+      state.config = { ...state.config, ...GenerationSettings.migrate(result.config) };
+      if (!sameValue(state.config, result.config)) {
+        await GenerationSettings.withLock(async () => {
+          const latest = await chrome.storage.sync.get(['config']);
+          const migrated = GenerationSettings.migrate(latest.config || result.config);
+          assertConfigFitsSync(migrated);
+          if (!sameValue(migrated, latest.config)) await chrome.storage.sync.set({ config: migrated });
+          state.config = { ...state.config, ...migrated };
+        });
+      }
       applyFontSettings();
       applyTheme();
     }
@@ -413,7 +437,7 @@ function rememberSaved(sessions, revs, drafts, currentSessionId) {
   savedSessionRefs = { ...sessions };
   dirtySessionIds.clear();
   savedRevs = { ...revs };
-  savedDrafts = { ...drafts };
+  savedDrafts = structuredClone(drafts);
   savedCurrentSessionId = currentSessionId;
 }
 
@@ -431,7 +455,7 @@ function withStorageLock(task) {
 function collectChanges(includeSessions) {
   const changes = { sessions: {}, removed: {}, drafts: {} };
   const snapshots = {};
-  const nextDrafts = { ...state.drafts };
+  const nextDrafts = structuredClone(state.drafts);
   if (includeSessions) {
     Object.entries(state.sessions).forEach(([id, session]) => {
       // Only the visible chat can be edited without an explicit mutation
@@ -456,7 +480,7 @@ function collectChanges(includeSessions) {
     if (!(id in state.drafts)) changes.drafts[id] = null;
   });
   Object.entries(state.drafts).forEach(([id, text]) => {
-    if (savedDrafts[id] !== text) changes.drafts[id] = text;
+    if (!sameValue(savedDrafts[id], text)) changes.drafts[id] = structuredClone(text);
   });
   const commit = () => {
     savedDrafts = nextDrafts;
@@ -866,6 +890,9 @@ function queueLocalSave(includeSessions, scanAll = false) {
     try {
       await withStorageLock(() => writeLocalChanges(includeSessions, { scanAll }));
       if (includeSessions) elements.storageStatus.classList.add('hidden');
+      const recoveredAttachments = attachmentSaveFailed;
+      attachmentSaveFailed = false;
+      if (recoveredAttachments && elements.attachBtn) updateInputState();
       return true;
     } catch (error) {
       console.error('Conversation save error:', error);
@@ -907,7 +934,7 @@ function persistConfig() {
   clearTimeout(configSaveTimer);
   configSaveTimer = null;
   const changes = { ...pendingConfigChanges };
-  configWriteQueue = configWriteQueue.then(async () => {
+  configWriteQueue = configWriteQueue.then(() => GenerationSettings.withLock(async () => {
     try {
       const result = await chrome.storage.sync.get(['config']);
       const config = { ...state.config, ...result.config, ...changes };
@@ -920,7 +947,7 @@ function persistConfig() {
       console.error('Configuration save error:', error);
       showNotification(error.name === 'SyncQuotaError' ? error.message : 'Could not save your selection. Select it again to retry.');
     }
-  });
+  }));
 }
 
 function flushSidebarSaves() {
@@ -939,38 +966,287 @@ function flushSidebarSaves() {
 const DRAFT_SAVE_DELAY = 300;
 let draftTimeout = null;
 
+function normalizeDraft(value) {
+  return typeof value === 'string' ? { text: value, attachments: [] }
+    : { text: value?.text || '', attachments: value?.attachments || [] };
+}
+
+function draftHasContent(value) {
+  const draft = normalizeDraft(value);
+  return Boolean(draft.text.trim() || draft.attachments.length);
+}
+
 function saveDraftSoon() {
   const sessionId = state.currentSessionId;
   if (!sessionId) return;
-
-  const text = elements.messageInput.value;
-  if (text.trim()) {
-    state.drafts[sessionId] = text;
-  } else {
-    delete state.drafts[sessionId];
-  }
-
-  if (draftTimeout) clearTimeout(draftTimeout);
+  const previous = normalizeDraft(state.drafts[sessionId]);
+  const draft = { text: elements.messageInput.value, attachments: previous.attachments.slice() };
+  if (draftHasContent(draft)) state.drafts[sessionId] = draft;
+  else delete state.drafts[sessionId];
+  clearTimeout(draftTimeout);
   draftTimeout = setTimeout(persistDrafts, DRAFT_SAVE_DELAY);
 }
 
 function persistDrafts() {
-  if (draftTimeout) {
-    clearTimeout(draftTimeout);
-    draftTimeout = null;
-  }
-
+  clearTimeout(draftTimeout);
+  draftTimeout = null;
   return queueLocalSave(false);
 }
 
 function restoreDraft() {
-  elements.messageInput.value = state.drafts[state.currentSessionId] || '';
+  elements.messageInput.value = normalizeDraft(state.drafts[state.currentSessionId]).text;
+  renderDraftAttachments();
   autoResizeTextarea();
 }
 
 function clearDraft() {
   delete state.drafts[state.currentSessionId];
   persistDrafts();
+  renderDraftAttachments();
+}
+
+// ===== Attachment composer and local previews =====
+const attachmentJobs = new Set();
+let attachmentSaveFailed = false;
+let editingAttachments = [];
+const attachmentPreviewUrls = new Map();
+let attachmentPreviewObserver;
+const observedAttachmentImages = new Set();
+
+function setupAttachmentListeners() {
+  elements.attachmentInput.accept = Object.keys(AttachmentStore.TYPES).map((extension) => `.${extension}`).join(',');
+  elements.attachBtn.addEventListener('click', () => elements.attachmentInput.click());
+  elements.attachmentInput.addEventListener('change', handleAttachmentSelection);
+  elements.messageInput.addEventListener('paste', handleAttachmentPaste);
+  elements.composer.addEventListener('dragover', handleAttachmentDragOver);
+  elements.composer.addEventListener('dragleave', handleAttachmentDragLeave);
+  elements.composer.addEventListener('drop', handleAttachmentDrop);
+  elements.cancelAttachmentsBtn.addEventListener('click', cancelAttachmentJobs);
+}
+
+function handleAttachmentSelection() {
+  receiveAttachments([...elements.attachmentInput.files]);
+  elements.attachmentInput.value = '';
+}
+
+function handleAttachmentPaste(event) {
+  const files = [...(event.clipboardData?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  receiveAttachments(files);
+}
+
+function handleAttachmentDragOver(event) {
+  if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
+  event.preventDefault();
+  elements.composer.classList.add('dragging-files');
+}
+
+function handleAttachmentDragLeave(event) {
+  if (!elements.composer.contains(event.relatedTarget)) elements.composer.classList.remove('dragging-files');
+}
+
+function handleAttachmentDrop(event) {
+  if (!event.dataTransfer?.files.length) return;
+  event.preventDefault();
+  elements.composer.classList.remove('dragging-files');
+  receiveAttachments([...event.dataTransfer.files]);
+}
+
+function cancelAttachmentJobs() {
+  attachmentJobs.forEach((job) => { if (job.sessionId === state.currentSessionId) job.cancelled = true; });
+}
+
+async function receiveAttachments(files, editorId = null) {
+  if (state.isPreparing || !files.length) return;
+  const sessionId = state.currentSessionId;
+  const job = { sessionId, editorId, cancelled: false };
+  attachmentJobs.add(job);
+  renderDraftAttachments();
+  updateInputState();
+  try {
+    for (const file of files) {
+      if (job.cancelled || !state.sessions[sessionId] || (editorId && editingMessageId !== editorId)) break;
+      const refs = editorId ? editingAttachments : normalizeDraft(state.drafts[sessionId]).attachments;
+      if (refs.length >= AttachmentStore.MAX_COUNT) throw new Error('A message can contain at most 10 attachments.');
+      const ref = await AttachmentStore.validate(file);
+      AttachmentStore.assertSupported([ref], getApiType(getCurrentProvider()));
+      if (refs.reduce((size, entry) => size + entry.size, ref.size) > AttachmentStore.MAX_REQUEST_BYTES) throw new Error('Attachments must total no more than 20 MiB.');
+      await withStorageLock(() => AttachmentStore.put(file, ref, pageId));
+      if (job.cancelled || !state.sessions[sessionId] || (editorId && editingMessageId !== editorId)) break;
+      const currentRefs = editorId ? editingAttachments : normalizeDraft(state.drafts[sessionId]).attachments;
+      if (currentRefs.length >= AttachmentStore.MAX_COUNT || currentRefs.reduce((size, entry) => size + entry.size, ref.size) > AttachmentStore.MAX_REQUEST_BYTES) throw new Error('The attachment count or size limit was reached.');
+      if (editorId) {
+        editingAttachments = [...editingAttachments, ref];
+        renderEditingAttachments();
+      } else {
+        const draft = normalizeDraft(state.drafts[sessionId]);
+        state.drafts[sessionId] = { text: sessionId === state.currentSessionId ? elements.messageInput.value : draft.text, attachments: [...draft.attachments, ref] };
+        if (!(await persistDrafts())) attachmentSaveFailed = true;
+      }
+      if (sessionId === state.currentSessionId) renderDraftAttachments();
+    }
+  } catch (error) {
+    console.error('Attachment preparation:', error.name);
+    showNotification(error.message || 'Could not save the attachment. Try again.');
+  } finally {
+    attachmentJobs.delete(job);
+    renderDraftAttachments();
+    updateInputState();
+  }
+}
+
+function releaseAttachmentPreviews() {
+  observedAttachmentImages.forEach((image) => {
+    if (!image.isConnected) { attachmentPreviewObserver?.unobserve(image); observedAttachmentImages.delete(image); }
+  });
+  attachmentPreviewUrls.forEach((url, image) => {
+    if (!image.isConnected) { URL.revokeObjectURL(url); attachmentPreviewUrls.delete(image); }
+  });
+}
+
+async function loadAttachmentPreview(image, ref) {
+  try {
+    const original = await AttachmentStore.get(ref);
+    let preview = original;
+    if (typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function') {
+      const bitmap = await createImageBitmap(original, { resizeWidth: 160, resizeQuality: 'medium' });
+      try {
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        preview = await canvas.convertToBlob({ type: 'image/png' });
+      } finally { bitmap.close(); }
+    }
+    if (!image.isConnected) return;
+    const url = URL.createObjectURL(preview);
+    attachmentPreviewUrls.set(image, url);
+    image.src = url;
+  } catch (error) { image.alt = `Preview unavailable: ${ref.name}`; }
+}
+
+function renderAttachmentList(container, refs, remove = null) {
+  container.replaceChildren();
+  refs.forEach((ref, index) => {
+    const row = document.createElement('div');
+    row.className = 'attachment-card';
+    if (ref.kind === 'image') {
+      const view = document.createElement('button');
+      view.type = 'button';
+      view.className = 'attachment-preview-btn';
+      view.setAttribute('aria-label', `View ${ref.name}`);
+      view.addEventListener('click', () => previewAttachment(ref));
+      const image = document.createElement('img');
+      image.alt = ref.name;
+      image.className = 'attachment-thumbnail';
+      image.loading = 'lazy';
+      view.appendChild(image);
+      row.appendChild(view);
+      attachmentPreviewObserver ||= new IntersectionObserver((entries, observer) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          observer.unobserve(entry.target);
+          observedAttachmentImages.delete(entry.target);
+          loadAttachmentPreview(entry.target, entry.target.attachmentRef);
+        });
+      });
+      image.attachmentRef = ref;
+      observedAttachmentImages.add(image);
+      attachmentPreviewObserver.observe(image);
+    }
+    const label = document.createElement('span');
+    label.className = 'attachment-name';
+    label.textContent = `${ref.name} · ${(ref.size / 1024).toFixed(ref.size < 10240 ? 1 : 0)} KB`;
+    label.title = ref.name;
+    row.appendChild(label);
+    const download = document.createElement('button');
+    download.type = 'button';
+    download.className = 'undo-btn';
+    download.textContent = 'Download';
+    download.setAttribute('aria-label', `Download ${ref.name}`);
+    download.addEventListener('click', () => downloadAttachment(ref));
+    row.appendChild(download);
+    if (remove) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'undo-btn';
+      button.textContent = 'Remove';
+      button.setAttribute('aria-label', `Remove ${ref.name}`);
+      button.addEventListener('click', () => remove(index));
+      row.appendChild(button);
+    }
+    container.appendChild(row);
+  });
+  queueMicrotask(releaseAttachmentPreviews);
+}
+
+function renderDraftAttachments() {
+  if (!elements.draftAttachments) return;
+  const refs = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
+  renderAttachmentList(elements.draftAttachments, refs, async (index) => {
+    const draft = normalizeDraft(state.drafts[state.currentSessionId]);
+    state.drafts[state.currentSessionId] = { ...draft, attachments: draft.attachments.filter((_, at) => at !== index) };
+    if (!(await persistDrafts())) attachmentSaveFailed = true;
+    renderDraftAttachments();
+    updateInputState();
+  });
+  elements.attachmentStatus.hidden = ![...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
+}
+
+function renderEditingAttachments() {
+  const container = messageElementCache.get(editingMessageId)?.querySelector('.editing-attachments');
+  if (container) renderAttachmentList(container, editingAttachments, (index) => {
+    editingAttachments = editingAttachments.filter((_, at) => at !== index);
+    renderEditingAttachments();
+  });
+}
+
+async function downloadAttachment(ref) {
+  try {
+    const url = URL.createObjectURL(await AttachmentStore.get(ref));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = ref.name.replace(/[\\/\x00-\x1f]/g, '_');
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (error) { showNotification(error.message); }
+}
+
+let fullAttachmentPreviewUrl;
+async function previewAttachment(ref) {
+  try {
+    const blob = await AttachmentStore.get(ref);
+    const dialog = document.getElementById('attachmentPreviewDialog');
+    if (dialog.open) return;
+    fullAttachmentPreviewUrl = URL.createObjectURL(blob);
+    const image = dialog.querySelector('img');
+    image.alt = ref.name;
+    image.src = fullAttachmentPreviewUrl;
+    dialog.onclose = () => {
+      URL.revokeObjectURL(fullAttachmentPreviewUrl);
+      fullAttachmentPreviewUrl = null;
+      image.removeAttribute('src');
+    };
+    dialog.showModal();
+  } catch (error) { showNotification(error.message); }
+}
+
+async function retainUndoAttachments(value) {
+  const refs = [...AttachmentStore.references(value)].map((id) => ({ id }));
+  if (refs.length) await withStorageLock(() => AttachmentStore.pin(`${pageId}:undo`, refs, UNDO_TIMEOUT + 1000));
+}
+
+async function cleanupAttachments() {
+  if (storageLoadFailed || !storageReady) return;
+  try {
+    await withStorageLock(async () => {
+      await writeLocalChanges(true, { scanAll: true });
+      const stored = await chrome.storage.local.get(null);
+      const refs = AttachmentStore.references(stored);
+      AttachmentStore.references(state.sessions, refs);
+      AttachmentStore.references(state.drafts, refs);
+      await AttachmentStore.collect(refs);
+    });
+  } catch (error) { console.warn('Attachment cleanup deferred:', error.name); }
 }
 
 // A selection is staged locally by the context menu. Import into the current
@@ -1064,7 +1340,7 @@ async function stopStreamingIfActive() {
 // and leaving it drops it, so history does not fill up with "New Chat" rows.
 function isBlankSession(sessionId) {
   const session = state.sessions[sessionId];
-  return Boolean(session && !session.messages.length && !state.drafts[sessionId]?.trim());
+  return Boolean(session && !session.messages.length && !draftHasContent(state.drafts[sessionId]));
 }
 
 // Makes `sessionId` the visible chat. Callers stop any running stream first.
@@ -1126,6 +1402,7 @@ async function deleteSession(sessionId) {
   }
 
   const removed = state.sessions[sessionId];
+  await retainUndoAttachments([removed, state.drafts[sessionId]]);
   const removedDraft = state.drafts[sessionId];
 
   removed.messages?.forEach((msg) => messageElementCache.delete(msg.id));
@@ -1168,7 +1445,7 @@ function titleFromContent(content) {
   return characters.length > 50 ? `${characters.slice(0, 50).join('')}…` : characters.join('');
 }
 
-function addMessage(role, content, reasoning = null, reasoningCollapsed = false) {
+function addMessage(role, content, reasoning = null, reasoningCollapsed = false, attachments = []) {
   const session = state.sessions[state.currentSessionId];
   if (!session) return;
 
@@ -1178,6 +1455,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
     content,
     reasoning,
     reasoningCollapsed,
+    ...(attachments.length ? { attachments: structuredClone(attachments) } : {}),
     timestamp: new Date().toISOString()
   };
 
@@ -1189,7 +1467,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 
   // Auto-generate title from first user message
   if (role === 'user' && session.messages.length === 1) {
-    session.title = titleFromContent(content);
+    session.title = titleFromContent(content || attachments[0]?.name || 'Attachment');
   }
 
   debouncedSave();
@@ -1201,6 +1479,7 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false)
 // ========================================
 
 function renderMessages() {
+  Promise.resolve().then(releaseAttachmentPreviews);
   updateSessionTitle();
   // Every caller either replaces the transcript or appends to it; neither is a
   // state an open editor should survive
@@ -1369,6 +1648,12 @@ function createMessageElement(message) {
   }
 
   bubble.appendChild(content);
+  if (message.attachments?.length) {
+    const list = document.createElement('div');
+    list.className = 'attachment-list message-attachments';
+    renderAttachmentList(list, message.attachments);
+    bubble.appendChild(list);
+  }
   const status = document.createElement('span');
   status.className = 'response-status';
   bubble.appendChild(status);
@@ -1477,6 +1762,7 @@ function displayParts(message) {
   const reasoning = message.reasoning || '';
   if (message.role !== 'assistant' || !isStreamingMessage(message.id)) return { content, reasoning };
 
+  if (message.reasoningFormat === 'structured' || (message.protocol && message.reasoningFormat !== 'think-tags')) return { content, reasoning };
   const head = content.trimStart();
   // The opening tag itself can arrive split over several deltas
   if (head && '<thinking>'.startsWith(head)) return { content: '', reasoning };
@@ -1749,6 +2035,9 @@ function startEditing(message) {
   if (!content) return;
 
   editingMessageId = message.id;
+  editingAttachments = structuredClone(message.attachments || []);
+  const savedAttachments = bubble.querySelector('.message-attachments');
+  if (savedAttachments) savedAttachments.hidden = true;
   element.classList.add('editing');
   content.hidden = true;
 
@@ -1794,9 +2083,26 @@ function startEditing(message) {
 
   controls.appendChild(cancel);
   controls.appendChild(submit);
-  editor.appendChild(input);
-  editor.appendChild(controls);
+  const attached = document.createElement('div');
+  attached.className = 'attachment-list editing-attachments';
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.hidden = true;
+  fileInput.accept = elements.attachmentInput.accept;
+  const attach = document.createElement('button');
+  attach.type = 'button';
+  attach.className = 'btn btn-small';
+  attach.textContent = 'Attach files';
+  attach.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    receiveAttachments([...fileInput.files], message.id);
+    fileInput.value = '';
+  });
+  controls.prepend(attach);
+  editor.append(input, attached, fileInput, controls);
   bubble.appendChild(editor);
+  renderEditingAttachments();
 
   resizeEditor(input);
   input.focus();
@@ -1820,61 +2126,51 @@ function cancelEditing(restoreFocus = true) {
 
   const content = element.querySelector('.message-content');
   if (content) content.hidden = false;
+  const attachments = element.querySelector('.message-attachments');
+  if (attachments) attachments.hidden = false;
+  editingAttachments = [];
+  releaseAttachmentPreviews();
   if (restoreFocus) element.querySelector('.edit-btn')?.focus({ preventScroll: true });
 }
 
 async function submitEdit(message, rawText) {
+  if (state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
   const text = rawText.trim();
-  state.userScrolledUp = false;
-  state.readingResponse = false;
-  state.followOutput = false;
+  const attachments = structuredClone(editingMessageId === message.id ? editingAttachments : message.attachments || []);
   const session = state.sessions[state.currentSessionId];
-  const index = session ? session.messages.findIndex((m) => m.id === message.id) : -1;
-
-  if (!text || index === -1) {
-    cancelEditing();
-    return;
-  }
-
-  const previousText = message.content;
+  const index = session?.messages.findIndex((m) => m.id === message.id) ?? -1;
+  if ((!text && !attachments.length) || index === -1) return;
+  if (text === message.content && sameValue(attachments, message.attachments || [])) { cancelEditing(); return; }
+  if (!ensureReadyToSend()) return;
+  const previous = structuredClone(message);
   const previousTitle = session.title;
   const removed = session.messages.slice(index + 1);
-
-  if (text !== previousText && !ensureReadyToSend()) return;
-  cancelEditing(false);
-
-  if (text === previousText) return;
-
-  message.content = text;
-  message.timestamp = new Date().toISOString();
-  session.messages = session.messages.slice(0, index + 1);
-  session.timestamp = new Date().toISOString();
-
-  // The first user message is what names the chat
-  if (index === 0) session.title = titleFromContent(text);
-
-  saveToStorage();
-  renderMessages();
-  updateMessageDisplay(message.id);
-
-  offerUndo(describeEditUndo(removed.length), async () => {
-    await stopStreamingIfActive();
-
-    // By object: the chat may have been deleted in the meantime.
-    const target = Object.values(state.sessions).includes(session) ? session : null;
-    if (!target) return;
-
-    message.content = previousText;
-    target.title = previousTitle;
-    target.messages = target.messages.slice(0, index + 1).concat(removed);
-
-    saveToStorage();
-    renderMessages();
-    updateMessageDisplay(message.id);
+  const edited = { ...message, content: text, attachments, timestamp: new Date().toISOString() };
+  await sendMessageToAPI(null, {
+    messages: [...session.messages.slice(0, index), edited],
+    async commit() {
+      await retainUndoAttachments([previous, ...removed]);
+      if (state.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      cancelEditing(false);
+      Object.assign(message, edited);
+      session.messages = session.messages.slice(0, index + 1);
+      session.timestamp = new Date().toISOString();
+      if (index === 0) session.title = titleFromContent(text || attachments[0].name);
+      messageElementCache.delete(message.id);
+      saveToStorage();
+      offerUndo(describeEditUndo(removed.length), async () => {
+        await stopStreamingIfActive();
+        if (!Object.values(state.sessions).includes(session)) return;
+        Object.assign(message, previous);
+        if (!previous.attachments) delete message.attachments;
+        session.title = previousTitle;
+        session.messages = session.messages.slice(0, index + 1).concat(removed);
+        messageElementCache.delete(message.id);
+        saveToStorage();
+        renderMessages();
+      });
+    }
   });
-
-  elements.messageInput.focus({ preventScroll: true });
-  await sendMessageToAPI();
 }
 
 function describeEditUndo(removedCount) {
@@ -1884,51 +2180,33 @@ function describeEditUndo(removedCount) {
 
 async function regenerateMessage(message, button) {
   if (state.isStreaming || state.generationDone || !ensureReadyToSend()) return;
-  state.userScrolledUp = false;
-  state.readingResponse = false;
-  state.followOutput = false;
-
   const session = state.sessions[state.currentSessionId];
-  if (!session) return;
-
+  const index = session?.messages.findIndex((m) => m.id === message.id) ?? -1;
+  if (index === -1) return;
+  const cutFrom = message.role === 'user' ? index + 1 : index;
+  const messages = session.messages.slice(0, cutFrom);
+  if (!messages.some((item) => item.role === 'user')) return;
+  const removed = session.messages.slice(cutFrom);
   button.classList.add('regenerating');
   button.replaceChildren(createIcon('spinner', 'spinning'));
-
   try {
-    const index = session.messages.findIndex((m) => m.id === message.id);
-    if (index === -1) return;
-
-    // Regenerating from a user message replays it; from an assistant or error
-    // message it replaces that message onwards
-    const cutFrom = message.role === 'user' ? index + 1 : index;
-    const removed = session.messages.slice(cutFrom);
-
-    session.messages = session.messages.slice(0, cutFrom);
-    session.timestamp = new Date().toISOString();
-
-    saveToStorage();
-    renderMessages();
-
-    if (removed.length > 0) {
-      const count = removed.length;
-
-      offerUndo(`Removed ${count} message${count > 1 ? 's' : ''}`, async () => {
-        await stopStreamingIfActive();
-
-        const target = Object.values(state.sessions).includes(session) ? session : null;
-        if (!target) return;
-
-        // Drop whatever the regeneration produced, then put the originals back
-        target.messages = target.messages.slice(0, cutFrom).concat(removed);
+    await sendMessageToAPI(null, {
+      messages,
+      async commit() {
+        await retainUndoAttachments(removed);
+        if (state.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        session.messages = messages;
+        session.timestamp = new Date().toISOString();
         saveToStorage();
-        renderMessages();
-      });
-    }
-
-    // The request replays the history, so there must be a question left in it
-    if (session.messages.some((m) => m.role === 'user')) {
-      await sendMessageToAPI();
-    }
+        if (removed.length) offerUndo(`Removed ${removed.length} message${removed.length === 1 ? '' : 's'}`, async () => {
+          await stopStreamingIfActive();
+          if (!Object.values(state.sessions).includes(session)) return;
+          session.messages = session.messages.slice(0, cutFrom).concat(removed);
+          saveToStorage();
+          renderMessages();
+        });
+      }
+    });
   } finally {
     button.classList.remove('regenerating');
     button.replaceChildren(createIcon('redo'));
@@ -2213,6 +2491,9 @@ function responseCompletionNotice(message) {
   }
   if (message.incompleteReason === 'content_filter') return 'The provider filtered this response · it may be incomplete.';
   if (message.incompleteReason) return 'The provider returned an incomplete response. You can retry.';
+  if (message.unsupportedOutput?.length) return `The provider returned unsupported output: ${message.unsupportedOutput.join(', ')}. Tool execution is not supported.`;
+  if (message.outcome === 'completed' && !message.content?.trim()) return message.reasoning?.trim()
+    ? 'The provider returned reasoning but no answer text.' : 'The provider returned no displayable text.';
   if (message.completionUnconfirmed) return 'Completion not confirmed by the provider · this response may be incomplete.';
   return '';
 }
@@ -2429,8 +2710,12 @@ function autoResizeTextarea() {
 function updateInputState() {
   const provider = getCurrentProvider();
   const hasConfig = Boolean(getReadyProvider());
-  const hasMessage = elements.messageInput.value.trim().length > 0;
-  const canSend = hasConfig && hasMessage && !state.isStreaming;
+  const hasMessage = elements.messageInput.value.trim().length > 0 || normalizeDraft(state.drafts[state.currentSessionId]).attachments.length > 0;
+  const hasJobs = [...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
+  const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed;
+  if (elements.attachBtn) elements.attachBtn.disabled = state.isPreparing;
+  elements.draftAttachments?.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
+  elements.messageInput.disabled = state.isPreparing;
 
   elements.sendBtn.disabled = !canSend;
 
@@ -2455,7 +2740,7 @@ function updateInputState() {
   clearTimeout(generationStatusTimer);
   elements.generationStatus.dataset.state = state.isStreaming ? 'active' : hasConfig ? 'idle' : 'setup';
   elements.generationStatus.textContent = state.isStreaming
-    ? 'Generating · you can draft your next message'
+    ? state.isPreparing ? 'Preparing message…' : 'Generating · you can draft your next message'
     : hasConfig
       ? 'Ready when you are'
       : provider && !provider.apiKey?.trim()
@@ -2735,23 +3020,10 @@ function handleScroll() {
 }
 
 async function handleSendMessage() {
-  const message = elements.messageInput.value.trim();
-  if (!message || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
-
-  state.userScrolledUp = false;
-  state.readingResponse = false;
-  state.followOutput = false;
-
-  clearUndo();
-  addMessage('user', message);
-
-  elements.messageInput.value = '';
-  clearDraft();
-  autoResizeTextarea();
-  updateInputState();
-  elements.messageInput.focus();
-
-  await sendMessageToAPI();
+  const content = elements.messageInput.value.trim();
+  const attachments = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
+  if ((!content && !attachments.length) || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
+  await sendMessageToAPI({ content, attachments: structuredClone(attachments) });
 }
 
 async function handleStopGeneration() {
@@ -3021,6 +3293,7 @@ function sessionMarkdown(session) {
     parts.push(`## ${MESSAGE_LABELS[message.role] || message.role}${model ? ` · ${model}` : ''}`, message.timestamp || '');
     if (message.reasoning?.trim()) parts.push('### Reasoning / summary', message.reasoning);
     if (message.content) parts.push(message.content);
+    (message.attachments || []).forEach((ref) => parts.push(`Attachment: ${ref.name} · ${ref.mime} · ${ref.size} bytes (download the original in SideMind)`));
     const notice = message.error || responseCompletionNotice(message);
     if (notice) parts.push(`Status: ${notice}`);
     if (isStreamingMessage(message.id)) parts.push('Status: Generation still in progress · partial response');
@@ -3042,57 +3315,69 @@ function exportSession(sessionId) {
   showNotification('Conversation exported as Markdown.');
 }
 
-async function sendMessageToAPI() {
-  const provider = getReadyProvider();
+async function sendMessageToAPI(draft = null, revision = null) {
+  const provider = structuredClone(getReadyProvider());
   if (!provider) {
-    showError(
-      getCurrentProvider()
-        ? 'This provider has no API key. Add one in Settings, then retry.'
-        : 'No model selected. Choose a model above, then retry.'
-    );
+    showNotification('Choose a model with an API key in Settings, then retry.');
     return;
   }
-
   if (state.isStreaming || state.generationDone) return;
-  state.generationDone = new Promise((resolve) => {
-    state.resolveGeneration = resolve;
-  });
-
-  // Initialize streaming state
+  state.generationDone = new Promise((resolve) => { state.resolveGeneration = resolve; });
   state.userScrolledUp = false;
   state.abortController = new AbortController();
   state.isStreaming = true;
+  state.isPreparing = true;
   streamRenderCost = 0;
   updateInputState();
-
-  // Create assistant message
-  const assistantMessage = {
-    id: crypto.randomUUID(),
-    role: 'assistant',
-    content: '',
-    reasoning: '',
-    reasoningCollapsed: true,
-    startedAt: Date.now(),
-    modelUsed: state.config.selectedModel,
-    timestamp: new Date().toISOString()
-  };
-
-  state.sessions[state.currentSessionId].messages.push(assistantMessage);
-  state.currentStreamingMessage = assistantMessage;
-  renderMessages();
-  startStreamTicker();
-  announce('Waiting for the assistant…');
-
+  let assistantMessage;
+  let preparationError;
   try {
-    await streamResponse(provider, assistantMessage, state.abortController.signal);
+    const context = createRequestContext(provider);
+    context.signal = state.abortController.signal;
+    if (revision) context.messages = structuredClone(revision.messages);
+    if (draft) context.messages.push({ role: 'user', content: draft.content, attachments: draft.attachments });
+    context.body = await getAdapter(provider).buildRequestBody(context);
+    if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (revision) await revision.commit();
+    if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (draft) {
+      clearUndo();
+      addMessage('user', draft.content, null, false, draft.attachments);
+      // A context-menu import can append text while Blob preparation awaits.
+      // Clear only the draft that was actually captured by this request.
+      const unchanged = elements.messageInput.value.trim() === draft.content &&
+        sameValue(normalizeDraft(state.drafts[state.currentSessionId]).attachments, draft.attachments);
+      if (unchanged) {
+        elements.messageInput.value = '';
+        clearDraft();
+      } else saveDraftSoon();
+      autoResizeTextarea();
+    }
+    state.isPreparing = false;
+    assistantMessage = {
+      reasoningFormat: provider.reasoningFormat || (getApiType(provider) === 'responses' ? 'structured' : 'think-tags'),
+      id: crypto.randomUUID(), role: 'assistant', content: '', reasoning: '', reasoningCollapsed: true,
+      startedAt: Date.now(), modelUsed: `${context.modelId} - ${provider.id}`, timestamp: new Date().toISOString()
+    };
+    assistantMessage.parameterOrigins = context.parameterOrigins;
+    state.sessions[state.currentSessionId].messages.push(assistantMessage);
+    state.currentStreamingMessage = assistantMessage;
+    renderMessages();
+    updateInputState();
+    startStreamTicker();
+    announce('Waiting for the assistant…');
+    await streamResponse(provider, assistantMessage, context.signal, context);
   } catch (error) {
+    preparationError = error;
     if (error.name !== 'AbortError') {
-      console.error('API request failed:', error.name);
-      await handleApiError(error, provider);
+      console.error('Message failed:', error.name);
+      if (assistantMessage) await handleApiError(error, provider);
+      else showNotification(error.message);
     }
   } finally {
     try {
-      cleanupStreaming(assistantMessage.id);
+      state.isPreparing = false;
+      cleanupStreaming(assistantMessage?.id, preparationError);
     } finally {
       state.resolveGeneration?.();
       state.resolveGeneration = null;
@@ -3143,14 +3428,19 @@ const API_ADAPTERS = {
     endpoint: '/chat/completions',
     buildRequestBody: buildChatRequestBody,
     applyStreamEvent: applyChatStreamEvent,
-    applyResponse: applyChatResponse
+    applyResponse: applyChatResponse,
+    endStream(message) { message.streamComplete = true; message.streamEnded = true; message.outcome ||= message.incompleteReason ? 'incomplete' : 'completed'; }
   },
   responses: {
     label: 'Responses',
     endpoint: '/responses',
     buildRequestBody: buildResponsesRequestBody,
     applyStreamEvent: applyResponsesStreamEvent,
-    applyResponse: applyResponsesBody
+    applyResponse: applyResponsesBody,
+    endStream(message) {
+      message.streamEnded = true;
+      if (!message.streamComplete) { message.completionUnconfirmed = true; message.outcome = 'unconfirmed'; }
+    }
   }
 };
 
@@ -3163,9 +3453,18 @@ function getAdapter(provider) {
 }
 
 // SIMPLIFIED STREAMING - Core streaming logic
-async function streamResponse(provider, assistantMessage, signal) {
+async function streamResponse(provider, assistantMessage, signal, preparedContext = null) {
+  provider = structuredClone(provider);
+  const context = preparedContext || createRequestContext(provider);
+  assistantMessage.reasoningFormat ||= provider.reasoningFormat || (getApiType(provider) === 'responses' ? 'structured' : 'think-tags');
   const adapter = getAdapter(provider);
-  const body = adapter.buildRequestBody();
+  if (getApiType(provider) === 'responses') {
+    assistantMessage.protocol = { version: 1, apiType: 'responses', source: context.source, output: [] };
+  }
+  context.signal = signal;
+  const pendingBody = context.body || adapter.buildRequestBody(context);
+  const body = pendingBody?.then ? await pendingBody : pendingBody;
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
   // Without streaming, the headers only arrive once the whole answer is ready
   const watchdog = createRequestWatchdog(
     signal,
@@ -3174,6 +3473,7 @@ async function streamResponse(provider, assistantMessage, signal) {
   try {
     const response = await makeApiRequest(provider, adapter.endpoint, body, watchdog.signal);
     if (!response) return;
+    assistantMessage.requestId = response.headers.get('x-request-id') || undefined;
     watchdog.touch();
     if (body.stream) {
       await processStream(response, assistantMessage, watchdog.signal, adapter, watchdog.touch);
@@ -3248,7 +3548,7 @@ async function processStream(response, message, signal, adapter, onProgress = ()
         if (buffer.trim()) {
           processStreamEvent(buffer, message, adapter);
         }
-        if (!message.streamComplete) message.completionUnconfirmed = true;
+        if (!message.streamComplete) { message.completionUnconfirmed = true; message.outcome = 'unconfirmed'; }
         break;
       }
       onProgress();
@@ -3263,6 +3563,7 @@ async function processStream(response, message, signal, adapter, onProgress = ()
           throw new DOMException('Aborted', 'AbortError');
         }
         processStreamEvent(event, message, adapter);
+        if (message.streamEnded) break;
       }
       // [DONE] and Responses terminal events end the request even if a proxy
       // leaves the HTTP connection open. Chat finish_reason can precede usage.
@@ -3295,8 +3596,7 @@ function processStreamEvent(event, message, adapter) {
   const data = dataLines.join('\n').trim();
   if (!data) return;
   if (data === '[DONE]') {
-    message.streamComplete = true;
-    message.streamEnded = true;
+    adapter.endStream(message);
     return;
   }
 
@@ -3304,8 +3604,13 @@ function processStreamEvent(event, message, adapter) {
   try {
     parsed = JSON.parse(data);
   } catch (error) {
-    // Ignore parse errors, continue streaming
-    console.warn('Parse error (ignored):', error.message);
+    message.streamParseErrors = (message.streamParseErrors || 0) + 1;
+    console.warn('Malformed streaming event ignored.');
+    return;
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    message.streamParseErrors = (message.streamParseErrors || 0) + 1;
     return;
   }
 
@@ -3366,51 +3671,10 @@ function applyChatStreamEvent(parsed, message) {
 // Responses API: semantic events, each payload carries its own `type`.
 // Only text/reasoning deltas and terminal events are meaningful here.
 function applyResponsesStreamEvent(parsed, message) {
-  if (parsed.error) {
-    throw new Error(`API Error: ${parsed.error.message || 'Unknown streaming error'}`);
-  }
-
-  switch (parsed.type) {
-    case 'response.output_text.delta':
-    case 'response.refusal.delta':
-      if (!parsed.delta) return false;
-      message.content = (message.content || '') + parsed.delta;
-      return true;
-
-    case 'response.reasoning_summary_text.delta':
-    case 'response.reasoning_text.delta':
-      if (!parsed.delta) return false;
-      message.reasoning = (message.reasoning || '') + parsed.delta;
-      return true;
-
-    // A reasoning summary can be split into several parts - keep them readable
-    case 'response.reasoning_summary_part.added':
-      if (!message.reasoning) return false;
-      message.reasoning += '\n\n';
-      return true;
-
-    case 'response.completed':
-    case 'response.incomplete':
-      message.streamComplete = true;
-      message.streamEnded = true;
-      // The terminal response is authoritative and may contain text or usage
-      // that was not included in deltas. Replace rather than append it.
-      applyResponsesResponse(parsed.response || {}, message);
-      if (parsed.type === 'response.incomplete') {
-        message.incompleteReason = parsed.response?.incomplete_details?.reason || 'unknown reason';
-      }
-      return true;
-
-    case 'response.failed': {
-      const error = parsed.response?.error;
-      throw new Error(`API Error: ${error?.message || 'Response failed'}`);
-    }
-
-    case 'error':
-      throw new Error(`API Error: ${parsed.message || 'Unknown streaming error'}`);
-
-    default:
-      return false;
+  try {
+    return ResponsesProtocol.applyEvent(parsed, message);
+  } finally {
+    if (message.protocol?.usage) message.usage = readUsage(message.protocol.usage);
   }
 }
 
@@ -3447,53 +3711,14 @@ function applyChatResponse(data, message) {
 // A complete non-streaming body must look like a Responses object; `{}` or a
 // Chat Completions payload would otherwise be reported as an empty success.
 function applyResponsesBody(data, message) {
-  const recognised = Array.isArray(data?.output) || typeof data?.output_text === 'string';
-  if (!recognised && !data?.error && data?.status !== 'failed') {
-    throw new Error('The provider returned no answer. Check the API type in Settings and retry.');
-  }
-  applyResponsesResponse(data, message);
+  return applyResponsesResponse(data, message);
 }
 
-// Responses API: a list of output items. `reasoning` items hold the summary
-// (and optionally raw reasoning text), `message` items hold the answer.
 function applyResponsesResponse(data, message) {
-  if (data.error || data.status === 'failed') {
-    throw new Error(`API Error: ${data.error?.message || 'Response failed'}`);
-  }
-
-  message.usage = readUsage(data.usage);
-
-  const contentParts = [];
-  const reasoningParts = [];
-
-  (data.output || []).forEach((item) => {
-    if (item?.type === 'reasoning') {
-      (item.summary || []).forEach((part) => part?.text && reasoningParts.push(part.text));
-      (item.content || []).forEach((part) => part?.text && reasoningParts.push(part.text));
-    } else if (item?.type === 'message') {
-      (item.content || []).forEach((part) => {
-        if (part?.type === 'output_text' && part.text) {
-          contentParts.push(part.text);
-        } else if (part?.type === 'refusal' && part.refusal) {
-          contentParts.push(part.refusal);
-        }
-      });
-    }
-  });
-
-  if (reasoningParts.length > 0) {
-    message.reasoning = reasoningParts.join('\n\n');
-  }
-
-  if (contentParts.length > 0) {
-    message.content = contentParts.join('');
-  } else if (typeof data.output_text === 'string' && data.output_text) {
-    // Fallback for compatible providers that only expose the flattened form
-    message.content = data.output_text;
-  }
-
-  if (data.status === 'incomplete') {
-    message.incompleteReason = data.incomplete_details?.reason || 'unknown reason';
+  try {
+    ResponsesProtocol.applyBody(data, message);
+  } finally {
+    if (message.protocol?.usage) message.usage = readUsage(message.protocol.usage);
   }
 }
 
@@ -3578,6 +3803,7 @@ function lexCodeRanges(text) {
 }
 
 function processThinkTags(message) {
+  if (message.reasoningFormat === 'structured' || (message.protocol && message.reasoningFormat !== 'think-tags')) return;
   if (!message.content || !/<think(?:ing)?>/.test(message.content)) return;
 
   const text = message.content;
@@ -3646,121 +3872,60 @@ function getSelectedModelId() {
   return selected ? parseModelKey(selected)[0] : selected;
 }
 
-function getTemperature() {
-  const temperature = state.config.temperature;
-  // null/'' means "use the model default" - required by reasoning models that
-  // reject the parameter outright.
-  return temperature == null || temperature === '' ? null : temperature;
-}
-
-function getMaxTokens() {
-  const value = String(state.config.max_completion_tokens ?? '').trim();
-  if (!value) return null;
-
-  if (!/^[1-9]\d*$/.test(value)) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-function getReasoningEffort() {
-  return state.config.reasoning_effort || null;
-}
-
-// Conversation history, shared by both APIs.
-// The in-flight assistant placeholder is excluded, and so is any reply that
-// has no answer text (it failed, or was stopped while still reasoning): many
-// providers reject an empty assistant turn and fail every later request.
-function buildHistory() {
-  const session = state.sessions[state.currentSessionId];
-  if (!session) return [];
-
-  return session.messages
-    .filter((m) => m.id !== state.currentStreamingMessage?.id)
-    .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content?.trim()))
-    .map((m) => ({ role: m.role, content: m.content }));
-}
-
-function buildMessages() {
-  const messages = [];
-
-  // System prompt
-  const systemPrompt = getSystemPromptContent();
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-
-  return messages.concat(buildHistory());
-}
-
-function buildChatRequestBody() {
-  const body = {
-    model: getSelectedModelId(),
-    messages: buildMessages(),
-    stream: state.config.stream !== false
+function createRequestContext(provider = getCurrentProvider() || {}) {
+  const modelId = getSelectedModelId();
+  const instructions = getSystemPromptContent();
+  const messages = structuredClone((state.sessions[state.currentSessionId]?.messages || [])
+    .filter((message) => message.id !== state.currentStreamingMessage?.id));
+  const { values: parameters, origins: parameterOrigins } = GenerationSettings.resolve(state.config, provider, modelId);
+  return {
+    provider: structuredClone(provider), modelId, instructions, messages,
+    parameters, parameterOrigins,
+    source: { providerId: provider.id || '', baseUrl: buildEndpointUrl(provider, ''), modelId, instructions }
   };
-
-  const temperature = getTemperature();
-  if (temperature != null) {
-    body.temperature = temperature;
-  }
-
-  const maxTokens = getMaxTokens();
-  if (maxTokens != null) {
-    body.max_completion_tokens = maxTokens;
-  }
-
-  const effort = getReasoningEffort();
-  if (effort) {
-    body.reasoning_effort = effort;
-  }
-
-  return body;
 }
 
-// https://developers.openai.com/api/reference/responses/overview
-function buildResponsesRequestBody() {
+function requestParameters(context, responses = false) {
+  const p = context.parameters;
+  const fields = { model: context.modelId, stream: p.stream };
+  if (p.temperature != null) fields.temperature = p.temperature;
+  if (p.max_completion_tokens != null) fields[responses ? 'max_output_tokens' : 'max_completion_tokens'] = Number(p.max_completion_tokens);
+  if (responses) {
+    const reasoning = {};
+    if (p.reasoning_effort != null) reasoning.effort = p.reasoning_effort;
+    if (p.reasoning_summary != null) reasoning.summary = p.reasoning_summary;
+    if (p.reasoning_context != null) reasoning.context = p.reasoning_context;
+    if (Object.keys(reasoning).length) fields.reasoning = reasoning;
+  } else if (p.reasoning_effort != null) fields.reasoning_effort = p.reasoning_effort;
+  return fields;
+}
+
+function chatHistory(context) {
+  return context.messages.filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content?.trim()))
+    .map((m) => ({ role: m.role, content: m.content || '', ...(m.attachments?.length ? { attachments: m.attachments } : {}) }));
+}
+
+function buildChatRequestBody(context = createRequestContext()) {
+  const messages = chatHistory(context);
+  if (context.instructions) messages.unshift({ role: 'system', content: context.instructions });
+  const body = { ...requestParameters(context), messages };
+  return hydrateRequest(body, 'messages', 'chat', context.signal);
+}
+
+function buildResponsesRequestBody(context = createRequestContext()) {
   const body = {
-    model: getSelectedModelId(),
-    input: buildHistory(),
-    stream: state.config.stream !== false,
-    // Replay local history rather than relying on stored response IDs.
+    ...requestParameters(context, true),
+    input: ResponsesProtocol.history(context.messages, context.source),
     store: false
   };
+  if (context.instructions) body.instructions = context.instructions;
+  return hydrateRequest(body, 'input', 'responses', context.signal);
+}
 
-  // The system prompt is a first-class field rather than a message
-  const systemPrompt = getSystemPromptContent();
-  if (systemPrompt) {
-    body.instructions = systemPrompt;
-  }
-
-  const temperature = getTemperature();
-  if (temperature != null) {
-    body.temperature = temperature;
-  }
-
-  const maxTokens = getMaxTokens();
-  if (maxTokens != null) {
-    body.max_output_tokens = maxTokens;
-  }
-
-  const reasoning = {};
-
-  const effort = getReasoningEffort();
-  if (effort) {
-    reasoning.effort = effort;
-  }
-
-  // Summaries are opt-in because not every model supports reasoning options.
-  const summary = state.config.reasoning_summary;
-  if (summary && summary !== 'off') {
-    reasoning.summary = summary;
-  }
-
-  if (Object.keys(reasoning).length > 0) {
-    body.reasoning = reasoning;
-  }
-
-  return body;
+// Text-only requests stay synchronous; Blob hydration is needed only for attachments.
+function hydrateRequest(body, key, apiType, signal) {
+  if (!body[key].some((message) => message.attachments?.length)) return body;
+  return AttachmentStore.hydrate(body, key, apiType, signal);
 }
 
 // Tolerate base URLs that already include the endpoint (e.g. .../v1/responses)
@@ -3792,6 +3957,9 @@ async function makeApiRequest(provider, endpoint, body, signal) {
       const detail = String(payload?.error?.message || response.statusText || 'Request failed');
       const error = new Error(`API Error (${response.status}): ${detail}`);
       error.status = response.status;
+      error.code = payload?.error?.code || null;
+      error.param = payload?.error?.param || null;
+      error.requestId = response.headers.get('x-request-id');
       // Provider errors occasionally echo credentials. Never store that key in
       // a transcript or its Markdown export.
       error.details = provider.apiKey ? error.message.split(provider.apiKey).join('[redacted]') : error.message;
@@ -3813,7 +3981,7 @@ async function makeApiRequest(provider, endpoint, body, signal) {
   }
 }
 
-function cleanupStreaming(messageId) {
+function cleanupStreaming(messageId, preparationError = null) {
   const wasAborted = state.abortController?.signal.aborted;
   const session = state.sessions[state.currentSessionId];
   const message = session?.messages.find((item) => item.id === messageId);
@@ -3825,6 +3993,9 @@ function cleanupStreaming(messageId) {
   if (message) processThinkTags(message);
   finalizeTiming(messageId);
 
+  if (message) {
+    message.outcome = message.error ? 'failed' : wasAborted ? 'stopped' : message.outcome || (message.incompleteReason ? 'incomplete' : message.completionUnconfirmed ? 'unconfirmed' : 'completed');
+  }
   if (wasAborted && message) {
     const hasContent = message.content?.trim() || message.reasoning?.trim();
 
@@ -3841,6 +4012,16 @@ function cleanupStreaming(messageId) {
   state.isStreaming = false;
   state.currentStreamingMessage = null;
   state.abortController = null;
+
+  if (!message && preparationError) {
+    saveToStorage();
+    updateInputState();
+    elements.generationStatus.textContent = preparationError.name === 'AbortError'
+      ? 'Preparation cancelled · draft kept' : 'Message could not be prepared · draft kept';
+    elements.generationStatus.dataset.state = 'notice';
+    announce(elements.generationStatus.textContent);
+    return;
+  }
 
   announce(
     message?.error
@@ -3895,12 +4076,24 @@ async function handleApiError(error, provider = getCurrentProvider()) {
   const safeError = {
     name: error.name,
     status: error.status,
-    message: redact(error.message)
+    message: redact(error.message),
+    code: error.code ? redact(String(error.code)) : null,
+    param: error.param ? redact(String(error.param)).slice(0, 500) : null
   };
   const message = state.currentStreamingMessage;
   if (message) {
     message.error = getErrorMessage(safeError);
     message.errorDetail = redact(error.details || error.message).slice(0, 2000);
+    message.outcome = 'failed';
+    const safeField = (value) => value == null ? null : redact(String(value)).slice(0, 500);
+    message.apiError = { code: safeField(error.code), param: safeField(error.param), requestId: safeField(error.requestId || message.requestId), status: error.status || null };
+    if (message.protocol?.error) message.protocol.error = { ...message.apiError, message: safeError.message };
+    const parameterKey = { 'reasoning.effort': 'reasoning_effort', 'reasoning.summary': 'reasoning_summary', 'reasoning.context': 'reasoning_context', max_output_tokens: 'max_completion_tokens' }[message.apiError.param] || message.apiError.param;
+    if (message.apiError.param) {
+      const origin = message.parameterOrigins?.[parameterKey];
+      message.errorDetail += `\nParameter: ${message.apiError.param}${origin ? ` (from ${origin})` : ''}`;
+    }
+    if (message.apiError.requestId) message.errorDetail += `\nRequest ID: ${message.apiError.requestId}`;
     message.errorAction = isContextLimitError(safeError)
       ? 'new-chat'
       : [400, 401, 403, 404].includes(error.status) ? 'settings' : null;
@@ -3943,17 +4136,20 @@ const ERROR_HANDLERS = [
 ];
 
 function isContextLimitError(error) {
+  if (error.code === 'context_length_exceeded') return true;
   return /context_length_exceeded|maximum context length|prompt is too long|input token limit/i.test(error.message);
 }
 
 function getErrorMessage(error) {
   if (error.name === 'TimeoutError') return error.message;
   if (isContextLimitError(error)) return 'This conversation exceeds the model’s context limit. Start a new chat or shorten your messages before retrying.';
+  if (error.param && (error.status === 400 || /unsupported|invalid_parameter/.test(error.code || ''))) return `The provider rejected “${error.param}”. Review this model’s parameters in Settings.`;
   if (error.status === 400) return 'The provider rejected this request. Check the model, API type and parameters in Settings.';
   if (error.status === 401 || error.status === 403) return 'Access denied. Check your API key and model access in Settings.';
   if (error.status === 404) return 'Endpoint or model not found. Check the Base URL, API type and model in Settings.';
   if (error.status === 429) return 'The provider is limiting requests or your quota is exhausted. Check your quota, or wait before retrying.';
   if (error.status >= 500) return 'The provider is temporarily unavailable. Wait a moment and retry.';
+  if (error.code === 'rate_limit_exceeded' || error.code === 'insufficient_quota') return 'The provider is limiting requests or your quota is exhausted. Check your quota, or wait before retrying.';
   const msg = error.message.toLowerCase();
 
   for (const { patterns, message } of ERROR_HANDLERS) {

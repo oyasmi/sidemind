@@ -39,6 +39,7 @@ before(async () => {
   if (!chromium) return;
   server = createServer((request, response) => {
     const pathname = new URL(request.url, 'http://localhost').pathname;
+    if (pathname === '/attachment-fixture.html') { response.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>Attachment fixture</title>'); return; }
     const path = resolve(root, `.${pathname}`);
     if (!path.startsWith(`${root}/`)) {
       response.writeHead(403).end();
@@ -91,9 +92,9 @@ function seedLayout({ sessions, __legacyLayout, ...rest }) {
   };
 }
 
-async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {}, prepare) {
+async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {}, prepare, browserContext = null) {
   const local = seedLayout(rawLocal);
-  const page = await browser.newPage({
+  const page = browserContext ? await browserContext.newPage() : await browser.newPage({
     viewport: { width: kind === 'sidebar' ? 380 : 1160, height: 800 },
     reducedMotion: 'reduce'
   });
@@ -106,7 +107,8 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
       window.__writes = [];
       window.__failSave = false;
       window.__failLocalSave = false;
-      window.__storage = { sync: { config: initialConfig }, local: initialLocal, session: {} };
+      const reload = sessionStorage.getItem('sidemind-fixture-reload');
+      window.__storage = reload ? JSON.parse(reload) : { sync: { config: initialConfig }, local: initialLocal, session: {} };
       // chrome.storage returns JSON with the keys of every object in
       // alphabetical order, not a clone of what was written.
       const stored = (value) =>
@@ -137,6 +139,7 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
             };
             window.__storage[area][key] = stored(value);
           }
+          if (sessionStorage.getItem('sidemind-fixture-reload')) sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
           window.__writes.push({ area, data: stored(data) });
           listeners.forEach((listener) => listener(changes, area));
         },
@@ -146,6 +149,7 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
             if (key in window.__storage[area]) changes[key] = { oldValue: window.__storage[area][key] };
             delete window.__storage[area][key];
           }
+          if (sessionStorage.getItem('sidemind-fixture-reload')) sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
           listeners.forEach((listener) => listener(changes, area));
         }
       });
@@ -583,9 +587,9 @@ browserTest(
     await page.locator('#conversation .advanced-settings summary').click();
     for (const value of ['1', '12', '120'])
       await page.locator('#maxCompletionTokensInput').fill(value);
-    await page.waitForFunction(() => window.__storage.sync.config.max_completion_tokens === '120');
+    await page.waitForFunction(() => window.__storage.sync.config.max_completion_tokens === 120);
     assert.equal(
-      await page.evaluate(() => window.__writes.filter((write) => write.area === 'sync').length),
+      await page.evaluate(() => window.__writes.filter((write) => write.area === 'sync' && write.data.config.max_completion_tokens === 120).length),
       1
     );
     await page.locator('#maxCompletionTokensInput').fill('1.5');
@@ -595,7 +599,7 @@ browserTest(
     );
     assert.equal(
       await page.evaluate(() => window.__storage.sync.config.max_completion_tokens),
-      '120'
+      120
     );
     await page.evaluate(() => {
       window.__failSave = true;
@@ -608,7 +612,7 @@ browserTest(
       window.__failSave = false;
     });
     await page.locator('#saveBtn').click();
-    await page.waitForFunction(() => window.__storage.sync.config.max_completion_tokens === '240');
+    await page.waitForFunction(() => window.__storage.sync.config.max_completion_tokens === 240);
     assert.deepEqual(errors, []);
     await page.close();
   }
@@ -952,6 +956,19 @@ browserTest(
         const currentWindow = await chrome.windows.getCurrent();
         return !(await chrome.storage.session.get([`selection:${currentWindow.id}`]))[`selection:${currentWindow.id}`];
       });
+      await chat.locator('#attachmentInput').setInputFiles(attachmentPng);
+      await chat.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 1);
+      await chat.evaluate(() => persistDrafts());
+      await chat.reload();
+      await chat.waitForFunction(() => storageReady && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 1);
+      assert.match(await chat.locator('#messageInput').inputValue(), /^Persistent local draft/);
+      assert.equal(await chat.evaluate(async () => {
+        const ref = normalizeDraft(state.drafts[state.currentSessionId]).attachments[0];
+        return (await AttachmentStore.get(ref)).size === ref.size;
+      }), true);
+      await chat.getByRole('button', { name: 'View pixel.png', exact: true }).click();
+      await chat.waitForFunction(() => document.querySelector('#attachmentPreviewDialog img').naturalWidth > 0);
+      await chat.getByRole('button', { name: 'Close image preview', exact: true }).click();
       assert.deepEqual(errors, []);
     } finally {
       await context?.close();
@@ -1102,7 +1119,7 @@ browserTest('unsaved drafts remain visible and retry persists the complete curre
   await page.evaluate(() => { window.__failLocalSave = false; });
   await page.locator('#retryStorageBtn').click();
   await page.waitForFunction(() => document.querySelector('#storageStatus').classList.contains('hidden'));
-  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), 'A draft that must not disappear');
+  assert.equal(await page.evaluate(() => normalizeDraft(window.__storage.local.drafts[state.currentSessionId]).text), 'A draft that must not disappear');
   assert.equal(await page.evaluate(() => Boolean(window.__storage.local[`session:${state.currentSessionId}`])), true);
   assert.deepEqual(errors, []);
   await page.close();
@@ -1227,7 +1244,7 @@ browserTest('selected text and source append to a draft once and never auto-send
   assert.equal(draft.split('Quoted passage').length, 2);
   assert.equal(draft.includes('Another window'), false);
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
-  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), draft);
+  assert.equal(await page.evaluate(() => normalizeDraft(window.__storage.local.drafts[state.currentSessionId]).text), draft);
   assert.deepEqual(errors, []);
   await page.close();
 });
@@ -1315,7 +1332,7 @@ browserTest('queued local writes preserve the latest draft when an earlier write
     await window.__firstWrite;
     await latest;
   });
-  assert.equal(await page.evaluate(() => window.__storage.local.drafts[state.currentSessionId]), 'Latest draft');
+  assert.equal(await page.evaluate(() => normalizeDraft(window.__storage.local.drafts[state.currentSessionId]).text), 'Latest draft');
   assert.deepEqual(errors, []);
   await page.close();
 });
@@ -1733,7 +1750,7 @@ browserTest('welcome prompt suggestions keep an existing draft', async () => {
   await page.locator('.prompt-suggestion').first().click();
   const value = await page.locator('#messageInput').inputValue();
   assert.equal(value.startsWith('My unsent thought\n\nPlease help me polish'), true);
-  await page.waitForFunction(() => state.drafts[state.currentSessionId]?.startsWith('My unsent thought'));
+  await page.waitForFunction(() => normalizeDraft(state.drafts[state.currentSessionId]).text.startsWith('My unsent thought'));
   assert.deepEqual(errors, []);
   await page.close();
 });
@@ -2187,3 +2204,250 @@ if (process.env.SIDEMIND_BENCHMARK) {
     await page.close();
   });
 }
+
+const attachmentPng = { name: 'pixel.png', mimeType: 'image/png', buffer: readFileSync(resolve(root, 'icons/icon16.png')) };
+const attachmentText = { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment contract: original text.') };
+
+async function useCompleteFixture(page) {
+  await page.evaluate(() => {
+    window.__fetchCalls = [];
+    window.fetch = async (url, options) => {
+      window.__fetchCalls.push(JSON.parse(options.body));
+      const output = [{ id: 'msg_answer', type: 'message', role: 'assistant', status: 'completed', phase: 'final_answer', content: [{ type: 'output_text', text: '<think>literal answer</think>', annotations: [] }] }];
+      return String(url).endsWith('/responses')
+        ? Response.json({ id: 'resp_answer', status: 'completed', output })
+        : Response.json({ choices: [{ message: { content: 'Complete answer' }, finish_reason: 'stop' }] });
+    };
+  });
+}
+
+browserTest('Responses attachments survive reload, follow-up, editing, undo and original download', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  config.stream = false;
+  const { page, errors } = await openPage('sidebar', config);
+  await useCompleteFixture(page);
+  await page.locator('#attachmentInput').setInputFiles([attachmentPng, attachmentText]);
+  await page.waitForFunction(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2 && attachmentJobs.size === 0);
+  await page.waitForFunction(() => window.__storage.local.drafts[state.currentSessionId]?.attachments.length === 2);
+  assert.equal(await page.locator('#sendBtn').isEnabled(), true, 'attachment-only messages can be sent');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
+  const first = await page.evaluate(() => window.__fetchCalls[0]);
+  assert.deepEqual(first.input[0].content.map(part => part.type), ['input_image', 'input_file']);
+  assert.equal(first.input[0].content[1].filename, 'notes.txt');
+  assert.equal(Buffer.from(first.input[0].content[1].file_data.split(',')[1], 'base64').toString(), attachmentText.buffer.toString());
+  assert.equal((await page.locator('.assistant .message-content').textContent()).trim(), '<think>literal answer</think>');
+  assert.equal(await page.locator('.assistant .reasoning-section').count(), 0);
+  await page.evaluate(async () => {
+    await saveToStorage();
+    sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
+  });
+  const local = await page.evaluate(() => JSON.stringify(window.__storage.local));
+  assert.equal(local.includes('data:image/'), false);
+  assert.equal(local.includes('file_data'), false);
+  await page.reload();
+  await page.waitForFunction(() => storageReady && state.sessions[state.currentSessionId]?.messages.length === 2);
+  await useCompleteFixture(page);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download notes.txt', exact: true }).click();
+  assert.equal(readFileSync(await (await download).path(), 'utf8'), attachmentText.buffer.toString());
+  await page.locator('#messageInput').fill('Follow up');
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.responses.buildRequestBody;
+    API_ADAPTERS.responses.buildRequestBody = (context) => {
+      API_ADAPTERS.responses.buildRequestBody = build;
+      return new Promise((resolve) => { window.__releasePreparation = resolve; }).then(() => build(context));
+    };
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => state.isPreparing && typeof window.__releasePreparation === 'function');
+  await page.evaluate(async () => {
+    await chrome.storage.session.set({ 'selection:1': { text: 'An excerpt imported during preparation', title: 'Source' } });
+    await selectionImportQueue;
+    window.__releasePreparation();
+  });
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
+  assert.match(await page.locator('#messageInput').inputValue(), /An excerpt imported during preparation/);
+  assert.equal(await page.evaluate(() => window.__fetchCalls[0].input.at(-1).content), 'Follow up', 'only the captured draft is sent');
+  assert.equal(await page.evaluate(() => window.__fetchCalls[0].input[0].content.filter(part => part.type === 'input_file').length), 1);
+  await page.locator('.message.user .edit-btn').first().click();
+  await page.locator('.message-edit-input').fill('Updated image question');
+  await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
+  await page.locator('.edit-submit-btn').click();
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 4, 'failed edit preparation preserves later turns');
+  assert.equal(await page.locator('.message-edit-input').inputValue(), 'Updated image question');
+  await page.evaluate(() => { state.config.providers[0].apiType = 'responses'; });
+  await page.getByRole('button', { name: 'Remove notes.txt', exact: true }).click();
+  await page.locator('.message-edit-input').fill('Updated image question');
+  await page.locator('.edit-submit-btn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.__fetchCalls[1].input[0].content.map(part => part.type)), ['input_text', 'input_image']);
+  await page.locator('#undoBtn').click();
+  await page.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 4);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages[0].attachments.length), 2);
+  assert.equal(await page.locator('.message.user').first().getByRole('button', { name: 'Download notes.txt', exact: true }).count(), 1);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('Chat attachment parts and preflight failures preserve the unsent draft and history', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.stream = false;
+  const { page, errors } = await openPage('sidebar', config);
+  await useCompleteFixture(page);
+  const pdf = { name: 'document.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF') };
+  await page.locator('#attachmentInput').setInputFiles([attachmentPng, pdf]);
+  await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
+  await page.locator('#messageInput').fill('Read these');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.__fetchCalls[0].messages.find(message => message.role === 'user').content.map(part => part.type)), ['text', 'image_url', 'file']);
+  await page.evaluate(() => { state.config.providers[0].apiType = 'responses'; });
+  await page.locator('#attachmentInput').setInputFiles(attachmentText);
+  await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 1);
+  await page.locator('#messageInput').fill('Keep this draft');
+  await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 2);
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1);
+  await page.evaluate(async () => {
+    state.config.providers[0].apiType = 'responses';
+    const ref = normalizeDraft(state.drafts[state.currentSessionId]).attachments[0];
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open('sidemind-attachments', 1);
+      request.onsuccess = () => {
+        const tx = request.result.transaction(['files'], 'readwrite');
+        tx.objectStore('files').delete(ref.id);
+        tx.oncomplete = () => { request.result.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1, 'missing bytes never become a request containing only the filename');
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.responses.buildRequestBody;
+    API_ADAPTERS.responses.buildRequestBody = async (context) => {
+      await new Promise((resolve) => { window.__releasePreparation = resolve; });
+      return build(context);
+    };
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => state.isPreparing && typeof window.__releasePreparation === 'function');
+  await page.locator('#sendBtn').click();
+  await page.evaluate(() => window.__releasePreparation());
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1, 'cancelling local preparation does not send a request');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('attachment collection respects references, another page pin and the full orphan grace period', async () => {
+  const shared = await browser.newContext();
+  const { page, errors } = await openPage('sidebar', fixtureConfig, {}, undefined, shared);
+  const refs = await page.evaluate(async () => {
+    const files = [new File(['keep'], 'keep.txt', { type: 'text/plain' }), new File(['undo'], 'undo.txt', { type: 'text/plain' })];
+    const refs = [];
+    for (const file of files) {
+      const ref = await AttachmentStore.validate(file);
+      await AttachmentStore.put(file, ref, 'publication');
+      refs.push(ref);
+    }
+    return refs;
+  });
+  const other = await page.context().newPage();
+  await other.goto(`${baseUrl}/attachment-fixture.html`);
+  await other.addScriptTag({ url: `${baseUrl}/sidebar/attachments.js` });
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  await page.evaluate(async ({ refs, now }) => {
+    await AttachmentStore.collect(new Set([refs[0].id]), now);
+    await AttachmentStore.get(refs[1]);
+  }, { refs, now: now + 2 * day });
+  await other.evaluate(({ ref, duration }) => AttachmentStore.pin('other-page:undo', [ref], duration), { ref: refs[1], duration: 5 * day });
+  await page.evaluate(async ({ refs, now }) => {
+    await AttachmentStore.collect(new Set([refs[0].id]), now);
+    await AttachmentStore.get(refs[1]);
+  }, { refs, now: now + 3 * day });
+  await other.close();
+  await page.evaluate(({ refs, now }) => AttachmentStore.collect(new Set([refs[0].id]), now), { refs, now: now + 6 * day });
+  const result = await page.evaluate(async ({ refs, now }) => {
+    await AttachmentStore.collect(new Set([refs[0].id]), now);
+    const retained = await (await AttachmentStore.get(refs[0])).text();
+    let removed = false;
+    try { await AttachmentStore.get(refs[1]); } catch { removed = true; }
+    return { retained, removed };
+  }, { refs, now: now + 7 * day + 1 });
+  assert.deepEqual(result, { retained: 'keep', removed: true });
+  assert.deepEqual(errors, []);
+  await shared.close();
+});
+
+browserTest('generation settings save model overrides without leaking into a sibling model', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].models.push({ id: 'other', name: 'Other' });
+  const { page, errors } = await openPage('options', config);
+  await openSettingsSection(page, 'conversation');
+  await page.locator('#conversation .advanced-settings summary').click();
+  await page.locator('#generationScope').selectOption(JSON.stringify(['provider', 'model']));
+  await page.getByRole('combobox', { name: 'reasoning effort override', exact: true }).selectOption('custom');
+  await page.locator('#reasoningEffortSelector').selectOption('max');
+  await page.getByRole('combobox', { name: 'temperature override', exact: true }).selectOption('default');
+  await page.waitForFunction(() => window.__storage.sync.config.providers[0].models[0].parameters?.reasoning_effort === 'max');
+  await page.waitForFunction(() => window.__storage.sync.config.providers[0].models[0].parameters?.temperature === null);
+  await page.locator('#generationScope').selectOption(JSON.stringify(['provider', 'other']));
+  assert.equal(await page.locator('#reasoningEffortSelector').inputValue(), '');
+  assert.equal(await page.locator('#reasoningEffortSelector').isDisabled(), true);
+  const resolved = await page.evaluate(() => {
+    const provider = config.providers[0];
+    return [GenerationSettings.resolve(config, provider, 'model').values, GenerationSettings.resolve(config, provider, 'other').values];
+  });
+  assert.equal(resolved[0].reasoning_effort, 'max');
+  assert.equal(resolved[0].temperature, null);
+  assert.equal(resolved[1].reasoning_effort, null);
+  assert.equal(resolved[1].temperature, 0.7);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('paste and drop retain unsaved attachments until retry and reject a disguised image', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  const { page, errors } = await openPage('sidebar', config);
+  await page.locator('#attachmentInput').setInputFiles({ name: 'fake.png', mimeType: 'image/png', buffer: Buffer.from('not an image') });
+  await page.waitForFunction(() => attachmentJobs.size === 0);
+  assert.equal(await page.locator('#draftAttachments .attachment-card').count(), 0);
+  await page.evaluate(() => {
+    window.__failLocalSave = true;
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['Dropped text'], 'dropped.txt', { type: 'text/plain' }));
+    document.querySelector('#composer').dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(() => attachmentJobs.size === 0 && attachmentSaveFailed);
+  await page.evaluate((base64) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], 'clipboard.png', { type: 'image/png' }));
+    document.querySelector('#messageInput').dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+  }, attachmentPng.buffer.toString('base64'));
+  await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
+  assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+  assert.equal(await page.locator('#storageStatus').isVisible(), true);
+  await page.evaluate(() => { window.__failLocalSave = false; });
+  await page.locator('#retryStorageBtn').click();
+  await page.waitForFunction(() => !attachmentSaveFailed && window.__storage.local.drafts[state.currentSessionId]?.attachments.length === 2);
+  assert.equal(await page.locator('#sendBtn').isEnabled(), true);
+  assert.equal(await page.evaluate(async () => {
+    const refs = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
+    return (await (await AttachmentStore.get(refs[0])).text()) === 'Dropped text';
+  }), true);
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
