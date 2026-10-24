@@ -2270,7 +2270,10 @@ browserTest('Responses attachments survive reload, follow-up, editing, undo and 
   await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
   assert.match(await page.locator('#messageInput').inputValue(), /An excerpt imported during preparation/);
   assert.equal(await page.evaluate(() => window.__fetchCalls[0].input.at(-1).content), 'Follow up', 'only the captured draft is sent');
-  assert.equal(await page.evaluate(() => window.__fetchCalls[0].input[0].content.filter(part => part.type === 'input_file').length), 1);
+  assert.equal(await page.evaluate(() => typeof window.__fetchCalls[0].input[0].content), 'string');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('file_data')), false);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('data:image/')), false);
+  assert.equal(await page.locator('#inputHint').textContent(), 'Enter to send · Shift + Enter for a new line');
   await page.locator('.message.user .edit-btn').first().click();
   await page.locator('.message-edit-input').fill('Updated image question');
   await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
@@ -2288,6 +2291,10 @@ browserTest('Responses attachments survive reload, follow-up, editing, undo and 
   await page.waitForFunction(() => state.sessions[state.currentSessionId].messages.length === 4);
   assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages[0].attachments.length), 2);
   assert.equal(await page.locator('.message.user').first().getByRole('button', { name: 'Download notes.txt', exact: true }).count(), 1);
+  await page.locator('.message.assistant .regenerate-btn').first().click();
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 3);
+  assert.deepEqual(await page.evaluate(() => window.__fetchCalls[2].input[0].content.map(part => part.type)), ['input_image', 'input_file']);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages[0].attachments.length), 2);
   assert.deepEqual(errors, []);
   await page.close();
 });
@@ -2304,6 +2311,11 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.locator('#sendBtn').click();
   await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.__fetchCalls[0].messages.find(message => message.role === 'user').content.map(part => part.type)), ['text', 'image_url', 'file']);
+  await page.locator('#messageInput').fill('A text-only follow-up');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 2);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('file_data')), false);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('data:image/')), false);
   await page.evaluate(() => { state.config.providers[0].apiType = 'responses'; });
   await page.locator('#attachmentInput').setInputFiles(attachmentText);
   await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 1);
@@ -2312,8 +2324,8 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.locator('#sendBtn').click();
   await page.waitForFunction(() => !state.isStreaming && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
-  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 2);
-  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 4);
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2);
   await page.evaluate(async () => {
     state.config.providers[0].apiType = 'responses';
     const ref = normalizeDraft(state.drafts[state.currentSessionId]).attachments[0];
@@ -2330,7 +2342,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.locator('#sendBtn').click();
   await page.waitForFunction(() => !state.isStreaming);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
-  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1, 'missing bytes never become a request containing only the filename');
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'missing bytes never become a request containing only the filename');
   await page.evaluate(() => {
     const build = API_ADAPTERS.responses.buildRequestBody;
     API_ADAPTERS.responses.buildRequestBody = async (context) => {
@@ -2344,7 +2356,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.evaluate(() => window.__releasePreparation());
   await page.waitForFunction(() => !state.isStreaming);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
-  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 1, 'cancelling local preparation does not send a request');
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'cancelling local preparation does not send a request');
   assert.deepEqual(errors, []);
   await page.close();
 });

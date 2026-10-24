@@ -173,7 +173,7 @@ const AttachmentStore = (() => {
     assertSupported(refs, apiType);
     const bytes = refs.reduce((total, ref) => total + ref.size, 0);
     if (bytes > MAX_REQUEST_BYTES || new TextEncoder().encode(JSON.stringify(body)).length + Math.ceil(bytes / 3) * 4 > MAX_BODY_BYTES) {
-      throw new Error('This conversation exceeds the attachment request limit (20 MiB originals). Remove attachments or start a new chat.');
+      throw new Error('This turn exceeds the attachment request limit (20 MiB originals). Remove attachments and retry.');
     }
     const encoded = new Map();
     for (const message of body[key]) {

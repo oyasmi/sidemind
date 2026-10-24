@@ -109,6 +109,7 @@ const response = await makeApiRequest(provider, adapter.endpoint, body, signal);
 - Draft readers use `normalizeDraft()` to accept legacy strings and `{ text, attachments }`.
 - Generation parameters resolve through `GenerationSettings`: defaults, provider, then model.
 - Attachment bytes stay in IndexedDB. Chat messages, drafts and unload stashes contain references only.
+- Both adapters use `requestHistory()` to send originals only for the latest user turn being answered; earlier attachments become text records in the request, without changing stored history. Editing/regenerating reselects the target turn's attachments.
 - Prepare requests before clearing a draft or truncating edited/regenerated history.
 
 ### DOM Handling

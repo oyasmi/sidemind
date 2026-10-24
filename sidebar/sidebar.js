@@ -3900,8 +3900,21 @@ function requestParameters(context, responses = false) {
   return fields;
 }
 
+// Attach originals only to the user turn being answered. Older attachment
+// references stay local; a text record also preserves attachment-only turns.
+function requestHistory(messages) {
+  const currentTurn = messages.findLastIndex((message) => message.role === 'user');
+  return messages.map((message, index) => {
+    if (message.role !== 'user' || index === currentTurn || !message.attachments?.length) return message;
+    const { attachments, ...previous } = message;
+    const names = attachments.map((ref) => JSON.stringify(ref.name)).join(', ');
+    const record = `[Earlier attachments; originals not included in this request: ${names}]`;
+    return { ...previous, content: [message.content, record].filter(Boolean).join('\n\n') };
+  });
+}
+
 function chatHistory(context) {
-  return context.messages.filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content?.trim()))
+  return requestHistory(context.messages).filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content?.trim()))
     .map((m) => ({ role: m.role, content: m.content || '', ...(m.attachments?.length ? { attachments: m.attachments } : {}) }));
 }
 
@@ -3915,7 +3928,7 @@ function buildChatRequestBody(context = createRequestContext()) {
 function buildResponsesRequestBody(context = createRequestContext()) {
   const body = {
     ...requestParameters(context, true),
-    input: ResponsesProtocol.history(context.messages, context.source),
+    input: ResponsesProtocol.history(requestHistory(context.messages), context.source),
     store: false
   };
   if (context.instructions) body.instructions = context.instructions;

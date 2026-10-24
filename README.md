@@ -128,13 +128,15 @@ convert documents to PDF when embedded images and charts matter.
 
 SideMind keeps originals in this browser's IndexedDB and references in local chat
 history and drafts. Files are sent to your selected provider only when you send a
-message, and follow-up requests can resend earlier attachments. Reloading, retrying,
-editing and undo retain the originals. Image previews and original downloads are
+message. Only the user turn being answered includes its originals; ordinary follow-up
+requests keep text history without re-uploading earlier attachments. Retrying or
+regenerating an answer includes the corresponding user turn's attachments again.
+Reloading, editing and undo retain the local originals. Image previews and original downloads are
 available from the attachment cards. Markdown exports list attachment metadata;
 download originals separately.
 
 SideMind's initial limits are **10 attachments per message**, **10 MiB per file**,
-**20 MiB of originals across the entire request history**, and **30 MiB encoded request
+**20 MiB of originals for the current turn**, and **30 MiB encoded request
 size**. These are extension limits; providers and models may impose lower limits.
 Unsupported or missing attachments stop preparation and keep your draft. Unreferenced
 originals are collected after a grace period of at least 24 hours; references,

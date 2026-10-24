@@ -1263,3 +1263,39 @@ test('generation migration preserves old providers while new defaults and model 
   assert.equal(merged[0].name, 'Renamed');
   assert.equal(merged[0].models[0].parameters.reasoning_effort, 'max');
 });
+
+test('both adapters hydrate only the user turn being answered and preserve stored attachment history', async () => {
+  for (const apiType of ['chat', 'responses']) {
+    const context = sidebar();
+    const { app } = context;
+    vm.runInContext(`
+      globalThis.hydratedTurns = [];
+      AttachmentStore.hydrate = async (body, key) => {
+        hydratedTurns.push(body[key].flatMap(message => message.attachments || []).map(ref => ref.id));
+        return body;
+      };
+    `, context);
+    const old = { id: 'old-user', role: 'user', content: '', attachments: [{ id: 'missing-old-file', name: 'old.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: 30 * 1024 * 1024, kind: 'file' }] };
+    const current = { id: 'new-user', role: 'user', content: 'Follow up' };
+    const messages = [old, { id: 'old-answer', role: 'assistant', content: 'Previous analysis' }, current, app.state.currentStreamingMessage];
+    app.state.sessions.session.messages = messages;
+    const saved = JSON.stringify(messages);
+    const adapter = app.getAdapter({ apiType });
+    const key = apiType === 'chat' ? 'messages' : 'input';
+    const followup = await adapter.buildRequestBody();
+    assert.deepEqual(plain(context.hydratedTurns), [], 'old unsupported, missing or oversized files must not be opened or preflighted');
+    const previous = followup[key].find(message => message.role === 'user');
+    assert.match(previous.content, /old\.docx/);
+    assert.match(previous.content, /originals not included/);
+    assert.equal(previous.attachments, undefined);
+    assert.equal(followup[key].at(-1).content, 'Follow up');
+    assert.equal(JSON.stringify(messages), saved, 'request-only records do not alter local history');
+    current.attachments = [{ id: 'current-image', name: 'current.png', mime: 'image/png', size: 100, kind: 'image' }];
+    await adapter.buildRequestBody();
+    assert.deepEqual(plain(context.hydratedTurns), [['current-image']]);
+    app.state.sessions.session.messages = [old, app.state.currentStreamingMessage];
+    await adapter.buildRequestBody();
+    assert.deepEqual(plain(context.hydratedTurns.at(-1)), ['missing-old-file'], 'rewinding for a retry or regeneration reselects the original user turn');
+    assert.equal(old.attachments[0].id, 'missing-old-file');
+  }
+});
