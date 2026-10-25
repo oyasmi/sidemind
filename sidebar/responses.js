@@ -22,6 +22,20 @@ const ResponsesProtocol = (() => {
     return runtimes.get(message);
   }
 
+  function readConversation(data, protocol) {
+    if (!Object.hasOwn(data, 'conversation')) return;
+    const value = data.conversation;
+    const id = typeof value === 'string' ? value : value?.id;
+    if (typeof id !== 'string' || !id.trim()) {
+      if (protocol.conversationId) throw apiError({}, 'The provider did not confirm the server conversation. Start a new chat.');
+      return;
+    }
+    if (protocol.conversationId && protocol.conversationId !== id) {
+      throw apiError({}, 'The provider returned a different server conversation. Start a new chat.');
+    }
+    protocol.conversationId = id;
+  }
+
   function project(message) {
     const output = record(message).output;
     const answers = [];
@@ -94,6 +108,7 @@ const ResponsesProtocol = (() => {
       throw apiError({}, `Unsupported response status: ${data.status}. Background responses are not supported.`);
     }
     const protocol = record(message);
+    readConversation(data, protocol);
     if (data.id) protocol.responseId = data.id;
     if (data.model) protocol.model = data.model;
     protocol.status = data.status || 'completed';
@@ -129,7 +144,9 @@ const ResponsesProtocol = (() => {
     }
     switch (event.type) {
       case 'response.created':
+      case 'response.queued':
       case 'response.in_progress':
+        if (event.response) readConversation(event.response, protocol);
         if (event.response?.id) protocol.responseId = event.response.id;
         protocol.status = event.response?.status || 'in_progress';
         return false;

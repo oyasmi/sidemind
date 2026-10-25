@@ -1341,7 +1341,7 @@ browserTest('queued local writes preserve the latest draft when an earlier write
 // storage mock) and the real Web Locks manager, like two extension pages do.
 // A write by one page reaches the other's chrome.storage.onChanged listeners
 // through the `storage` event, as it would in the browser.
-async function openSharedPages() {
+async function openSharedPages(initialConfig = fixtureConfig) {
   const context = await browser.newContext({ viewport: { width: 380, height: 800 }, reducedMotion: 'reduce' });
   await context.addInitScript((initialConfig) => {
     // JSON with sorted keys, like the real thing (see openPage).
@@ -1400,7 +1400,7 @@ async function openSharedPages() {
       windows: { getCurrent: async () => ({ id: 1 }) },
       runtime: { getManifest: () => ({ version: '0' }), openOptionsPage() {} }
     };
-  }, fixtureConfig);
+  }, initialConfig);
   const ready = (page) =>
     page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
   const open = async () => {
@@ -2207,6 +2207,275 @@ if (process.env.SIDEMIND_BENCHMARK) {
 
 const attachmentPng = { name: 'pixel.png', mimeType: 'image/png', buffer: readFileSync(resolve(root, 'icons/icon16.png')) };
 const attachmentText = { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment contract: original text.') };
+
+function serverConversationConfig() {
+  const config = structuredClone(fixtureConfig);
+  Object.assign(config.providers[0], { apiType: 'responses', serverConversation: true });
+  config.temperature = null;
+  config.stream = false;
+  return config;
+}
+
+async function useServerConversationFixture(page) {
+  await page.evaluate(() => {
+    window.__serverCalls = [];
+    window.__serverBehavior = 'complete';
+    window.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      window.__serverCalls.push({ url: String(url), body });
+      if (String(url).endsWith('/conversations')) {
+        if (window.__serverBehavior === 'missing-id') return Response.json({ object: 'conversation' });
+        return Response.json({ id: `conv_${window.__serverCalls.filter((call) => call.url.endsWith('/conversations')).length}` });
+      }
+      if (window.__serverBehavior === 'network') throw new TypeError('Connection lost after submission');
+      const response = {
+        id: `resp_${window.__serverCalls.length}`, status: 'completed', conversation: { id: body.conversation },
+        output: [{ id: 'msg_server', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Server answer', annotations: [] }] }]
+      };
+      if (window.__serverBehavior === 'stall') {
+        let writer;
+        const stream = new ReadableStream({ start(controller) { writer = controller; } });
+        writer.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'response.created', response: { ...response, status: 'in_progress', output: [] } })}\n\n`));
+        options.signal.addEventListener('abort', () => writer.error(options.signal.reason), { once: true });
+        window.__finishServer = () => {
+          writer.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`));
+          writer.close();
+        };
+        return new Response(stream);
+      }
+      return body.stream
+        ? new Response(`data: ${JSON.stringify({ type: 'response.completed', response })}\n\n`)
+        : Response.json(response);
+    };
+  });
+}
+
+browserTest('server conversation option defaults off, follows protocol and survives editing', async () => {
+  const { page, errors } = await openPage('options');
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  assert.equal(await page.locator('#providerServerConversationGroup').isVisible(), false);
+  await page.locator('#providerApiType').selectOption('responses');
+  assert.equal(await page.locator('#providerServerConversationGroup').isVisible(), true);
+  assert.equal(await page.locator('#providerServerConversation').isChecked(), false);
+  await page.locator('#providerServerConversation').check();
+  await page.locator('#providerSaveBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#providerModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.providers[0].serverConversation), true);
+  assert.match(await page.locator('.provider-api').textContent(), /Server session/);
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  assert.equal(await page.locator('#providerServerConversation').isChecked(), true);
+  await page.locator('#providerApiType').selectOption('chat');
+  assert.equal(await page.locator('#providerServerConversation').isDisabled(), true);
+  await page.locator('#providerSaveBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#providerModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.providers[0].serverConversation), false);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('server conversations keep local history but send only new attachments and reuse the ID after reload', async () => {
+  const { page, errors } = await openPage('sidebar', serverConversationConfig());
+  await useServerConversationFixture(page);
+  assert.equal(await page.locator('#systemPromptSelector').isDisabled(), true);
+  await page.locator('#attachmentInput').setInputFiles([attachmentPng, attachmentText]);
+  await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 2);
+  const first = await page.evaluate(() => window.__serverCalls);
+  assert.match(first[0].url, /\/conversations$/);
+  assert.deepEqual(first[0].body, {});
+  assert.equal(first[1].body.conversation, 'conv_1');
+  assert.equal(first[1].body.input.length, 1);
+  assert.deepEqual(first[1].body.input[0].content.map((part) => part.type), ['input_image', 'input_file']);
+  assert.equal(first[1].body.instructions, undefined);
+  assert.equal(await page.locator('.edit-btn').isDisabled(), true);
+  assert.equal(await page.locator('.regenerate-btn').isDisabled(), true);
+  await page.evaluate(async () => {
+    await saveToStorage();
+    sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
+  });
+  await page.reload();
+  await page.waitForFunction(() => state.currentSessionId && document.querySelector('#generationStatus').textContent);
+  await useServerConversationFixture(page);
+  await page.locator('#messageInput').fill('Follow up after reload');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.__serverCalls[0].body.input), [{ role: 'user', content: 'Follow up after reload' }]);
+  assert.equal(await page.evaluate(() => window.__serverCalls[0].body.conversation), 'conv_1');
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 4);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages[0].attachments.length), 2);
+  await page.locator('#newChatBtn').click();
+  await page.locator('#messageInput').fill('A separate conversation');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 3);
+  assert.match(await page.evaluate(() => window.__serverCalls[1].url), /\/conversations$/);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('server preparation failure keeps draft and attachments without dispatching user input', async () => {
+  const { page, errors } = await openPage('sidebar', serverConversationConfig());
+  await useServerConversationFixture(page);
+  await page.evaluate(() => { window.__serverBehavior = 'missing-id'; });
+  await page.locator('#messageInput').fill('Keep this draft');
+  await page.locator('#attachmentInput').setInputFiles(attachmentText);
+  await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 1);
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 1);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 0);
+  assert.equal(await page.evaluate(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length), 1);
+  await page.evaluate(() => { window.__serverBehavior = 'complete'; window.__failLocalSave = true; });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => document.querySelector('#storageStatus').classList.contains('hidden') === false);
+  assert.equal(await page.evaluate(() => window.__serverCalls.filter((call) => call.url.endsWith('/responses')).length), 0,
+    'an empty remote conversation is harmless; failed persistence must prevent user input from being dispatched');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('server turns stopped or disconnected remain blocked after reload and cannot be regenerated', async () => {
+  for (const behavior of ['stall', 'network']) {
+    const config = serverConversationConfig();
+    config.stream = behavior === 'stall';
+    const { page, errors } = await openPage('sidebar', config);
+    await useServerConversationFixture(page);
+    await page.evaluate((value) => { window.__serverBehavior = value; }, behavior);
+    await page.locator('#messageInput').fill('Submit once');
+    await page.locator('#sendBtn').click();
+    await page.waitForFunction(() => window.__serverCalls.length === 2);
+    if (behavior === 'stall') {
+      await page.waitForFunction(() => state.sessions[state.currentSessionId].serverConversation.status === 'pending');
+      await page.locator('#sendBtn').click();
+    }
+    await page.waitForFunction(() => !state.isStreaming);
+    assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].serverConversation.status), 'unconfirmed');
+    await page.locator('#messageInput').fill('Do not send without confirmation');
+    assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+    await page.evaluate(async () => {
+      await regenerateMessage(state.sessions[state.currentSessionId].messages[0]);
+      await saveToStorage();
+      sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
+    });
+    assert.equal(await page.evaluate(() => window.__serverCalls.length), 2);
+    await page.reload();
+    await page.waitForFunction(() => state.currentSessionId && document.querySelector('#generationStatus').textContent);
+    await page.locator('#messageInput').fill('Still blocked');
+    assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+    assert.match(await page.locator('#generationStatus').textContent(), /unconfirmed/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+});
+
+browserTest('server mode blocks old local history, provider changes and disabling the mode on a bound chat', async () => {
+  const config = serverConversationConfig();
+  const local = { currentSessionId: 'old', sessions: { old: { title: 'Old chat', messages: [{ id: 'u', role: 'user', content: 'Old context' }] } } };
+  const { page, errors } = await openPage('sidebar', config, local);
+  await useServerConversationFixture(page);
+  await page.locator('#messageInput').fill('Do not lose my old context silently');
+  assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+  await page.locator('#newChatBtn').click();
+  await page.locator('#messageInput').fill('Start server chat');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 2);
+  await page.evaluate(() => { state.config.providers[0].baseUrl = 'https://other.test/v1'; updateInputState(); });
+  await page.locator('#messageInput').fill('Wrong server');
+  assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+  await page.evaluate(() => { state.config.providers[0].baseUrl = 'https://provider.test/v1'; state.config.providers[0].serverConversation = false; updateInputState(); });
+  assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+  assert.equal(await page.locator('.edit-btn').isDisabled(), true);
+  assert.equal(await page.evaluate(() => window.__serverCalls.length), 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('server preflight keeps the draft if the provider changes during an asynchronous storage read', async () => {
+  const { page, errors } = await openPage('sidebar', serverConversationConfig());
+  await useServerConversationFixture(page);
+  await page.evaluate(() => {
+    const save = queueLocalSave;
+    queueLocalSave = async (...args) => {
+      await new Promise((resolve) => { window.__releasePreflight = resolve; });
+      queueLocalSave = save;
+      return save(...args);
+    };
+  });
+  await page.locator('#messageInput').fill('Keep my selected destination');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => typeof window.__releasePreflight === 'function');
+  await page.evaluate(() => {
+    state.config.providers[0].baseUrl = 'https://other.test/v1';
+    window.__releasePreflight();
+  });
+  await page.waitForFunction(() => document.querySelector('#notifications').textContent.includes('changed while preparing'));
+  assert.equal(await page.evaluate(() => window.__serverCalls.length), 0);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep my selected destination');
+  await page.evaluate(() => { state.config.providers[0].baseUrl = 'https://provider.test/v1'; });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a persisted pending server turn after a closed panel requires a new chat', async () => {
+  const config = serverConversationConfig();
+  const local = { currentSessionId: 'pending', sessions: {
+    pending: {
+      title: 'Interrupted chat', messages: [{ id: 'u_pending', role: 'user', content: 'Possibly submitted' }],
+      serverConversation: { id: 'conv_pending', providerId: 'provider', baseUrl: 'https://provider.test/v1', modelId: 'model', status: 'pending' }
+    }
+  } };
+  const { page, errors } = await openPage('sidebar', config, local);
+  await useServerConversationFixture(page);
+  await page.locator('#messageInput').fill('Do not retry automatically');
+  assert.equal(await page.locator('#sendBtn').isDisabled(), true);
+  await page.evaluate(async () => { await sendMessageToAPI({ content: 'Do not bypass the block', attachments: [] }); });
+  assert.equal(await page.evaluate(() => window.__serverCalls.length), 0);
+  await page.locator('#newChatBtn').click();
+  await page.locator('#messageInput').fill('A fresh chat');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming && window.__serverCalls.length === 2);
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].serverConversation.status), 'ready');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('two sidebars serialize server turns and refresh the saved conversation before sending', async () => {
+  const config = serverConversationConfig();
+  config.stream = true;
+  const { context, a, b } = await openSharedPages(config);
+  try {
+    await useServerConversationFixture(a);
+    await useServerConversationFixture(b);
+    // Simulate a panel that missed storage notifications. The send path must
+    // reload the binding under the lock rather than create another thread.
+    await b.evaluate(() => { followStoredSession = () => {}; });
+    await a.evaluate(() => { window.__serverBehavior = 'stall'; });
+    await a.locator('#messageInput').fill('First sidebar');
+    await a.locator('#sendBtn').click();
+    await a.waitForFunction(() => typeof window.__finishServer === 'function');
+    await b.evaluate(async () => { await sendMessageToAPI({ content: 'Second sidebar', attachments: [] }); });
+    assert.equal(await b.evaluate(() => window.__serverCalls.length), 0, 'another sidebar cannot append while the first turn is active');
+    await a.evaluate(() => window.__finishServer());
+    await a.waitForFunction(() => !state.isStreaming);
+    assert.equal(await b.evaluate(() => state.sessions[state.currentSessionId].serverConversation), undefined);
+    await b.evaluate(async () => {
+      state.config.stream = false;
+      await sendMessageToAPI({ content: 'Second sidebar', attachments: [] });
+    });
+    assert.equal(await b.evaluate(() => window.__serverCalls.length), 1, 'the second sidebar reuses the saved ID');
+    assert.equal(await b.evaluate(() => window.__serverCalls[0].body.conversation), 'conv_1');
+    assert.deepEqual(await b.evaluate(() => window.__serverCalls[0].body.input), [{ role: 'user', content: 'Second sidebar' }]);
+    const saved = await readChats(b);
+    const sessionId = await b.evaluate(() => state.currentSessionId);
+    assert.equal(saved.sessions[sessionId].messages.length, 4);
+    assert.equal(saved.sessions[sessionId].serverConversation.status, 'ready');
+  } finally {
+    await context.close();
+  }
+});
 
 async function useCompleteFixture(page) {
   await page.evaluate(() => {

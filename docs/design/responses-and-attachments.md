@@ -72,6 +72,8 @@ flowchart TD
 
 默认使用 `store: true`，允许供应商保存响应和会话记录，并继续手动历史重放。本次不引入 `previous_response_id` 或服务端 Conversations。
 
+后续增加了可选的供应商级 `serverConversation` 模式（仅 Responses，默认关闭）：先准备本轮附件，再通过 `POST /conversations` 创建并保存服务端会话；后续只发送本轮用户消息和附件，携带 `conversation`。本地保留完整展示记录，但不重放到服务端。会话绑定随本地聊天保存，包含供应商 ID、规范化地址、模型及 `ready` / `pending` / `unconfirmed` 状态。发送前持久化 `pending`，确认完成后保存 `ready`；中断或状态不明时阻止继续发送。Web Lock 覆盖整个回合，防止多个侧边栏并发追加。同一绑定内不支持本地历史编辑和重新生成；来源或模式变化需要新建聊天或恢复原配置。
+
 **3. 流式归并、结束确认和失败恢复**
 
 将 Responses 的事件归并放进一个无 DOM、无网络、无存储依赖的模块，便于直接测试。运行时按 `output_index` 管理 items，使用 `item_id` 校验归属，再按 `content_index`、`summary_index` 管理正文、拒绝及摘要 parts。

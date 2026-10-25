@@ -84,6 +84,8 @@ function cacheElements() {
     'providerBaseUrl',
     'providerApiKey',
     'providerApiType',
+    'providerServerConversation',
+    'providerServerConversationGroup',
     'toggleApiKey',
     'endpointPreview',
     'checkConnectionBtn',
@@ -363,7 +365,9 @@ function createProviderElement(provider) {
   name.textContent = provider.name;
   const badge = document.createElement('span');
   badge.className = 'provider-api';
-  badge.textContent = provider.apiType === 'responses' ? 'Responses' : 'Chat Completions';
+  badge.textContent = provider.apiType === 'responses'
+    ? provider.serverConversation ? 'Responses · Server session' : 'Responses'
+    : 'Chat Completions';
   name.appendChild(badge);
   const details = document.createElement('div');
   details.className = 'provider-details';
@@ -743,6 +747,7 @@ function openProviderModal(provider = null) {
   elements.providerBaseUrl.value = provider?.baseUrl || '';
   elements.providerApiKey.value = provider?.apiKey || '';
   elements.providerApiType.value = provider?.apiType === 'responses' ? 'responses' : 'chat';
+  elements.providerServerConversation.checked = provider?.serverConversation === true;
   if (elements.providerThinkTags) elements.providerThinkTags.checked = provider?.reasoningFormat === 'think-tags' || (!provider?.reasoningFormat && provider && provider.apiType !== 'responses');
   elements.providerApiKey.type = 'password';
   elements.toggleApiKey.setAttribute('aria-pressed', 'false');
@@ -825,6 +830,9 @@ function addModelField() {
 
 function updateEndpointPreview() {
   resetConnectionCheck();
+  const responses = elements.providerApiType.value === 'responses';
+  elements.providerServerConversationGroup.hidden = !responses;
+  elements.providerServerConversation.disabled = !responses;
   const base = normalizeBaseUrl(elements.providerBaseUrl.value);
   const endpoint =
     elements.providerApiType.value === 'responses' ? '/responses' : '/chat/completions';
@@ -935,6 +943,7 @@ async function saveProvider() {
     baseUrl: normalizeBaseUrl(elements.providerBaseUrl.value),
     apiKey: elements.providerApiKey.value.trim(),
     apiType: elements.providerApiType.value === 'responses' ? 'responses' : 'chat',
+    serverConversation: elements.providerApiType.value === 'responses' && elements.providerServerConversation.checked,
     reasoningFormat: elements.providerThinkTags?.checked ? 'think-tags' : 'structured',
     models: Array.from(elements.modelsList.querySelectorAll('.model-item')).map((item) => {
       const id = item.querySelector('.model-id').value.trim();
@@ -1347,6 +1356,8 @@ function validateConfig(value) {
     }
     return (
       (!provider.apiType || ['chat', 'responses'].includes(provider.apiType)) &&
+      (provider.serverConversation === undefined || (typeof provider.serverConversation === 'boolean' &&
+        (!provider.serverConversation || provider.apiType === 'responses'))) &&
       (!provider.reasoningFormat || ['structured', 'think-tags'].includes(provider.reasoningFormat)) &&
       (!provider.parameters || GenerationSettings.valid(provider.parameters)) &&
       uniqueIds(provider.models) &&

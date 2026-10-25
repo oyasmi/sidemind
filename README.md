@@ -93,13 +93,29 @@ to keep both API types available in the model selector.
 Both APIs support streaming and complete responses and local conversation history.
 Custom system prompts are sent with Chat Completions only; Responses requests omit
 `instructions` for provider compatibility. Responses requests use `input` and
-`max_output_tokens`, with `store: true` and the local history sent on each turn.
+`max_output_tokens`, with `store: true` and, by default, the local history sent on each turn.
 The provider can retain responses and conversation records.
 For models that reject temperature, enable **Use model default**. Reasoning summaries
 are off by default; enable **Reasoning Summary → Auto** for models that support them.
 If a response reaches its output limit, SideMind keeps the partial answer and
 shows a message explaining how to increase the limit.
 See the [official OpenAI Responses API documentation](https://developers.openai.com/api/reference/responses/overview).
+
+For services such as Pipiclaw that own the conversation history, enable **Server-side
+conversation mode** in the Responses provider dialog, then start a new chat. SideMind
+creates a conversation with `POST /conversations`, saves its ID locally, and sends only
+the current user message and attachments with that `conversation` ID on every turn.
+The provider must support this endpoint; SideMind does not upload existing chats or
+fall back to independent requests. The option defaults off and is saved per provider.
+For Pipiclaw, also use model defaults for temperature, token limits and reasoning;
+these parameters and durable instructions are controlled on the server.
+
+Server conversations keep a local transcript for reading, searching and exporting.
+Editing and regenerating their history are unavailable. Changing the provider, API
+root, model or conversation mode requires a new chat (or restoring the original
+configuration). A stopped, disconnected or unconfirmed turn blocks further sending
+in that chat to prevent duplicate submissions; check the server and start a new chat.
+Deleting a local chat does not delete the provider's conversation or stop its work.
 
 Generation settings have three scopes: **Default for new providers → Provider → Model**.
 Choose the scope in **Settings → Conversation**. An override can inherit its parent,
@@ -237,6 +253,9 @@ response modes, SSE chunk boundaries, cancellation, request and idle timeouts,
 terminal events, output limits, and the selection context menu.
 They also cover structured Responses replay, compatible context boundaries,
 authoritative snapshots, false completion markers and generation-setting migration.
+Server-conversation checks cover creation and persistence, current-turn input,
+attachment-only messages, reloads, interrupted turns, configuration isolation and
+concurrent sidebars.
 Browser interaction checks use optional Playwright tooling installed outside the
 extension (no runtime dependencies or build step):
 

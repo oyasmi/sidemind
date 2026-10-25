@@ -36,7 +36,9 @@ function sidebar() {
       buildEndpointUrl, streamResponse, processStream, processNonStream,
       applyChatStreamEvent, applyResponsesStreamEvent, applyResponsesResponse,
       createRequestWatchdog, responseCompletionNotice, processThinkTags,
-      parseModelKey, displayParts, titleFromContent
+      parseModelKey, displayParts, titleFromContent,
+      createRequestContext, prepareResponsesConversation, serverConversationNotice,
+      historyIsServerManaged, startEditing, submitEdit, regenerateMessage
     };
   `, context);
   const { app } = context;
@@ -71,6 +73,197 @@ function sseResponse(events, { crlf = false, multiline = false } = {}) {
     }
   }));
 }
+
+function serverSidebar() {
+  const context = sidebar();
+  vm.runInContext(`
+    globalThis.snapshots = [];
+    saveToStorage = async (id = state.currentSessionId) => {
+      snapshots.push(structuredClone(state.sessions[id]));
+      return true;
+    };
+    showNotification = (text) => errors.push(text);
+  `, context);
+  const provider = {
+    id: 'provider', apiType: 'responses', serverConversation: true,
+    baseUrl: 'https://example.com/v1/responses/', apiKey: 'test-key', models: [{ id: 'test-model' }]
+  };
+  const { state } = context.app;
+  state.config.providers = [provider];
+  state.config.selectedProvider = provider.id;
+  state.config.stream = false;
+  state.currentStreamingMessage = null;
+  state.sessions.session.messages = [];
+  const turn = (content = 'New message') => {
+    const request = context.app.createRequestContext(provider);
+    request.signal = new AbortController().signal;
+    request.userMessage = { role: 'user', content };
+    request.messages.push(request.userMessage);
+    request.body = context.app.buildResponsesRequestBody(request);
+    return request;
+  };
+  return { context, app: context.app, provider, turn };
+}
+
+test('server Responses creates and saves a conversation before dispatch and reuses it for new turns', async () => {
+  const { context, app, provider, turn } = serverSidebar();
+  const calls = [];
+  context.fetch = async (url, options) => {
+    const body = JSON.parse(options.body);
+    calls.push({ url, body });
+    if (url.endsWith('/conversations')) return Response.json({ id: 'conv_test', object: 'conversation' });
+    assert.equal(context.snapshots.at(-1).serverConversation.status, 'pending', 'persist before appending on the server');
+    return Response.json({ ...output(), id: `resp_${calls.length}`, conversation: { id: 'conv_test' } });
+  };
+  const first = turn();
+  await app.prepareResponsesConversation(first);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { url: 'https://example.com/v1/conversations', body: {} });
+  assert.equal(context.snapshots.at(-1).serverConversation.status, 'ready');
+  const answer = {};
+  await app.streamResponse(provider, answer, first.signal, first);
+  assert.equal(answer.protocol.conversationId, 'conv_test');
+  assert.equal(app.state.sessions.session.serverConversation.status, 'ready');
+  assert.equal(app.state.sessions.session.serverConversation.lastResponseId, 'resp_2');
+  app.state.sessions.session.messages.push(first.userMessage, { role: 'assistant', content: answer.content });
+  const second = turn('Follow up');
+  await app.prepareResponsesConversation(second);
+  await app.streamResponse(provider, {}, second.signal, second);
+  assert.equal(calls.length, 3, 'the follow-up does not create another conversation');
+  assert.deepEqual(calls[2].body, {
+    model: 'test-model', stream: false, store: true, conversation: 'conv_test',
+    input: [{ role: 'user', content: 'Follow up' }]
+  });
+  assert.equal(app.state.sessions.session.messages.length, 2, 'building input preserves the local transcript');
+});
+
+test('server input uses the explicit new turn, never the last historical user message', () => {
+  const { context, app, provider } = serverSidebar();
+  app.state.sessions.session.messages.push({ role: 'user', content: 'Already sent' }, { role: 'assistant', content: 'Old answer' });
+  assert.throws(() => app.buildResponsesRequestBody(app.createRequestContext(provider)), /new user message/);
+  vm.runInContext(`
+    AttachmentStore.hydrate = async (body) => { globalThis.hydratedBody = structuredClone(body); return body; };
+  `, context);
+  const request = app.createRequestContext(provider);
+  request.userMessage = { role: 'user', content: '', attachments: [{ id: 'new-file', name: 'new.txt' }] };
+  const pending = app.buildResponsesRequestBody(request);
+  assert.equal(typeof pending.then, 'function');
+  assert.deepEqual(plain(context.hydratedBody.input), [{ role: 'user', content: '', attachments: [{ id: 'new-file', name: 'new.txt' }] }]);
+  assert.equal(request.userMessage.attachments[0].id, 'new-file');
+});
+
+test('a missing conversation ID or failed persistence prevents the user request', async () => {
+  for (const invalidId of [undefined, null, '', '   ', 123]) {
+    const { context, app, turn } = serverSidebar();
+    let requests = 0;
+    context.fetch = async () => { requests += 1; return Response.json({ id: invalidId }); };
+    await assert.rejects(app.prepareResponsesConversation(turn()), /conversation ID/);
+    assert.equal(requests, 1);
+    assert.equal(app.state.sessions.session.serverConversation, undefined);
+    assert.equal(app.state.sessions.session.messages.length, 0);
+  }
+  const { context, app, provider, turn } = serverSidebar();
+  context.fetch = async () => Response.json({ id: 'conv_saved' });
+  const request = turn();
+  await app.prepareResponsesConversation(request);
+  vm.runInContext('saveToStorage = async () => false;', context);
+  let dispatched = false;
+  context.fetch = async () => { dispatched = true; return Response.json(output()); };
+  await assert.rejects(app.streamResponse(provider, {}, request.signal, request), /before sending/);
+  assert.equal(dispatched, false);
+});
+
+test('lost acknowledgements, failed responses and mismatched conversation IDs block further server turns', async () => {
+  for (const failure of ['network', 'failed', 'mismatched', 'missing-terminal']) {
+    const { context, app, provider, turn } = serverSidebar();
+    context.fetch = async () => Response.json({ id: 'conv_original' });
+    const request = turn();
+    await app.prepareResponsesConversation(request);
+    const message = {};
+    context.fetch = async () => {
+      if (failure === 'network') throw new TypeError('Network connection lost');
+      if (failure === 'failed') return Response.json({ output: [], status: 'failed', error: { message: 'Agent failed' } });
+      if (failure === 'mismatched') return Response.json({ ...output(), conversation: { id: 'conv_other' } });
+      return new Response(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'Partial' })}\n\n`);
+    };
+    if (failure === 'missing-terminal') {
+      request.body.stream = true;
+      await app.streamResponse(provider, message, request.signal, request);
+    } else await assert.rejects(app.streamResponse(provider, message, request.signal, request));
+    assert.equal(app.state.sessions.session.serverConversation.status, 'unconfirmed', failure);
+    assert.equal(message.serverConversationUnconfirmed, true);
+    assert.match(app.serverConversationNotice(), /unconfirmed/);
+    const reload = serverSidebar();
+    reload.app.state.sessions.session = plain(context.snapshots.at(-1));
+    assert.match(reload.app.serverConversationNotice(), /unconfirmed/, 'reloading cannot silently retry the append');
+  }
+});
+
+test('streaming server conversations preserve association through queued events and authoritative completion', async () => {
+  const { context, app, provider, turn } = serverSidebar();
+  context.fetch = async () => Response.json({ id: 'conv_stream' });
+  const request = turn();
+  await app.prepareResponsesConversation(request);
+  request.body.stream = true;
+  context.fetch = async () => sseResponse([
+    { type: 'response.created', response: { id: 'resp_stream', status: 'queued', conversation: 'conv_stream' } },
+    { type: 'response.queued', response: { id: 'resp_stream', status: 'queued', conversation: { id: 'conv_stream' } } },
+    { type: 'response.output_text.delta', delta: 'Draft' },
+    { type: 'response.completed', response: { ...output('Final'), id: 'resp_stream', conversation: { id: 'conv_stream' } } }
+  ]);
+  const message = {};
+  await app.streamResponse(provider, message, request.signal, request);
+  assert.equal(message.content, 'Final');
+  assert.equal(message.protocol.conversationId, 'conv_stream');
+  assert.equal(app.state.sessions.session.serverConversation.status, 'ready');
+  assert.equal(app.state.sessions.session.serverConversation.lastResponseId, 'resp_stream');
+});
+
+test('server mode rejects incompatible history and configurations and never revises the transcript', async () => {
+  const { context, app, turn } = serverSidebar();
+  app.state.sessions.session.messages.push({ id: 'u', role: 'user', content: 'Original' });
+  assert.match(app.serverConversationNotice(), /Start a new chat/);
+  const before = plain(app.state.sessions.session.messages);
+  app.startEditing(app.state.sessions.session.messages[0]);
+  await app.submitEdit(app.state.sessions.session.messages[0], 'Changed');
+  await app.regenerateMessage(app.state.sessions.session.messages[0]);
+  assert.deepEqual(plain(app.state.sessions.session.messages), before);
+  assert.equal(context.errors.length, 3);
+  app.state.sessions.session.messages = [];
+  context.fetch = async () => Response.json({ id: 'conv_bound' });
+  await app.prepareResponsesConversation(turn());
+  assert.equal(app.serverConversationNotice(), '');
+  const config = app.state.config;
+  for (const change of [() => { config.selectedModel = 'other - provider'; },
+    () => { config.providers[0].baseUrl = 'https://other.test'; },
+    () => { config.providers[0].serverConversation = false; }]) {
+    const original = plain(config);
+    change();
+    assert.match(app.serverConversationNotice(), /another server configuration/);
+    assert.equal(app.historyIsServerManaged(), true);
+    Object.assign(config, original);
+  }
+});
+
+test('configuration import accepts legacy providers and validates the server conversation option', () => {
+  const context = loadScript('options/options.js');
+  const candidate = {
+    providers: [{ id: 'p', name: 'Provider', baseUrl: 'https://example.com/v1', apiKey: '', models: [{ id: 'm', name: 'Model' }] }],
+    systemPrompts: []
+  };
+  const provider = candidate.providers[0];
+  assert.equal(context.validateConfig(candidate), true, 'legacy configurations need no migration');
+  provider.serverConversation = false;
+  assert.equal(context.validateConfig(candidate), true);
+  provider.serverConversation = true;
+  assert.equal(context.validateConfig(candidate), false, 'server mode requires the Responses protocol');
+  provider.apiType = 'responses';
+  assert.equal(context.validateConfig(candidate), true);
+  for (const invalid of ['true', 1, null, {}]) {
+    provider.serverConversation = invalid;
+    assert.equal(context.validateConfig(candidate), false);
+  }
+});
 
 function output(text = '完整回答') {
   return {
@@ -381,26 +574,31 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     providerDeleteBtn: { classList: { toggle() {} }, setAttribute() {} },
     providerName: value('OpenAI'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
     providerApiKey: value('test-key'), providerApiType: value('responses'),
+    providerServerConversation: { checked: true }, providerServerConversationGroup: { hidden: false },
     toggleApiKey: { setAttribute() {}, replaceChildren() {} },
     connectionStatus: { dataset: {} }, modelSuggestions: { replaceChildren() {} },
     modelsList: { querySelectorAll: () => [{ querySelector: () => value('test-model') }] }
   });
   await app.saveProvider();
   assert.equal(saved.config.providers[0].apiType, 'responses');
+  assert.equal(saved.config.providers[0].serverConversation, true);
   assert.equal(saved.config.providers[0].baseUrl, 'https://api.openai.com/v1');
   await app.loadConfig();
   app.openProviderModal(app.getConfig().providers[0]);
   assert.equal(app.elements.providerApiType.value, 'responses');
+  assert.equal(app.elements.providerServerConversation.checked, true);
   app.elements.providerApiType.value = 'chat';
   await app.saveProvider();
   assert.equal(saved.config.providers.length, 1);
   assert.equal(saved.config.providers[0].apiType, 'chat');
+  assert.equal(saved.config.providers[0].serverConversation, false);
   const legacy = { ...saved.config.providers[0] };
   delete legacy.apiType;
   app.openProviderModal(legacy);
   assert.equal(app.elements.providerApiType.value, 'chat');
   app.openProviderModal();
   assert.equal(app.elements.providerApiType.value, 'chat');
+  assert.equal(app.elements.providerServerConversation.checked, false);
 });
 
 test('Chat output limits are preserved in streaming and complete responses', async () => {

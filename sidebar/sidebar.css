@@ -436,7 +436,12 @@ body {
   background: transparent;
   font-size: 12px;
 }
-.message-actions button:hover {
+.message-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.message-actions button:hover:not(:disabled) {
   background: var(--bg-tertiary);
   color: var(--accent);
 }

@@ -59,6 +59,7 @@ const MAX_MARKDOWN_CACHE_CHARS = 1000000;
 let markdownCacheChars = 0;
 const renderedMarkdown = new WeakMap();
 let generationStatusTimer = null;
+let historyControlsManaged = null;
 const sessionSearchCache = new Map();
 const MAX_SESSION_SEARCH_CACHE_SIZE = 500;
 const MAX_SESSION_SEARCH_CACHE_CHARS = 1000000;
@@ -678,7 +679,10 @@ function adoptStored(id, entry) {
   savedRevs[id] = entry.rev;
   dirtySessionIds.delete(id);
   invalidateSessionSearch(id);
-  if (current) renderMessages();
+  if (current) {
+    renderMessages();
+    if (elements.sendBtn) updateInputState();
+  }
   if (elements.chatHistoryDropdown?.open) renderChatHistory();
   return true;
 }
@@ -1340,7 +1344,7 @@ async function stopStreamingIfActive() {
 // and leaving it drops it, so history does not fill up with "New Chat" rows.
 function isBlankSession(sessionId) {
   const session = state.sessions[sessionId];
-  return Boolean(session && !session.messages.length && !draftHasContent(state.drafts[sessionId]));
+  return Boolean(session && !session.serverConversation && !session.messages.length && !draftHasContent(state.drafts[sessionId]));
 }
 
 // Makes `sessionId` the visible chat. Callers stop any running stream first.
@@ -1960,6 +1964,8 @@ function createMessageActions(message) {
     editBtn.className = 'edit-btn';
     editBtn.setAttribute('aria-label', 'Edit message');
     editBtn.setAttribute('title', 'Edit message');
+    editBtn.disabled = historyIsServerManaged();
+    if (editBtn.disabled) editBtn.title = 'History is managed by the server. Start a new chat instead.';
     editBtn.replaceChildren(createIcon('pen'));
     editBtn.addEventListener('click', () => startEditing(message));
     actions.appendChild(editBtn);
@@ -1970,6 +1976,8 @@ function createMessageActions(message) {
   regenBtn.className = 'regenerate-btn';
   regenBtn.setAttribute('aria-label', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
+  regenBtn.disabled = historyIsServerManaged();
+  if (regenBtn.disabled) regenBtn.title = 'History is managed by the server. Start a new chat instead.';
   regenBtn.replaceChildren(createIcon('redo'));
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
 
@@ -2027,6 +2035,10 @@ function copyMessage(message, button) {
 let editingMessageId = null;
 
 function startEditing(message) {
+  if (historyIsServerManaged()) {
+    showNotification('History is managed by the server. Start a new chat to use different messages.');
+    return;
+  }
   if (state.isStreaming || editingMessageId) return;
 
   const element = messageElementCache.get(message.id);
@@ -2134,6 +2146,10 @@ function cancelEditing(restoreFocus = true) {
 }
 
 async function submitEdit(message, rawText) {
+  if (historyIsServerManaged()) {
+    showNotification('History is managed by the server. Start a new chat to use different messages.');
+    return;
+  }
   if (state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
   const text = rawText.trim();
   const attachments = structuredClone(editingMessageId === message.id ? editingAttachments : message.attachments || []);
@@ -2179,6 +2195,10 @@ function describeEditUndo(removedCount) {
 }
 
 async function regenerateMessage(message, button) {
+  if (historyIsServerManaged()) {
+    showNotification('Server conversations cannot be replayed or regenerated. Start a new chat instead.');
+    return;
+  }
   if (state.isStreaming || state.generationDone || !ensureReadyToSend()) return;
   const session = state.sessions[state.currentSessionId];
   const index = session?.messages.findIndex((m) => m.id === message.id) ?? -1;
@@ -2449,7 +2469,7 @@ function updateResponseStatus(
   if (retry) {
     const label = message.error || message.incompleteReason || message.completionUnconfirmed ? 'Retry response' : 'Regenerate response';
     retry.setAttribute('aria-label', label);
-    retry.title = label;
+    if (!retry.disabled) retry.title = label;
   }
   let details = element.querySelector('.response-details');
   if (message.errorDetail) {
@@ -2485,6 +2505,7 @@ async function grantAccessAndRetry(message, element) {
 }
 
 function responseCompletionNotice(message) {
+  if (message.serverConversationUnconfirmed) return 'Server turn unconfirmed. Check it on the server and start a new chat before sending again.';
   if (message.stopped) return 'Generation stopped · partial response';
   if (message.incompleteReason === 'max_output_tokens') {
     return 'Output limit reached · partial response. Increase Max Completion Tokens in Settings to retry.';
@@ -2712,7 +2733,8 @@ function updateInputState() {
   const hasConfig = Boolean(getReadyProvider());
   const hasMessage = elements.messageInput.value.trim().length > 0 || normalizeDraft(state.drafts[state.currentSessionId]).attachments.length > 0;
   const hasJobs = [...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
-  const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed;
+  const conversationNotice = serverConversationNotice();
+  const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed && !conversationNotice;
   if (elements.attachBtn) elements.attachBtn.disabled = state.isPreparing;
   elements.draftAttachments?.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
   elements.messageInput.disabled = state.isPreparing;
@@ -2727,11 +2749,20 @@ function updateInputState() {
   } else {
     elements.sendBtn.setAttribute('data-state', 'send');
     elements.sendBtn.setAttribute('aria-label', 'Send message');
-    elements.sendBtn.title = 'Send message';
+    elements.sendBtn.title = conversationNotice || 'Send message';
   }
   elements.modelSelector.disabled = state.isStreaming;
   if (state.isStreaming) closeModelPicker(false);
-  elements.systemPromptSelector.disabled = state.isStreaming;
+  elements.systemPromptSelector.disabled = state.isStreaming || usesServerConversation(provider);
+  elements.systemPromptSelector.title = usesServerConversation(provider) ? 'Configure instructions on the server for this provider.' : '';
+  const managed = historyIsServerManaged();
+  if (managed !== historyControlsManaged) {
+    elements.messagesList.querySelectorAll('.edit-btn, .regenerate-btn').forEach((button) => {
+      button.disabled = managed;
+      button.title = managed ? 'History is managed by the server. Start a new chat instead.' : button.getAttribute('aria-label');
+    });
+    historyControlsManaged = managed;
+  }
   elements.messageInput.placeholder = state.isStreaming
     ? 'Write your next message…'
     : hasConfig
@@ -2741,11 +2772,12 @@ function updateInputState() {
   elements.generationStatus.dataset.state = state.isStreaming ? 'active' : hasConfig ? 'idle' : 'setup';
   elements.generationStatus.textContent = state.isStreaming
     ? state.isPreparing ? 'Preparing message…' : 'Generating · you can draft your next message'
-    : hasConfig
-      ? 'Ready when you are'
+    : conversationNotice || (hasConfig
+      ? usesServerConversation(provider) ? 'Server conversation · sends only your current message and attachments' : 'Ready when you are'
       : provider && !provider.apiKey?.trim()
         ? 'Add this provider’s API key in Settings'
-        : 'Choose a model to start chatting';
+        : 'Choose a model to start chatting');
+  if (conversationNotice && !state.isStreaming) elements.generationStatus.dataset.state = 'notice';
 }
 
 function applyFontSettings(appearance = state.config) {
@@ -2948,6 +2980,7 @@ function handleModelChange(selectedValue) {
   state.config.selectedProvider = providerId;
   saveConfigSoon({ selectedModel: selectedValue, selectedProvider: providerId });
   updateModelSelector();
+  updateSystemPromptSelector();
   updateInputState();
   renderWelcomeMessage();
   closeModelPicker(true);
@@ -3315,13 +3348,76 @@ function exportSession(sessionId) {
   showNotification('Conversation exported as Markdown.');
 }
 
+function usesServerConversation(provider) {
+  return getApiType(provider) === 'responses' && provider?.serverConversation === true;
+}
+
+function historyIsServerManaged() {
+  return Boolean(state.sessions[state.currentSessionId]?.serverConversation || usesServerConversation(getCurrentProvider()));
+}
+
+function serverConversationNotice(provider = getCurrentProvider(), session = state.sessions[state.currentSessionId]) {
+  const binding = session?.serverConversation;
+  if (binding) {
+    if (typeof binding.id !== 'string' || !binding.id.trim()) return 'The server conversation ID is missing. Start a new chat.';
+    if (!usesServerConversation(provider) || binding.providerId !== provider.id ||
+        binding.baseUrl !== buildEndpointUrl(provider, '') || binding.modelId !== getSelectedModelId()) {
+      return 'This chat is linked to another server configuration. Restore its provider and model, or start a new chat.';
+    }
+    if (binding.status !== 'ready') return 'The last server turn is unconfirmed. Check it on the server and start a new chat before sending again.';
+  } else if (usesServerConversation(provider) && session?.messages.length) {
+    return 'Start a new chat to use server-side conversation mode. Existing history cannot be uploaded.';
+  }
+  return '';
+}
+
+// Hold a separate lock through the whole turn. The storage lock still only
+// covers read/merge/write, so saving drafts in other chats stays responsive.
 async function sendMessageToAPI(draft = null, revision = null) {
+  if (!historyIsServerManaged()) return sendPreparedMessage(draft, revision);
+  if (state.isStreaming || state.generationDone) return;
+  const sessionId = state.currentSessionId;
+  const provider = structuredClone(getCurrentProvider());
+  const modelKey = state.config.selectedModel;
+  try {
+    if (typeof navigator === 'undefined' || !navigator.locks) {
+      throw new Error('Server conversations require browser Web Locks support. Update Chrome and try again.');
+    }
+    await navigator.locks.request(`sidemind-server-conversation:${sessionId}`, { ifAvailable: true }, async (lock) => {
+      if (!lock) throw new Error('This server conversation is busy in another sidebar. Wait for it to finish.');
+      if (!(await queueLocalSave(true, true))) throw new Error('Could not save this conversation. Your draft is kept. Retry saving first.');
+      if (sessionId !== state.currentSessionId) return;
+      const stored = await chrome.storage.local.get([SESSION_PREFIX + sessionId]);
+      if (sessionId !== state.currentSessionId) return;
+      if (modelKey !== state.config.selectedModel || !sameValue(provider, getCurrentProvider())) {
+        showNotification('The provider or model changed while preparing. Your draft is kept; send again with your chosen configuration.');
+        updateInputState();
+        return;
+      }
+      const entry = stored[SESSION_PREFIX + sessionId];
+      if (entry) adoptStored(sessionId, entry);
+      const notice = serverConversationNotice();
+      if (notice) { showNotification(notice); updateInputState(); return; }
+      await sendPreparedMessage(draft, revision);
+    });
+  } catch (error) {
+    console.error('Preparing server conversation:', error.name);
+    showNotification(error.message);
+  }
+}
+
+async function sendPreparedMessage(draft = null, revision = null) {
   const provider = structuredClone(getReadyProvider());
   if (!provider) {
     showNotification('Choose a model with an API key in Settings, then retry.');
     return;
   }
   if (state.isStreaming || state.generationDone) return;
+  const notice = serverConversationNotice(provider);
+  if (notice || (historyIsServerManaged() && (revision || !draft))) {
+    showNotification(notice || 'Server conversations accept new messages only. Start a new chat instead.');
+    return;
+  }
   state.generationDone = new Promise((resolve) => { state.resolveGeneration = resolve; });
   state.userScrolledUp = false;
   state.abortController = new AbortController();
@@ -3335,8 +3431,12 @@ async function sendMessageToAPI(draft = null, revision = null) {
     const context = createRequestContext(provider);
     context.signal = state.abortController.signal;
     if (revision) context.messages = structuredClone(revision.messages);
-    if (draft) context.messages.push({ role: 'user', content: draft.content, attachments: draft.attachments });
+    if (draft) {
+      context.userMessage = { role: 'user', content: draft.content, attachments: draft.attachments };
+      context.messages.push(context.userMessage);
+    }
     context.body = await getAdapter(provider).buildRequestBody(context);
+    await getAdapter(provider).prepareRequest?.(context);
     if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
     if (revision) await revision.commit();
     if (context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -3421,7 +3521,8 @@ function ensureReadyToSend() {
 //   chat      -> POST /chat/completions  (legacy OpenAI Chat Completions)
 //   responses -> POST /responses         (OpenAI Responses API)
 // Each adapter owns its endpoint, request body, streaming events and
-// non-streaming payload, so the rest of the app stays API-agnostic.
+// non-streaming payload. Optional prepare/begin/finish hooks manage request
+// lifecycle work such as durable server-conversation bindings.
 const API_ADAPTERS = {
   chat: {
     label: 'Chat Completions',
@@ -3435,6 +3536,9 @@ const API_ADAPTERS = {
     label: 'Responses',
     endpoint: '/responses',
     buildRequestBody: buildResponsesRequestBody,
+    prepareRequest: prepareResponsesConversation,
+    beginRequest: beginResponsesConversation,
+    finishRequest: finishResponsesConversation,
     applyStreamEvent: applyResponsesStreamEvent,
     applyResponse: applyResponsesBody,
     endStream(message) {
@@ -3459,7 +3563,8 @@ async function streamResponse(provider, assistantMessage, signal, preparedContex
   assistantMessage.reasoningFormat ||= provider.reasoningFormat || (getApiType(provider) === 'responses' ? 'structured' : 'think-tags');
   const adapter = getAdapter(provider);
   if (getApiType(provider) === 'responses') {
-    assistantMessage.protocol = { version: 1, apiType: 'responses', source: context.source, output: [] };
+    assistantMessage.protocol = { version: 1, apiType: 'responses', source: context.source, output: [],
+      ...(context.body?.conversation ? { conversationId: context.body.conversation } : {}) };
   }
   context.signal = signal;
   const pendingBody = context.body || adapter.buildRequestBody(context);
@@ -3470,7 +3575,11 @@ async function streamResponse(provider, assistantMessage, signal, preparedContex
     signal,
     body.stream ? REQUEST_TIMEOUT_MS : COMPLETE_RESPONSE_TIMEOUT_MS
   );
+  let requestError;
   try {
+    if (adapter.beginRequest) await adapter.beginRequest(context, assistantMessage);
+    if (watchdog.signal.aborted) throw watchdog.signal.reason;
+    context.dispatched = true;
     const response = await makeApiRequest(provider, adapter.endpoint, body, watchdog.signal);
     if (!response) return;
     assistantMessage.requestId = response.headers.get('x-request-id') || undefined;
@@ -3482,10 +3591,12 @@ async function streamResponse(provider, assistantMessage, signal, preparedContex
     }
     if (watchdog.signal.aborted) throw watchdog.signal.reason;
   } catch (error) {
+    requestError = error;
     if (watchdog.signal.reason?.name === 'TimeoutError') throw watchdog.signal.reason;
     throw error;
   } finally {
     watchdog.dispose();
+    await adapter.finishRequest?.(context, assistantMessage, requestError);
   }
 
   // cleanupStreaming finalizes both successful and interrupted responses once.
@@ -3879,7 +3990,7 @@ function createRequestContext(provider = getCurrentProvider() || {}) {
     .filter((message) => message.id !== state.currentStreamingMessage?.id));
   const { values: parameters, origins: parameterOrigins } = GenerationSettings.resolve(state.config, provider, modelId);
   return {
-    provider: structuredClone(provider), modelId, instructions, messages,
+    provider: structuredClone(provider), modelId, instructions, messages, sessionId: state.currentSessionId,
     parameters, parameterOrigins,
     source: { providerId: provider.id || '', baseUrl: buildEndpointUrl(provider, ''), modelId, instructions }
   };
@@ -3926,12 +4037,83 @@ function buildChatRequestBody(context = createRequestContext()) {
 }
 
 function buildResponsesRequestBody(context = createRequestContext()) {
+  const server = usesServerConversation(context.provider);
+  if (server && (context.userMessage?.role !== 'user' ||
+      (!context.userMessage.content?.trim() && !context.userMessage.attachments?.length))) {
+    throw new Error('Server conversations accept a new user message or attachments only.');
+  }
+  const messages = server ? [context.userMessage] : requestHistory(context.messages);
   const body = {
     ...requestParameters(context, true),
-    input: ResponsesProtocol.history(requestHistory(context.messages), context.source),
+    input: ResponsesProtocol.history(messages, context.source),
     store: true
   };
+  if (server) {
+    const binding = state.sessions[context.sessionId]?.serverConversation;
+    if (binding?.id) body.conversation = binding.id;
+  }
   return hydrateRequest(body, 'input', 'responses', context.signal);
+}
+
+// Prepare attachment bytes first, then create and durably bind the empty
+// conversation before the draft is cleared or any user input is dispatched.
+async function prepareResponsesConversation(context) {
+  if (!usesServerConversation(context.provider)) return;
+  const session = state.sessions[context.sessionId];
+  if (!session) throw new Error('This chat is no longer available. Your draft is kept.');
+  let binding = session.serverConversation;
+  if (!binding) {
+    const watchdog = createRequestWatchdog(context.signal, REQUEST_TIMEOUT_MS);
+    try {
+      const response = await makeApiRequest(context.provider, '/conversations', {}, watchdog.signal);
+      if (!response) throw new DOMException('Aborted', 'AbortError');
+      const data = await response.json();
+      if (typeof data?.id !== 'string' || !data.id.trim()) {
+        throw new Error('The provider did not return a conversation ID. Check /conversations support in Settings. Your draft is kept.');
+      }
+      binding = {
+        id: data.id, providerId: context.provider.id, baseUrl: context.source.baseUrl,
+        modelId: context.modelId, status: 'ready'
+      };
+      session.serverConversation = binding;
+    } finally {
+      watchdog.dispose();
+    }
+  }
+  context.body.conversation = binding.id;
+  if (!(await saveToStorage(context.sessionId))) {
+    throw new Error('Could not save the server conversation. Your draft is kept. Retry saving first.');
+  }
+}
+
+async function beginResponsesConversation(context) {
+  if (!usesServerConversation(context.provider)) return;
+  const binding = state.sessions[context.sessionId]?.serverConversation;
+  if (!binding?.id || binding.id !== context.body?.conversation || binding.status !== 'ready') {
+    throw new Error('The server conversation is not ready. Start a new chat.');
+  }
+  binding.status = 'pending';
+  // A persisted pending turn survives a crash or closed panel. A new panel
+  // must not assume the server missed the request and append it a second time.
+  if (!(await saveToStorage(context.sessionId))) {
+    binding.status = 'ready';
+    throw new Error('Could not save this turn before sending. Retry saving your conversation first.');
+  }
+}
+
+async function finishResponsesConversation(context, message, error) {
+  if (!usesServerConversation(context.provider)) return;
+  const binding = state.sessions[context.sessionId]?.serverConversation;
+  if (!binding || binding.id !== context.body?.conversation) return;
+  const confirmed = !error && !context.signal.aborted &&
+    ['completed', 'incomplete'].includes(message.protocol?.status) && !message.completionUnconfirmed;
+  binding.status = !context.dispatched || confirmed ? 'ready' : 'unconfirmed';
+  if (message.protocol?.responseId) binding.lastResponseId = message.protocol.responseId;
+  message.serverConversationUnconfirmed = binding.status === 'unconfirmed';
+  if (!(await saveToStorage(context.sessionId)) && context.dispatched) {
+    binding.status = 'unconfirmed';
+    message.serverConversationUnconfirmed = true;
+  }
 }
 
 // Text-only requests stay synchronous; Blob hydration is needed only for attachments.
@@ -4037,7 +4219,7 @@ function cleanupStreaming(messageId, preparationError = null) {
 
   announce(
     message?.error
-      ? 'Response failed. You can retry.'
+      ? historyIsServerManaged() ? 'Response failed. Check the server before starting a new chat.' : 'Response failed. You can retry.'
       : wasAborted
         ? 'Generation stopped.'
         : responseCompletionNotice(message || {}) || 'Response complete.'
@@ -4050,7 +4232,7 @@ function cleanupStreaming(messageId, preparationError = null) {
   updateMessageDisplay(messageId);
   updateInputState();
   elements.generationStatus.textContent = message?.error
-    ? 'Response interrupted · retry is available'
+    ? historyIsServerManaged() ? 'Server response interrupted · check the server before starting a new chat' : 'Response interrupted · retry is available'
     : wasAborted
       ? 'Generation stopped'
       : message?.incompleteReason
@@ -4058,6 +4240,8 @@ function cleanupStreaming(messageId, preparationError = null) {
         : message?.completionUnconfirmed
           ? 'Response received · completion unconfirmed'
           : 'Response complete';
+  const conversationNotice = serverConversationNotice();
+  if (conversationNotice) elements.generationStatus.textContent = conversationNotice;
   const hasNotice = message?.error || wasAborted || message?.incompleteReason || message?.completionUnconfirmed;
   elements.generationStatus.dataset.state = hasNotice ? 'notice' : 'complete';
   if (!hasNotice) {
@@ -4109,6 +4293,10 @@ async function handleApiError(error, provider = getCurrentProvider()) {
     message.errorAction = isContextLimitError(safeError)
       ? 'new-chat'
       : [400, 401, 403, 404].includes(error.status) ? 'settings' : null;
+    if (message.serverConversationUnconfirmed) {
+      message.error = 'This server turn could not be confirmed. Check it on the server and start a new chat before sending again.';
+      message.errorAction = 'new-chat';
+    }
     // fetch() rejects with a bare TypeError when CORS blocks the request.
     // Settings only sync, host permissions do not: on another device (or after
     // an import) a provider can be configured but not yet allowed here.
