@@ -90,7 +90,7 @@ test('legacy providers default to Chat Completions; Responses is opt-in', () => 
   assert.equal(app.getAdapter({ apiType: 'responses' }).endpoint, '/responses');
 });
 
-test('request bodies map history, instructions and parameters for each API', () => {
+test('request bodies map history and parameters, with system instructions only for Chat', () => {
   const { app } = sidebar();
   const history = [
     { role: 'user', content: '你好' },
@@ -98,13 +98,13 @@ test('request bodies map history, instructions and parameters for each API', () 
     { role: 'user', content: 'Continue' }
   ];
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
-    model: 'test-model', input: history, instructions: 'You are a helpful assistant.', stream: true, store: true
+    model: 'test-model', input: history, stream: true, store: true
   });
   Object.assign(app.state.config, {
     temperature: 0, max_completion_tokens: '123', reasoning_effort: 'low', reasoning_summary: 'auto', stream: false
   });
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
-    model: 'test-model', input: history, instructions: 'You are a helpful assistant.',
+    model: 'test-model', input: history,
     stream: false, store: true, temperature: 0, max_output_tokens: 123,
     reasoning: { effort: 'low', summary: 'auto' }
   });

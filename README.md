@@ -90,8 +90,9 @@ Save the provider, then select one of its models in the sidebar. Providers witho
 API type continue to use Chat Completions. You can configure the same service twice
 to keep both API types available in the model selector.
 
-Both APIs support streaming and complete responses, system prompts, and local
-conversation history. Responses requests use `instructions`, `input`, and
+Both APIs support streaming and complete responses and local conversation history.
+Custom system prompts are sent with Chat Completions only; Responses requests omit
+`instructions` for provider compatibility. Responses requests use `input` and
 `max_output_tokens`, with `store: true` and the local history sent on each turn.
 The provider can retain responses and conversation records.
 For models that reject temperature, enable **Use model default**. Reasoning summaries

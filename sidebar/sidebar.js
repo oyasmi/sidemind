@@ -3931,7 +3931,6 @@ function buildResponsesRequestBody(context = createRequestContext()) {
     input: ResponsesProtocol.history(requestHistory(context.messages), context.source),
     store: true
   };
-  if (context.instructions) body.instructions = context.instructions;
   return hydrateRequest(body, 'input', 'responses', context.signal);
 }
 
