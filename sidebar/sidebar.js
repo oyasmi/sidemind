@@ -3929,7 +3929,7 @@ function buildResponsesRequestBody(context = createRequestContext()) {
   const body = {
     ...requestParameters(context, true),
     input: ResponsesProtocol.history(requestHistory(context.messages), context.source),
-    store: false
+    store: true
   };
   if (context.instructions) body.instructions = context.instructions;
   return hydrateRequest(body, 'input', 'responses', context.signal);

@@ -70,7 +70,7 @@ flowchart TD
 - 已确认完成的响应可重放规范化 items。incomplete 仅复用已完成且满足输入约束的项；failed、stopped、unconfirmed 保留可见部分文本，不复用未确认的 opaque reasoning，不伪造 final phase。
 - 编辑、重新生成、撤销均以消息为单位操作，协议记录随所属消息截断或恢复，避免出现独立的失效 response 链。
 
-继续使用 `store: false` 和手动历史重放。本次不引入 `previous_response_id` 或服务端 Conversations。
+默认使用 `store: true`，允许供应商保存响应和会话记录，并继续手动历史重放。本次不引入 `previous_response_id` 或服务端 Conversations。
 
 **3. 流式归并、结束确认和失败恢复**
 

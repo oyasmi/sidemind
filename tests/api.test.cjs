@@ -98,14 +98,14 @@ test('request bodies map history, instructions and parameters for each API', () 
     { role: 'user', content: 'Continue' }
   ];
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
-    model: 'test-model', input: history, instructions: 'You are a helpful assistant.', stream: true, store: false
+    model: 'test-model', input: history, instructions: 'You are a helpful assistant.', stream: true, store: true
   });
   Object.assign(app.state.config, {
     temperature: 0, max_completion_tokens: '123', reasoning_effort: 'low', reasoning_summary: 'auto', stream: false
   });
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
     model: 'test-model', input: history, instructions: 'You are a helpful assistant.',
-    stream: false, store: false, temperature: 0, max_output_tokens: 123,
+    stream: false, store: true, temperature: 0, max_output_tokens: 123,
     reasoning: { effort: 'low', summary: 'auto' }
   });
   assert.deepEqual(plain(app.buildChatRequestBody()), {

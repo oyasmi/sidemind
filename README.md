@@ -92,7 +92,8 @@ to keep both API types available in the model selector.
 
 Both APIs support streaming and complete responses, system prompts, and local
 conversation history. Responses requests use `instructions`, `input`, and
-`max_output_tokens`, with `store: false` and the local history sent on each turn.
+`max_output_tokens`, with `store: true` and the local history sent on each turn.
+The provider can retain responses and conversation records.
 For models that reject temperature, enable **Use model default**. Reasoning summaries
 are off by default; enable **Reasoning Summary → Auto** for models that support them.
 If a response reaches its output limit, SideMind keeps the partial answer and

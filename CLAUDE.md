@@ -126,10 +126,10 @@ Two request/response shapes are supported, selected **per provider** via `provid
 | apiType | Endpoint | Request | Text delta | Reasoning delta |
 |---|---|---|---|---|
 | `chat` (default) | `/chat/completions` | `messages[]`, `max_completion_tokens`, `reasoning_effort` | `choices[0].delta.content` | `choices[0].delta.reasoning_content` |
-| `responses` | `/responses` | `input[]` + `instructions`, `max_output_tokens`, `reasoning:{effort,summary}`, `store:false` | `response.output_text.delta` | `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` |
+| `responses` | `/responses` | `input[]` + `instructions`, `max_output_tokens`, `reasoning:{effort,summary}`, `store:true` | `response.output_text.delta` | `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` |
 
 - **`API_ADAPTERS`** (sidebar.js) maps each type to `{ endpoint, buildRequestBody, applyStreamEvent, applyResponse }`; everything outside the adapters is API-agnostic.
-- **Responses is stateless here**: `store: false` and the full history is replayed as `input` on every turn — no `previous_response_id`.
+- **Responses history**: `store: true` allows provider-side storage; the full history is replayed as `input` on every turn without `previous_response_id`.
 - **Reasoning visibility**: OpenAI reasoning models only emit a chain of thought when `reasoning.summary` is requested. It is opt-in (`reasoning_summary: 'off'` by default) because not every model accepts reasoning options.
 - **Chat reasoning fields**: `readReasoningField()` reads `reasoning_content` (DeepSeek, LM Studio, older vLLM) or `reasoning` (OpenRouter, Ollama, newer vLLM) - one of them, never both, since some servers send the same text in each.
 - **History**: `buildHistory()` drops assistant turns without answer text (failed, or stopped while reasoning) - many providers reject an empty assistant message.
