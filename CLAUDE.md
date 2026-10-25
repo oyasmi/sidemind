@@ -126,12 +126,13 @@ Two request/response shapes are supported, selected **per provider** via `provid
 | apiType | Endpoint | Request | Text delta | Reasoning delta |
 |---|---|---|---|---|
 | `chat` (default) | `/chat/completions` | `messages[]`, `max_completion_tokens`, `reasoning_effort` | `choices[0].delta.content` | `choices[0].delta.reasoning_content` |
-| `responses` | `/responses` | `input[]`, `max_output_tokens`, `reasoning:{effort,summary}`, `store:true` | `response.output_text.delta` | `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` |
+| `responses` | `/responses` | `input[]` + `instructions`, `max_output_tokens`, `reasoning:{effort,summary}`, `store:false` (server conversations: `true`) | `response.output_text.delta` | `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` |
 
 - **`API_ADAPTERS`** (sidebar.js) maps each type to `{ endpoint, buildRequestBody, applyStreamEvent, applyResponse }`; everything outside the adapters is API-agnostic.
-- **Responses history**: `store: true` allows provider-side storage; the full history is replayed as `input` on every turn without `previous_response_id`.
+- **Responses history**: `store: false`; the full history is replayed as `input` on every turn without `previous_response_id`, so nothing needs storing on the provider. Only server conversation mode sends `store: true`.
 - **Server conversation mode**: Optional `provider.serverConversation` (Responses only, default false) selects current-turn input. Adapter lifecycle hooks create `/conversations` after attachment preparation, persist `session.serverConversation`, and mark the turn `pending` before dispatch. A confirmed terminal response returns it to `ready`; uncertain turns remain blocked across reloads. A Web Lock covers the whole turn across sidebars. Bound chats disable local history editing/regeneration and reject incompatible provider/model/mode changes; local deletion does not remove remote data.
-- **System prompts**: Custom system prompts are sent with Chat Completions only. Responses requests omit `instructions` for provider compatibility.
+- **System prompts**: Chat sends the selected prompt as a `system` message; Responses sends it as `instructions` on every turn, server conversations included, since instructions apply to one response only.
+- **Server-run tools**: `mcp_call` output items (tools an agent server such as Pipiclaw ran itself) are not "unsupported output"; they are replayed as history within a compatible segment. Client-executed tool items stay unsupported.
 - **Reasoning visibility**: OpenAI reasoning models only emit a chain of thought when `reasoning.summary` is requested. It is opt-in (`reasoning_summary: 'off'` by default) because not every model accepts reasoning options.
 - **Chat reasoning fields**: `readReasoningField()` reads `reasoning_content` (DeepSeek, LM Studio, older vLLM) or `reasoning` (OpenRouter, Ollama, newer vLLM) - one of them, never both, since some servers send the same text in each.
 - **History**: `buildHistory()` drops assistant turns without answer text (failed, or stopped while reasoning) - many providers reject an empty assistant message.

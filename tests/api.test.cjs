@@ -132,7 +132,7 @@ test('server Responses creates and saves a conversation before dispatch and reus
   assert.equal(calls.length, 3, 'the follow-up does not create another conversation');
   assert.deepEqual(calls[2].body, {
     model: 'test-model', stream: false, store: true, conversation: 'conv_test',
-    input: [{ role: 'user', content: 'Follow up' }]
+    instructions: 'You are a helpful assistant.', input: [{ role: 'user', content: 'Follow up' }]
   });
   assert.equal(app.state.sessions.session.messages.length, 2, 'building input preserves the local transcript');
 });
@@ -197,6 +197,17 @@ test('lost acknowledgements, failed responses and mismatched conversation IDs bl
     reload.app.state.sessions.session = plain(context.snapshots.at(-1));
     assert.match(reload.app.serverConversationNotice(), /unconfirmed/, 'reloading cannot silently retry the append');
   }
+  // An HTTP rejection appended nothing: the chat stays usable, e.g. after removing a refused file.
+  const { context, app, provider, turn } = serverSidebar();
+  context.fetch = async () => Response.json({ id: 'conv_original' });
+  const request = turn();
+  await app.prepareResponsesConversation(request);
+  const message = {};
+  context.fetch = async () => Response.json({ error: { message: 'Binary files cannot be read inline.', param: 'input[0].content[1].file_data' } }, { status: 400 });
+  await assert.rejects(app.streamResponse(provider, message, request.signal, request), /API Error \(400\)/);
+  assert.equal(app.state.sessions.session.serverConversation.status, 'ready');
+  assert.notEqual(message.serverConversationUnconfirmed, true);
+  assert.equal(app.serverConversationNotice(), '');
 });
 
 test('streaming server conversations preserve association through queued events and authoritative completion', async () => {
@@ -283,7 +294,7 @@ test('legacy providers default to Chat Completions; Responses is opt-in', () => 
   assert.equal(app.getAdapter({ apiType: 'responses' }).endpoint, '/responses');
 });
 
-test('request bodies map history and parameters, with system instructions only for Chat', () => {
+test('request bodies map history, instructions and parameters for each API', () => {
   const { app } = sidebar();
   const history = [
     { role: 'user', content: '你好' },
@@ -291,14 +302,14 @@ test('request bodies map history and parameters, with system instructions only f
     { role: 'user', content: 'Continue' }
   ];
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
-    model: 'test-model', input: history, stream: true, store: true
+    model: 'test-model', input: history, instructions: 'You are a helpful assistant.', stream: true, store: false
   });
   Object.assign(app.state.config, {
     temperature: 0, max_completion_tokens: '123', reasoning_effort: 'low', reasoning_summary: 'auto', stream: false
   });
   assert.deepEqual(plain(app.buildResponsesRequestBody()), {
-    model: 'test-model', input: history,
-    stream: false, store: true, temperature: 0, max_output_tokens: 123,
+    model: 'test-model', input: history, instructions: 'You are a helpful assistant.',
+    stream: false, store: false, temperature: 0, max_output_tokens: 123,
     reasoning: { effort: 'low', summary: 'auto' }
   });
   assert.deepEqual(plain(app.buildChatRequestBody()), {
@@ -1362,6 +1373,8 @@ test('Responses replays structured output within a compatible history segment', 
   const outputItems = [
     { id: 'rs_1', type: 'reasoning', status: 'completed', summary: [], encrypted_content: 'opaque' },
     { id: 'msg_1', type: 'message', status: 'completed', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'Checking.', annotations: [] }] },
+    // A tool the provider ran itself (Pipiclaw): history to replay, not client tool execution.
+    { id: 'mcp_1', type: 'mcp_call', status: 'completed', server_label: 'pipiclaw', name: 'bash', arguments: '{"command":"ls"}', output: 'a.txt', error: null },
     { id: 'msg_2', type: 'message', status: 'completed', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'Done.', annotations: [] }] }
   ];
   context.fetch = async () => Response.json({ id: 'resp_1', status: 'completed', output: outputItems });
@@ -1373,6 +1386,8 @@ test('Responses replays structured output within a compatible history segment', 
   assert.equal(input.find(item => item.type === 'reasoning').encrypted_content, 'opaque');
   assert.deepEqual(input.filter(item => item.phase).map(item => item.phase), ['commentary', 'final_answer']);
   assert.equal(input.find(item => item.id === 'msg_1').status, 'completed', 'replayed output messages keep the required id/status wire fields');
+  assert.deepEqual(input.find(item => item.type === 'mcp_call'), { type: 'mcp_call', id: 'mcp_1', server_label: 'pipiclaw', name: 'bash', arguments: '{"command":"ls"}', output: 'a.txt', status: 'completed' });
+  assert.equal(answer.unsupportedOutput, null);
   assert.equal(answer.content, 'Checking.\n\nDone.');
   app.state.config.selectedModel = 'other-model - provider';
   assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false);

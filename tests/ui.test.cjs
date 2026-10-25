@@ -2276,7 +2276,7 @@ browserTest('server conversation option defaults off, follows protocol and survi
 browserTest('server conversations keep local history but send only new attachments and reuse the ID after reload', async () => {
   const { page, errors } = await openPage('sidebar', serverConversationConfig());
   await useServerConversationFixture(page);
-  assert.equal(await page.locator('#systemPromptSelector').isDisabled(), true);
+  assert.equal(await page.locator('#systemPromptSelector').isDisabled(), false);
   await page.locator('#attachmentInput').setInputFiles([attachmentPng, attachmentText]);
   await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
   await page.locator('#sendBtn').click();
@@ -2287,7 +2287,7 @@ browserTest('server conversations keep local history but send only new attachmen
   assert.equal(first[1].body.conversation, 'conv_1');
   assert.equal(first[1].body.input.length, 1);
   assert.deepEqual(first[1].body.input[0].content.map((part) => part.type), ['input_image', 'input_file']);
-  assert.equal(first[1].body.instructions, undefined);
+  assert.equal(first[1].body.instructions, 'Be helpful.', 'instructions apply per response, so every server turn sends them');
   assert.equal(await page.locator('.edit-btn').isDisabled(), true);
   assert.equal(await page.locator('.regenerate-btn').isDisabled(), true);
   await page.evaluate(async () => {

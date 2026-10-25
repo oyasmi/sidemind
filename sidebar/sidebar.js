@@ -2753,8 +2753,7 @@ function updateInputState() {
   }
   elements.modelSelector.disabled = state.isStreaming;
   if (state.isStreaming) closeModelPicker(false);
-  elements.systemPromptSelector.disabled = state.isStreaming || usesServerConversation(provider);
-  elements.systemPromptSelector.title = usesServerConversation(provider) ? 'Configure instructions on the server for this provider.' : '';
+  elements.systemPromptSelector.disabled = state.isStreaming;
   const managed = historyIsServerManaged();
   if (managed !== historyControlsManaged) {
     elements.messagesList.querySelectorAll('.edit-btn, .regenerate-btn').forEach((button) => {
@@ -4046,8 +4045,11 @@ function buildResponsesRequestBody(context = createRequestContext()) {
   const body = {
     ...requestParameters(context, true),
     input: ResponsesProtocol.history(messages, context.source),
-    store: true
+    // Replayed history needs nothing stored; only a server conversation keeps state on the provider.
+    store: server
   };
+  // Instructions apply to one response only, so a server conversation sends them every turn too.
+  if (context.instructions) body.instructions = context.instructions;
   if (server) {
     const binding = state.sessions[context.sessionId]?.serverConversation;
     if (binding?.id) body.conversation = binding.id;
@@ -4107,7 +4109,9 @@ async function finishResponsesConversation(context, message, error) {
   if (!binding || binding.id !== context.body?.conversation) return;
   const confirmed = !error && !context.signal.aborted &&
     ['completed', 'incomplete'].includes(message.protocol?.status) && !message.completionUnconfirmed;
-  binding.status = !context.dispatched || confirmed ? 'ready' : 'unconfirmed';
+  // An HTTP 4xx (invalid input, too large, rate limited) is refused before anything is appended.
+  const refused = error?.status >= 400 && error.status < 500;
+  binding.status = !context.dispatched || confirmed || refused ? 'ready' : 'unconfirmed';
   if (message.protocol?.responseId) binding.lastResponseId = message.protocol.responseId;
   message.serverConversationUnconfirmed = binding.status === 'unconfirmed';
   if (!(await saveToStorage(context.sessionId)) && context.dispatched) {
@@ -4343,6 +4347,8 @@ function isContextLimitError(error) {
 function getErrorMessage(error) {
   if (error.name === 'TimeoutError') return error.message;
   if (isContextLimitError(error)) return 'This conversation exceeds the model’s context limit. Start a new chat or shorten your messages before retrying.';
+  // A rejected message or attachment is fixed in the chat, not in Settings: show the provider's reason.
+  if (/^input\b/.test(error.param || '') && error.message.startsWith('API Error')) return error.message;
   if (error.param && (error.status === 400 || /unsupported|invalid_parameter/.test(error.code || ''))) return `The provider rejected “${error.param}”. Review this model’s parameters in Settings.`;
   if (error.status === 400) return 'The provider rejected this request. Check the model, API type and parameters in Settings.';
   if (error.status === 401 || error.status === 403) return 'Access denied. Check your API key and model access in Settings.';

@@ -70,7 +70,7 @@ flowchart TD
 - 已确认完成的响应可重放规范化 items。incomplete 仅复用已完成且满足输入约束的项；failed、stopped、unconfirmed 保留可见部分文本，不复用未确认的 opaque reasoning，不伪造 final phase。
 - 编辑、重新生成、撤销均以消息为单位操作，协议记录随所属消息截断或恢复，避免出现独立的失效 response 链。
 
-默认使用 `store: true`，允许供应商保存响应和会话记录，并继续手动历史重放。本次不引入 `previous_response_id` 或服务端 Conversations。
+默认使用 `store: false` 和手动历史重放，供应商无需保存响应；仅服务端会话模式发送 `store: true`。本次不引入 `previous_response_id` 或服务端 Conversations。
 
 后续增加了可选的供应商级 `serverConversation` 模式（仅 Responses，默认关闭）：先准备本轮附件，再通过 `POST /conversations` 创建并保存服务端会话；后续只发送本轮用户消息和附件，携带 `conversation`。本地保留完整展示记录，但不重放到服务端。会话绑定随本地聊天保存，包含供应商 ID、规范化地址、模型及 `ready` / `pending` / `unconfirmed` 状态。发送前持久化 `pending`，确认完成后保存 `ready`；中断或状态不明时阻止继续发送。Web Lock 覆盖整个回合，防止多个侧边栏并发追加。同一绑定内不支持本地历史编辑和重新生成；来源或模式变化需要新建聊天或恢复原配置。
 

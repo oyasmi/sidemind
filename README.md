@@ -90,11 +90,10 @@ Save the provider, then select one of its models in the sidebar. Providers witho
 API type continue to use Chat Completions. You can configure the same service twice
 to keep both API types available in the model selector.
 
-Both APIs support streaming and complete responses and local conversation history.
-Custom system prompts are sent with Chat Completions only; Responses requests omit
-`instructions` for provider compatibility. Responses requests use `input` and
-`max_output_tokens`, with `store: true` and, by default, the local history sent on each turn.
-The provider can retain responses and conversation records.
+Both APIs support streaming and complete responses, system prompts, and local
+conversation history. Responses requests use `instructions`, `input` and
+`max_output_tokens`. By default the local history is sent on each turn with `store: false`,
+so the provider keeps no response records; server-side conversation mode (below) uses `store: true`.
 For models that reject temperature, enable **Use model default**. Reasoning summaries
 are off by default; enable **Reasoning Summary → Auto** for models that support them.
 If a response reaches its output limit, SideMind keeps the partial answer and
@@ -108,7 +107,8 @@ the current user message and attachments with that `conversation` ID on every tu
 The provider must support this endpoint; SideMind does not upload existing chats or
 fall back to independent requests. The option defaults off and is saved per provider.
 For Pipiclaw, also use model defaults for temperature, token limits and reasoning;
-these parameters and durable instructions are controlled on the server.
+these parameters are controlled on the server. The selected system prompt is still
+sent as `instructions` on every turn and applies to that response only.
 
 Server conversations keep a local transcript for reading, searching and exporting.
 Editing and regenerating their history are unavailable. Changing the provider, API

@@ -2,6 +2,9 @@
 const ResponsesProtocol = (() => {
   const runtimes = new WeakMap();
   const clone = (value) => JSON.parse(JSON.stringify(value));
+  // Tools the provider ran itself (an agent server such as Pipiclaw reports them as mcp_call).
+  // They are history to replay, not a request for SideMind to execute anything.
+  const SERVER_TOOL_ITEMS = new Set(['mcp_call']);
 
   function apiError(error = {}, fallback = 'Response failed') {
     const result = new Error(`API Error: ${error.message || fallback}`);
@@ -54,7 +57,7 @@ const ResponsesProtocol = (() => {
         [...(item.summary || []), ...(item.content || [])].forEach((part) => {
           if (part?.text) thoughts.push(part.text);
         });
-      } else {
+      } else if (!SERVER_TOOL_ITEMS.has(item.type)) {
         unsupported.push(item.type || 'unknown');
       }
     });
@@ -235,6 +238,12 @@ const ResponsesProtocol = (() => {
         // belong to that wire shape. Only compatible servers may omit them.
         if (typeof item.id === 'string') return [{ type: 'message', id: item.id, role: 'assistant', status: 'completed', content, ...phase }];
         return [{ type: 'message', role: 'assistant', content: content.map((part) => part.text || part.refusal || '').join(''), ...phase }];
+      }
+      if (item.type === 'mcp_call' && typeof item.id === 'string' && typeof item.server_label === 'string' &&
+          typeof item.name === 'string' && typeof item.arguments === 'string') {
+        return [{ type: 'mcp_call', id: item.id, server_label: item.server_label, name: item.name, arguments: item.arguments,
+          output: typeof item.output === 'string' ? item.output : null, ...(item.error ? { error: clone(item.error) } : {}),
+          ...(item.status ? { status: item.status } : {}) }];
       }
       return [];
     });
