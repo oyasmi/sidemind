@@ -1384,6 +1384,7 @@ async function createNewSession() {
   };
   clearUndo();
   activateSession(sessionId);
+  elements.messageInput.focus({ preventScroll: true });
 }
 
 async function switchSession(sessionId) {
@@ -1395,6 +1396,7 @@ async function switchSession(sessionId) {
     activateSession(sessionId);
   }
   closeChatHistory();
+  elements.messageInput.focus({ preventScroll: true });
 }
 
 async function deleteSession(sessionId) {
@@ -2063,7 +2065,7 @@ function startEditing(message) {
   input.setAttribute('aria-label', 'Edit message');
   input.addEventListener('input', () => resizeEditor(input));
   input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    if (event.key === 'Enter' && !event.shiftKey && !isCompositionKey(event)) {
       event.preventDefault();
       submitEdit(message, input.value);
     }
@@ -2162,12 +2164,16 @@ async function submitEdit(message, rawText) {
   const previousTitle = session.title;
   const removed = session.messages.slice(index + 1);
   const edited = { ...message, content: text, attachments, timestamp: new Date().toISOString() };
+  messageElementCache.get(message.id)?.querySelector('.message-edit-input')?.focus({ preventScroll: true });
   await sendMessageToAPI(null, {
     messages: [...session.messages.slice(0, index), edited],
     async commit() {
       await retainUndoAttachments([previous, ...removed]);
       if (state.abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const editor = messageElementCache.get(message.id)?.querySelector('.message-editor');
+      const restoreFocus = editor?.contains(document.activeElement);
       cancelEditing(false);
+      if (restoreFocus) elements.messageInput.focus({ preventScroll: true });
       Object.assign(message, edited);
       session.messages = session.messages.slice(0, index + 1);
       session.timestamp = new Date().toISOString();
@@ -2737,7 +2743,14 @@ function updateInputState() {
   const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed && !conversationNotice;
   if (elements.attachBtn) elements.attachBtn.disabled = state.isPreparing;
   elements.draftAttachments?.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
-  elements.messageInput.disabled = state.isPreparing;
+  // Disabling a focused textarea blurs it. Lock the captured draft without
+  // removing keyboard focus while attachments and the request are prepared.
+  elements.messageInput.readOnly = state.isPreparing;
+  const editor = messageElementCache.get(editingMessageId)?.querySelector('.message-editor');
+  if (editor) {
+    editor.querySelector('.message-edit-input').readOnly = state.isPreparing;
+    editor.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
+  }
 
   elements.sendBtn.disabled = !canSend;
 
@@ -2913,7 +2926,7 @@ function handleModelTriggerKeydown(event) {
 }
 
 function handleModelSearchKeydown(event) {
-  if (event.isComposing) return;
+  if (isCompositionKey(event)) return;
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
     const options = Array.from(elements.modelOptions.querySelectorAll('[role="option"]'));
@@ -2996,8 +3009,12 @@ function handleInputChange() {
   saveDraftSoon();
 }
 
+function isCompositionKey(event) {
+  return event.isComposing || event.keyCode === 229;
+}
+
 function handleInputKeydown(event) {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  if (event.key === 'Enter' && !event.shiftKey && !isCompositionKey(event)) {
     event.preventDefault();
     if (!state.isStreaming && !elements.sendBtn.disabled) {
       handleSendMessage();
@@ -3007,7 +3024,7 @@ function handleInputKeydown(event) {
 
 // Escape dismisses the active surface first, then stops generation.
 function handleGlobalKeydown(event) {
-  if (event.isComposing || document.querySelector('dialog[open]')) return;
+  if (isCompositionKey(event) || document.querySelector('dialog[open]')) return;
   if (event.key === 'Escape' && !event.shiftKey && !elements.modelPickerPanel.hidden) {
     event.preventDefault();
     closeModelPicker(true);
@@ -3028,7 +3045,7 @@ function handleGlobalKeydown(event) {
   if (event.key !== 'Escape') return;
 
   if (elements.chatHistoryDropdown.open) return;
-  if (editingMessageId) {
+  if (editingMessageId && !state.isPreparing) {
     event.preventDefault();
     cancelEditing();
     return;
@@ -3055,6 +3072,7 @@ async function handleSendMessage() {
   const content = elements.messageInput.value.trim();
   const attachments = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
   if ((!content && !attachments.length) || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
+  elements.messageInput.focus({ preventScroll: true });
   await sendMessageToAPI({ content, attachments: structuredClone(attachments) });
 }
 
@@ -3069,6 +3087,7 @@ async function handleStopGeneration() {
 
 async function handleSendOrStop() {
   if (state.isStreaming) {
+    elements.messageInput.focus({ preventScroll: true });
     await handleStopGeneration();
   } else {
     await handleSendMessage();
@@ -3294,7 +3313,7 @@ function renameSession(sessionId, item) {
       cancelled = true;
       input.blur();
     }
-    if (event.key === 'Enter' && !event.isComposing) {
+    if (event.key === 'Enter' && !isCompositionKey(event)) {
       event.preventDefault();
       input.blur();
     }

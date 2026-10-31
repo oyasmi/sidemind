@@ -389,6 +389,116 @@ browserTest('provider dialogs keep their actions reachable on short narrow scree
   await page.close();
 });
 
+browserTest('sending keeps keyboard focus through preparation, streaming, completion and stop', async () => {
+  for (const method of ['Enter', 'click']) {
+    const { page, errors } = await openPage();
+    await page.evaluate(() => {
+      const build = API_ADAPTERS.chat.buildRequestBody;
+      API_ADAPTERS.chat.buildRequestBody = async (context) => {
+        API_ADAPTERS.chat.buildRequestBody = build;
+        await new Promise((resolve) => { window.__releasePreparation = resolve; });
+        return build(context);
+      };
+      window.__composerBlurs = 0;
+      elements.messageInput.addEventListener('blur', () => window.__composerBlurs++);
+    });
+    await page.locator('#messageInput').fill('First question');
+    if (method === 'Enter') await page.keyboard.press('Enter');
+    else await page.locator('#sendBtn').click();
+    await page.waitForFunction(() => state.isPreparing && window.__releasePreparation);
+    assert.equal(await page.locator('#messageInput').evaluate((node) => node === document.activeElement), true, `${method}: preparation retains focus`);
+    if (method === 'Enter') assert.equal(await page.evaluate(() => window.__composerBlurs), 0);
+    await page.evaluate(() => window.__releasePreparation());
+    await page.waitForFunction(() => window.__fetchCalls.length === 1 && !state.isPreparing);
+    // Use the keyboard directly: locator.fill/press would hide a lost focus by restoring it.
+    await page.keyboard.type('Next draft');
+    assert.equal(await page.locator('#messageInput').inputValue(), 'Next draft');
+    await page.evaluate(() => window.__stream.complete());
+    await page.waitForFunction(() => !state.generationDone);
+    await page.keyboard.type(' continues');
+    assert.equal(await page.locator('#messageInput').inputValue(), 'Next draft continues');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => window.__fetchCalls.length === 2);
+    await page.locator('#sendBtn').click();
+    await page.waitForFunction(() => !state.generationDone);
+    await page.keyboard.type('After stopping');
+    assert.equal(await page.locator('#messageInput').inputValue(), 'After stopping');
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+});
+
+browserTest('preparation failure preserves focus and draft; completion respects focus moved elsewhere', async () => {
+  const { page, errors } = await openPage();
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.chat.buildRequestBody;
+    API_ADAPTERS.chat.buildRequestBody = async (context) => {
+      API_ADAPTERS.chat.buildRequestBody = build;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new Error('Fixture preparation failure');
+    };
+  });
+  await page.locator('#messageInput').fill('Kept draft');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => !state.generationDone && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
+  await page.keyboard.type(' corrected');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Kept draft corrected');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__fetchCalls.length === 1);
+  await page.locator('#newChatBtn').focus();
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.generationDone);
+  assert.equal(await page.locator('#newChatBtn').evaluate((node) => node === document.activeElement), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('editing locks the captured text during preparation; Escape cancels and successful send returns focus', async () => {
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('sidebar', fixtureConfig, {
+    currentSessionId: 'edited',
+    sessions: {
+      edited: { title: 'Original', timestamp, messages: [
+        { id: 'user', role: 'user', content: 'Original', timestamp },
+        { id: 'assistant', role: 'assistant', content: 'Original answer', timestamp }
+      ] }
+    }
+  });
+  await page.locator('.edit-btn').click();
+  await page.locator('.message-edit-input').fill('Revised question');
+  await page.locator('.message-edit-input').evaluate((node) => node.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })
+  ));
+  assert.equal(await page.evaluate(() => state.isStreaming), false);
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.chat.buildRequestBody;
+    API_ADAPTERS.chat.buildRequestBody = async (context) => {
+      API_ADAPTERS.chat.buildRequestBody = build;
+      await new Promise((resolve) => { window.__releasePreparation = resolve; });
+      return build(context);
+    };
+  });
+  await page.locator('.edit-submit-btn').click();
+  await page.waitForFunction(() => state.isPreparing && window.__releasePreparation);
+  assert.equal(await page.locator('.message-edit-input').evaluate((node) => node.readOnly && node === document.activeElement), true);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__releasePreparation());
+  await page.waitForFunction(() => !state.generationDone);
+  assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  assert.equal(await page.evaluate(() => state.sessions.edited.messages.length), 2);
+  assert.equal(await page.locator('.message-edit-input').inputValue(), 'Revised question');
+  await page.keyboard.type(' corrected');
+  assert.equal(await page.locator('.message-edit-input').inputValue(), 'Revised question corrected');
+  await page.locator('.edit-submit-btn').click();
+  await page.waitForFunction(() => window.__fetchCalls.length === 1);
+  await page.keyboard.type('Next question');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Next question');
+  await page.evaluate(() => window.__stream.complete());
+  await page.waitForFunction(() => !state.generationDone);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
 browserTest('Enter during generation retains the next draft; stop awaits cleanup', async () => {
   const { page, errors } = await openPage();
   await startResponse(page);
@@ -420,6 +530,10 @@ browserTest('IME Enter does not send, and Shift+Enter inserts a newline', async 
       )
     );
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  await page.locator('#messageInput').evaluate((node) => node.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })
+  ));
+  assert.equal(await page.evaluate(() => state.isStreaming), false, 'IME confirmation with keyCode 229 must not send');
   await page.locator('#messageInput').press('Shift+Enter');
   assert.match(await page.locator('#messageInput').inputValue(), /\n/);
   assert.deepEqual(errors, []);
@@ -1071,6 +1185,10 @@ browserTest('the model picker handles mouse selection, outside focus, IME and ge
   await page.locator('#modelSelector').click();
   await page.locator('#modelSearch').evaluate((input) => input.dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })
+  ));
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), true);
+  await page.locator('#modelSearch').evaluate((input) => input.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })
   ));
   assert.equal(await page.locator('#modelPickerPanel').isVisible(), true);
   await page.locator('#messageInput').click();
@@ -1810,12 +1928,15 @@ browserTest('New chat reuses a blank chat, and blank chats stay out of history',
   await page.locator('#newChatBtn').click();
   const blank = await page.evaluate(() => state.currentSessionId);
   assert.notEqual(blank, 'kept');
+  assert.equal(await page.locator('#messageInput').evaluate((node) => node === document.activeElement), true);
   await page.locator('#newChatBtn').click();
   assert.equal(await page.evaluate(() => state.currentSessionId), blank);
   await page.locator('#chatHistoryBtn').click();
   // The open blank chat is listed; the one left over from before is not
   assert.equal(await page.locator('.chat-history-item').count(), 2);
   await page.locator('.chat-history-content', { hasText: 'Kept' }).click();
+  await page.keyboard.type('Draft in the selected chat');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Draft in the selected chat');
   assert.equal(await page.evaluate((blank) => blank in state.sessions, blank), false);
   await page.waitForFunction((blank) => !(`session:${blank}` in window.__storage.local), blank);
   assert.deepEqual(errors, []);
