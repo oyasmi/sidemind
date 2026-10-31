@@ -30,22 +30,6 @@
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>
           </button>
         </div>
-        <div id="modelControl" class="model-control">
-          <button id="modelSelector" class="model-selector" type="button" aria-label="Choose a model" aria-describedby="modelName modelProvider" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPickerPanel">
-            <span class="model-selector-mark" aria-hidden="true"><svg class="ui-icon"><use href="../assets/icons.svg#robot"></use></svg></span>
-            <span class="model-selector-text"><span id="modelName">Choose a model</span><span id="modelProvider">Your available models</span></span>
-            <svg class="ui-icon model-selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
-          </button>
-          <div id="modelPickerPanel" class="model-picker-panel" role="dialog" aria-label="Choose a model" hidden>
-            <div class="model-picker-search">
-              <label class="sr-only" for="modelSearch">Search models</label>
-              <input id="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-controls="modelOptions" aria-expanded="false" placeholder="Search models or providers…" autocomplete="off" spellcheck="false" />
-            </div>
-            <div id="modelOptions" class="model-options" role="listbox" aria-label="Available models"></div>
-            <p id="modelPickerEmpty" class="model-picker-empty" role="status" hidden></p>
-            <button id="manageModelsBtn" class="model-picker-manage" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>Manage models</button>
-          </div>
-        </div>
       </header>
 
       <main class="chat-container">
@@ -83,15 +67,30 @@
             class="message-input reading-content"
             placeholder="Ask a question…"
             rows="2"
-            aria-describedby="inputHint"
           ></textarea>
           <div class="composer-toolbar">
             <button id="attachBtn" class="icon-btn" type="button" aria-label="Attach images or files" title="Attach images or files"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg></button>
-            <div class="role-control">
-              <label for="systemPromptSelector">Role</label
-              ><select id="systemPromptSelector" class="system-prompt-selector">
-                <option value="default">Default</option>
-              </select>
+            <div id="modelControl" class="model-control">
+              <button id="modelSelector" class="composer-selector model-selector" type="button" aria-label="Choose a model and provider" aria-describedby="modelName modelProvider" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPickerPanel">
+                <span class="selector-label">Model</span>
+                <span class="model-selector-text"><span id="modelName">Choose a model</span><span id="modelProvider">Your available models</span></span>
+                <svg class="ui-icon selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
+              </button>
+              <div id="modelPickerPanel" class="model-picker-panel composer-picker-panel" role="dialog" aria-label="Choose a model and provider" hidden>
+                <div class="model-picker-search">
+                  <label class="sr-only" for="modelSearch">Search models</label>
+                  <input id="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-controls="modelOptions" aria-expanded="false" placeholder="Search models or providers…" autocomplete="off" spellcheck="false" />
+                </div>
+                <div id="modelOptions" class="model-options" role="listbox" aria-label="Available models"></div>
+                <p id="modelPickerEmpty" class="model-picker-empty" role="status" hidden></p>
+              </div>
+            </div>
+            <div id="roleControl" class="role-control">
+              <button id="systemPromptSelector" class="composer-selector role-selector" type="button" aria-label="Choose a role" aria-describedby="roleName" aria-haspopup="listbox" aria-expanded="false" aria-controls="rolePickerPanel">
+                <span class="selector-label">Role</span><span id="roleName">Default</span>
+                <svg class="ui-icon selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
+              </button>
+              <div id="rolePickerPanel" class="role-picker-panel composer-picker-panel" role="listbox" aria-label="Roles" hidden></div>
             </div>
             <button
               id="sendBtn"
@@ -106,7 +105,6 @@
             </button>
           </div>
         </div>
-        <p id="inputHint" class="input-hint">Enter to send · Shift + Enter for a new line</p>
       </footer>
     </div>
 

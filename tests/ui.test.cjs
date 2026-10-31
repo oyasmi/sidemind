@@ -285,6 +285,14 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
         true,
         `${kind} width=${width}`
       );
+      if (kind === 'options') {
+        await openSettingsSection(page, 'shortcuts');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `shortcuts width=${width}`);
+        if (process.env.UI_SCREENSHOTS && [320, 1160].includes(width)) {
+          await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/shortcuts-light-${width}.png`, fullPage: true });
+        }
+        await openSettingsSection(page, 'providers');
+      }
     }
     if (kind === 'options') {
       await setTheme(page, 'dark');
@@ -297,6 +305,11 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
         await page.locator('#fontPreview').evaluate((node) => getComputedStyle(node).fontSize),
         '16px'
       );
+      if (process.env.UI_SCREENSHOTS) {
+        await openSettingsSection(page, 'shortcuts');
+        await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/shortcuts-dark.png`, fullPage: true });
+        await openSettingsSection(page, 'appearance');
+      }
     }
     if (process.env.UI_SCREENSHOTS) {
       await page.setViewportSize({ width: kind === 'sidebar' ? 380 : 1160, height: 800 });
@@ -1039,12 +1052,24 @@ browserTest(
       await settings.waitForFunction(() => document.querySelector('#versionBadge').textContent);
       await settings.waitForFunction(() => document.querySelector('.settings-nav .ui-icon').getBBox().width > 0);
       await chat.waitForFunction(() => document.querySelector('#newChatBtn .ui-icon').getBBox().width > 0);
+      await chat.evaluate(() => {
+        const timestamp = new Date().toISOString();
+        state.sessions[state.currentSessionId].messages.push(
+          { id: 'avatar-user', role: 'user', content: 'Hello', timestamp },
+          { id: 'avatar-assistant', role: 'assistant', content: 'Hi', timestamp }
+        );
+        renderMessages();
+      });
       await setTheme(settings, 'dark');
       await settings.locator('#fontSizeSelector').selectOption('16px');
+      await settings.locator('#userAvatarInput').fill('🧑‍💻');
+      await settings.locator('#assistantAvatarInput').fill('🦊');
       await chat.waitForFunction(
         () =>
           document.documentElement.classList.contains('dark-theme') &&
-          getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px'
+          getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px' &&
+          document.querySelector('.message.user .message-avatar').textContent === '🧑‍💻' &&
+          document.querySelector('.message.assistant .message-avatar').textContent === '🦊'
       );
       assert.equal(
         await settings.locator('#versionBadge').textContent(),
@@ -1199,8 +1224,7 @@ browserTest('the model picker handles mouse selection, outside focus, IME and ge
   assert.equal(await page.locator('#messageInput').evaluate((node) => node === document.activeElement), true);
   await page.locator('#modelSelector').click();
   await page.keyboard.press('Tab');
-  assert.equal(await page.locator('#manageModelsBtn').evaluate((node) => node === document.activeElement), true);
-  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#systemPromptSelector').evaluate((node) => node === document.activeElement), true);
   assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
   await startResponse(page);
   assert.equal(await page.locator('#modelSelector').isDisabled(), true);
@@ -1220,10 +1244,155 @@ browserTest('the model picker refreshes external changes and guides an empty con
   assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 0);
   assert.match(await page.locator('#modelPickerEmpty').textContent(), /Add a provider/);
   assert.equal(await page.locator('#modelSearch').getAttribute('aria-activedescendant'), null);
-  await page.locator('#manageModelsBtn').click();
+  assert.equal(await page.getByRole('button', { name: 'Manage models' }).count(), 0);
+  await page.locator('#optionsBtn').click();
   assert.equal(await page.evaluate(() => window.__openedOptions), true);
   assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
   assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('composer selectors fit narrow sidebars and open above the toolbar in both themes', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.providers[0].name = 'A service with a very long name';
+  settings.providers[0].models[0].name = 'A model with a very long name';
+  settings.systemPrompts.push({ id: 'writer', name: '互联网研发老哥 — a role with a very long name', content: 'Write clearly.' });
+  settings.selectedSystemPrompt = 'writer';
+  const { page, errors } = await openPage('sidebar', settings);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(async (theme) => chrome.storage.sync.set({ config: { ...state.config, theme } }), theme);
+    for (const width of [320, 380, 480]) {
+      await page.setViewportSize({ width, height: width === 320 ? 480 : 800 });
+      const controls = await page.locator('.composer-toolbar > button, .composer-toolbar > div > button').evaluateAll(
+        (nodes) => nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, height: rect.height };
+        })
+      );
+      assert.equal(controls.length, 4);
+      controls.forEach((rect, index) => {
+        assert.ok(rect.left >= 0 && rect.right <= width);
+        assert.equal(rect.top, controls[0].top);
+        assert.ok(rect.height <= 36);
+        if (index) assert.ok(rect.left >= controls[index - 1].right);
+      });
+      assert.ok((await page.locator('.header').boundingBox()).height <= 70);
+      assert.equal(await page.locator('#modelSelector .selector-label').textContent(), 'Model');
+      assert.equal(await page.locator('#modelProvider').textContent(), settings.providers[0].name);
+      assert.equal(await page.locator('#modelProvider').isVisible(), true);
+      assert.ok((await page.locator('#modelProvider').boundingBox()).width > 12);
+      for (const [trigger, panel] of [['#modelSelector', '#modelPickerPanel'], ['#systemPromptSelector', '#rolePickerPanel']]) {
+        await page.locator(trigger).click();
+        const popup = await page.locator(panel).boundingBox();
+        assert.ok(popup.x >= 0 && popup.x + popup.width <= width);
+        assert.ok(popup.y >= 0 && popup.y + popup.height < controls[0].top);
+        if (process.env.UI_SCREENSHOTS && width === 380) {
+          await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/composer-${theme}-${panel.slice(1)}.png` });
+        }
+        await page.keyboard.press('Escape');
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    }
+  }
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('the role picker selects and persists roles with the keyboard and preserves drafts', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.systemPrompts.push({ id: 'writer', name: '互联网研发老哥', content: 'Write clearly.' });
+  const { page, errors } = await openPage('sidebar', settings);
+  await page.locator('#messageInput').fill('Keep this draft');
+  await page.locator('#systemPromptSelector').focus();
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.locator('#rolePickerPanel [aria-selected="true"]').evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#roleName').textContent(), '互联网研发老哥');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.locator('#systemPromptSelector').getAttribute('aria-expanded'), 'false');
+  await page.waitForFunction(() => window.__storage.sync.config.selectedSystemPrompt === 'writer');
+  await page.locator('#systemPromptSelector').click();
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => state.config.selectedSystemPrompt), 'writer');
+  assert.equal(await page.locator('#systemPromptSelector').evaluate((node) => node === document.activeElement), true);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#modelSelector').click();
+  assert.equal(await page.locator('#rolePickerPanel').isVisible(), false);
+  await page.locator('#systemPromptSelector').click();
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#sendBtn').evaluate((node) => node === document.activeElement), true);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#messageInput').click();
+  assert.equal(await page.locator('#rolePickerPanel').isVisible(), false);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#rolePickerPanel').getByRole('option', { name: 'Default', exact: true }).click();
+  assert.equal(await page.locator('#roleName').textContent(), 'Default');
+  await startResponse(page);
+  assert.equal(await page.locator('#systemPromptSelector').isDisabled(), true);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('#systemPromptSelector').isEnabled(), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('emoji avatars preview, save, validate and restore default icons', async () => {
+  const { page, errors } = await openPage('options');
+  await openSettingsSection(page, 'appearance');
+  await page.locator('#userAvatarInput').fill('🧑🏽‍💻');
+  await page.locator('#assistantAvatarInput').fill('🦊');
+  assert.equal(await page.locator('#previewUserAvatar').textContent(), '🧑🏽‍💻');
+  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
+  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '🧑🏽‍💻' && window.__storage.sync.config.assistantAvatar === '🦊');
+  await page.locator('#assistantAvatarInput').fill('🦊🤖');
+  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
+  assert.equal(await page.locator('#assistantAvatarError').isVisible(), true);
+  assert.equal(await page.evaluate(() => config.assistantAvatar), '🦊');
+  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
+  await page.locator('#assistantAvatarInput').fill('<img src=x>');
+  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
+  assert.equal(await page.evaluate(() => validateConfig({ ...config, assistantAvatar: '<script>' })), false);
+  const saved = await page.evaluate(() => structuredClone(window.__storage.sync.config));
+  const timestamp = new Date().toISOString();
+  const chat = await openPage('sidebar', saved, {
+    currentSessionId: 'avatars',
+    sessions: { avatars: { title: 'Avatars', timestamp, messages: [
+      { id: 'user', role: 'user', content: 'A question', timestamp },
+      { id: 'assistant', role: 'assistant', content: 'An answer', timestamp, modelUsed: saved.selectedModel },
+      { id: 'error', role: 'system', content: 'An error', timestamp }
+    ] } }
+  });
+  assert.equal(await chat.page.locator('.message.user .message-avatar').textContent(), '🧑🏽‍💻');
+  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), true);
+  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🦊');
+  assert.equal(await chat.page.locator('.message.system .message-avatar use').getAttribute('href'), '../assets/icons.svg#triangle-exclamation');
+  await chat.page.evaluate(async () => {
+    window.__originalMessage = document.querySelector('.message.assistant');
+    await chrome.storage.sync.set({ config: { ...state.config, assistantAvatar: '🇨🇳', userAvatar: '' } });
+  });
+  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🇨🇳');
+  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), false);
+  assert.equal(await chat.page.evaluate(() => window.__originalMessage === document.querySelector('.message.assistant')), true);
+  for (const width of [320, 1160]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('#assistantAvatarInput').fill('🦊');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/avatar-settings-${width}.png`, fullPage: true });
+  }
+  await page.evaluate(() => sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage)));
+  await page.reload();
+  await page.locator('#userAvatarInput').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#userAvatarInput').inputValue(), '🧑🏽‍💻');
+  await page.locator('#userAvatarInput').fill('');
+  await page.locator('#assistantAvatarInput').fill('');
+  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '' && window.__storage.sync.config.assistantAvatar === '');
+  assert.equal(await page.locator('#previewUserHeader').isVisible(), false);
+  assert.equal(await page.locator('#previewAssistantAvatar use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.deepEqual(errors.concat(chat.errors), []);
+  await chat.page.close();
   await page.close();
 });
 
@@ -2663,7 +2832,7 @@ browserTest('Responses attachments survive reload, follow-up, editing, undo and 
   assert.equal(await page.evaluate(() => typeof window.__fetchCalls[0].input[0].content), 'string');
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('file_data')), false);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('data:image/')), false);
-  assert.equal(await page.locator('#inputHint').textContent(), 'Enter to send · Shift + Enter for a new line');
+  assert.equal(await page.locator('#inputHint').count(), 0);
   await page.locator('.message.user .edit-btn').first().click();
   await page.locator('.message-edit-input').fill('Updated image question');
   await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });

@@ -21,6 +21,8 @@ const state = {
     reasoning_summary: 'off',
     reasoning_context: null,
     theme: 'system',
+    userAvatar: '',
+    assistantAvatar: '',
     systemPrompts: [
       {
         id: 'default',
@@ -203,7 +205,9 @@ function cacheElements() {
     'modelSearch',
     'modelOptions',
     'modelPickerEmpty',
-    'manageModelsBtn',
+    'roleControl',
+    'roleName',
+    'rolePickerPanel',
     'generationStatus',
     'historySearch',
     'historyUndo',
@@ -234,10 +238,14 @@ function setupEventListeners() {
   elements.modelOptions.addEventListener('click', handleModelOptionClick);
   elements.modelOptions.addEventListener('pointermove', handleModelOptionPointerMove);
   elements.modelControl.addEventListener('focusout', handleModelPickerFocusOut);
-  elements.manageModelsBtn.addEventListener('click', manageModels);
   document.addEventListener('pointerdown', handleModelPickerOutsideClick);
-  window.addEventListener('resize', positionModelPicker);
-  elements.systemPromptSelector.addEventListener('change', handleSystemPromptChange);
+  window.addEventListener('resize', positionComposerPickers);
+  new ResizeObserver(positionComposerPickers).observe(elements.composer);
+  elements.systemPromptSelector.addEventListener('click', toggleRolePicker);
+  elements.systemPromptSelector.addEventListener('keydown', handleRoleTriggerKeydown);
+  elements.rolePickerPanel.addEventListener('click', handleRoleOptionClick);
+  elements.rolePickerPanel.addEventListener('keydown', handleRolePickerKeydown);
+  elements.roleControl.addEventListener('focusout', handleRolePickerFocusOut);
   elements.newChatBtn.addEventListener('click', createNewSession);
   elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
@@ -273,6 +281,7 @@ function setupEventListeners() {
       renderWelcomeMessage();
       applyFontSettings();
       applyTheme();
+      updateMessageAvatars();
     }
     if (areaName === 'local') {
       handleStoredChanges(changes);
@@ -1367,6 +1376,7 @@ function activateSession(sessionId) {
 
 async function createNewSession() {
   closeModelPicker(false);
+  closeRolePicker(false);
   await stopStreamingIfActive();
 
   if (isBlankSession(state.currentSessionId)) {
@@ -1592,6 +1602,19 @@ function reconcileChildren(container, children) {
 const MESSAGE_ICONS = { user: 'user', assistant: 'robot', system: 'triangle-exclamation' };
 const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
 
+function updateMessageAvatar(messageDiv, role) {
+  const emoji = role === 'user' ? state.config.userAvatar : role === 'assistant' ? state.config.assistantAvatar : '';
+  renderAvatar(messageDiv.querySelector('.message-avatar'), emoji, MESSAGE_ICONS[role] || 'robot');
+  messageDiv.classList.toggle('has-custom-avatar', Boolean(normalizeAvatarEmoji(emoji)));
+}
+
+function updateMessageAvatars() {
+  elements.messagesList.querySelectorAll('.message').forEach((messageDiv) => {
+    const role = ['user', 'assistant', 'system'].find((item) => messageDiv.classList.contains(item));
+    updateMessageAvatar(messageDiv, role);
+  });
+}
+
 function createModelDivider(modelUsed) {
   const [providerName, modelName] = describeModel(modelUsed);
   if (!modelName) return null;
@@ -1617,7 +1640,6 @@ function createMessageElement(message) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
-  avatar.appendChild(createIcon(MESSAGE_ICONS[message.role] || 'robot'));
 
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
@@ -1628,6 +1650,8 @@ function createMessageElement(message) {
 
   header.appendChild(avatar);
   header.appendChild(senderName);
+  messageDiv.appendChild(header);
+  updateMessageAvatar(messageDiv, message.role);
 
   // Wrapper
   const wrapper = document.createElement('div');
@@ -1676,7 +1700,6 @@ function createMessageElement(message) {
 
   wrapper.appendChild(bubble);
   wrapper.appendChild(actions);
-  messageDiv.appendChild(header);
   messageDiv.appendChild(wrapper);
 
   return messageDiv;
@@ -2765,7 +2788,10 @@ function updateInputState() {
     elements.sendBtn.title = conversationNotice || 'Send message';
   }
   elements.modelSelector.disabled = state.isStreaming;
-  if (state.isStreaming) closeModelPicker(false);
+  if (state.isStreaming) {
+    closeModelPicker(false);
+    closeRolePicker(false);
+  }
   elements.systemPromptSelector.disabled = state.isStreaming;
   const managed = historyIsServerManaged();
   if (managed !== historyControlsManaged) {
@@ -2812,12 +2838,11 @@ function updateModelSelector() {
   const provider = providerForModel(state.config.selectedModel);
   const hasModels = state.config.providers.some((item) => item.models.length);
   elements.modelName.textContent = modelName || 'Choose a model';
-  elements.modelProvider.textContent = providerName
-    ? `${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`
-    : hasModels ? 'Select a model to start chatting' : 'Connect a provider in Settings';
-  elements.modelSelector.title = modelName ? `${modelName} · ${providerName}` : 'Choose a model';
+  elements.modelProvider.textContent = providerName || (hasModels ? 'Select a service' : 'Connect a service in Settings');
+  elements.modelSelector.title = modelName
+    ? `${modelName} · ${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}` : 'Choose a model and service';
   if (!elements.modelPickerPanel.hidden) {
-    positionModelPicker();
+    positionComposerPickers();
     renderModelOptions();
   }
 }
@@ -2829,11 +2854,12 @@ function toggleModelPicker() {
 
 function openModelPicker() {
   if (state.isStreaming) return;
+  closeRolePicker(false);
   elements.modelSearch.value = '';
   elements.modelPickerPanel.hidden = false;
   elements.modelSelector.setAttribute('aria-expanded', 'true');
   elements.modelSearch.setAttribute('aria-expanded', 'true');
-  positionModelPicker();
+  positionComposerPickers();
   renderModelOptions();
   elements.modelSearch.focus({ preventScroll: true });
 }
@@ -2847,10 +2873,11 @@ function closeModelPicker(restoreFocus = false) {
   if (restoreFocus) elements.modelSelector.focus({ preventScroll: true });
 }
 
-function positionModelPicker() {
-  if (elements.modelPickerPanel.hidden) return;
-  const available = innerHeight - elements.modelSelector.getBoundingClientRect().bottom - 20;
-  elements.modelPickerPanel.style.maxHeight = `${Math.max(0, Math.min(420, available))}px`;
+function positionComposerPickers() {
+  const available = elements.composer.getBoundingClientRect().top - 20;
+  [elements.modelPickerPanel, elements.rolePickerPanel].forEach((panel) => {
+    if (!panel.hidden) panel.style.maxHeight = `${Math.max(0, Math.min(420, available))}px`;
+  });
 }
 
 function renderModelOptions() {
@@ -2874,21 +2901,16 @@ function renderModelOptions() {
       const option = document.createElement('button');
       option.type = 'button';
       option.className = 'model-option';
+      option.title = model.name;
       option.id = `model-option-${providerIndex}-${modelIndex}`;
       option.dataset.modelKey = key;
       option.tabIndex = -1;
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', String(selected));
-      const text = document.createElement('span');
-      text.className = 'model-option-text';
       const name = document.createElement('span');
       name.className = 'model-option-name';
       name.textContent = model.name;
-      const id = document.createElement('span');
-      id.className = 'model-option-id';
-      id.textContent = model.id;
-      text.append(name, id);
-      option.appendChild(text);
+      option.appendChild(name);
       if (selected) option.appendChild(createIcon('check'));
       group.appendChild(option);
       options.push(option);
@@ -2952,31 +2974,102 @@ function handleModelOptionPointerMove(event) {
 
 function handleModelPickerOutsideClick(event) {
   if (!elements.modelControl.contains(event.target)) closeModelPicker(false);
+  if (!elements.roleControl.contains(event.target)) closeRolePicker(false);
 }
 
 function handleModelPickerFocusOut(event) {
   if (!elements.modelControl.contains(event.relatedTarget)) closeModelPicker(false);
 }
 
-function manageModels() {
-  closeModelPicker(true);
-  openOptions();
+function updateSystemPromptSelector() {
+  const focusedId = elements.rolePickerPanel.contains(document.activeElement)
+    ? document.activeElement.dataset.promptId : null;
+  const selected = state.config.systemPrompts.find((prompt) => prompt.id === state.config.selectedSystemPrompt);
+  elements.roleName.textContent = selected?.name || 'Default';
+  elements.systemPromptSelector.title = `Role: ${elements.roleName.textContent}`;
+  const fragment = document.createDocumentFragment();
+  state.config.systemPrompts.forEach((prompt) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'role-option';
+    option.dataset.promptId = prompt.id;
+    option.tabIndex = -1;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(prompt.id === state.config.selectedSystemPrompt));
+    const name = document.createElement('span');
+    name.textContent = prompt.name;
+    option.appendChild(name);
+    if (prompt.id === state.config.selectedSystemPrompt) option.appendChild(createIcon('check'));
+    fragment.appendChild(option);
+  });
+  elements.rolePickerPanel.replaceChildren(fragment);
+  if (focusedId !== null) {
+    const options = Array.from(elements.rolePickerPanel.children);
+    (options.find((option) => option.dataset.promptId === focusedId) || options[0])?.focus({ preventScroll: true });
+  }
 }
 
-function updateSystemPromptSelector() {
-  elements.systemPromptSelector.innerHTML = '';
+// ===== Role picker =====
+function toggleRolePicker() {
+  if (elements.rolePickerPanel.hidden) openRolePicker();
+  else closeRolePicker(true);
+}
 
-  state.config.systemPrompts.forEach((prompt) => {
-    const option = document.createElement('option');
-    option.value = prompt.id;
-    option.textContent = prompt.name;
+function openRolePicker(last = false) {
+  if (state.isStreaming) return;
+  closeModelPicker(false);
+  elements.rolePickerPanel.hidden = false;
+  elements.systemPromptSelector.setAttribute('aria-expanded', 'true');
+  positionComposerPickers();
+  const options = Array.from(elements.rolePickerPanel.children);
+  const selected = options.find((option) => option.getAttribute('aria-selected') === 'true');
+  (selected || (last ? options.at(-1) : options[0]))?.focus({ preventScroll: true });
+  elements.rolePickerPanel.querySelector(':focus')?.scrollIntoView({ block: 'nearest' });
+}
 
-    if (state.config.selectedSystemPrompt === prompt.id) {
-      option.selected = true;
-    }
+function closeRolePicker(restoreFocus = false) {
+  if (!elements.rolePickerPanel || elements.rolePickerPanel.hidden) return;
+  elements.rolePickerPanel.hidden = true;
+  elements.systemPromptSelector.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) elements.systemPromptSelector.focus({ preventScroll: true });
+}
 
-    elements.systemPromptSelector.appendChild(option);
-  });
+function handleRoleTriggerKeydown(event) {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    openRolePicker(event.key === 'ArrowUp');
+  }
+}
+
+function handleRolePickerKeydown(event) {
+  if (event.isComposing) return;
+  const options = Array.from(elements.rolePickerPanel.children);
+  const index = options.indexOf(document.activeElement);
+  let next;
+  if (event.key === 'ArrowDown') next = Math.min(options.length - 1, index + 1);
+  else if (event.key === 'ArrowUp') next = Math.max(0, index - 1);
+  else if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = options.length - 1;
+  else if (event.key === 'Tab') {
+    // Options use programmatic focus; resume the toolbar's normal tab order.
+    event.preventDefault();
+    closeRolePicker(false);
+    (event.shiftKey ? elements.systemPromptSelector : elements.sendBtn.disabled ? elements.messageInput : elements.sendBtn).focus();
+    return;
+  }
+  if (next !== undefined) {
+    event.preventDefault();
+    options[next]?.focus();
+  }
+}
+
+function handleRoleOptionClick(event) {
+  const option = event.target.closest('[data-prompt-id]');
+  if (option) handleSystemPromptChange(option.dataset.promptId);
+}
+
+function handleRolePickerFocusOut(event) {
+  if (!elements.roleControl.contains(event.relatedTarget)) closeRolePicker(false);
 }
 
 // ========================================
@@ -2998,9 +3091,12 @@ function handleModelChange(selectedValue) {
   closeModelPicker(true);
 }
 
-function handleSystemPromptChange(event) {
-  state.config.selectedSystemPrompt = event.target.value;
+function handleSystemPromptChange(promptId) {
+  if (state.isStreaming || !state.config.systemPrompts.some((prompt) => prompt.id === promptId)) return;
+  state.config.selectedSystemPrompt = promptId;
   saveConfigSoon({ selectedSystemPrompt: state.config.selectedSystemPrompt });
+  closeRolePicker(true);
+  updateSystemPromptSelector();
 }
 
 function handleInputChange() {
@@ -3030,6 +3126,11 @@ function handleGlobalKeydown(event) {
     closeModelPicker(true);
     return;
   }
+  if (event.key === 'Escape' && !event.shiftKey && !elements.rolePickerPanel.hidden) {
+    event.preventDefault();
+    closeRolePicker(true);
+    return;
+  }
   const shortcut = event.ctrlKey || event.metaKey;
   if (shortcut && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o') {
     event.preventDefault();
@@ -3039,6 +3140,7 @@ function handleGlobalKeydown(event) {
   if (event.shiftKey && !shortcut && !event.altKey && event.key === 'Escape') {
     event.preventDefault();
     closeModelPicker(false);
+    closeRolePicker(false);
     elements.messageInput.focus();
     return;
   }
@@ -3100,6 +3202,7 @@ function openOptions() {
 
 function openChatHistory() {
   closeModelPicker(false);
+  closeRolePicker(false);
   clearTimeout(historySearchTimer);
   elements.historySearch.value = '';
   historyVisibleCount = HISTORY_PAGE_SIZE;

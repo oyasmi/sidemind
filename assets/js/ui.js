@@ -137,3 +137,20 @@ function createIcon(name, className = '') {
   svg.appendChild(use);
   return svg;
 }
+
+// ===== Emoji avatars =====
+function normalizeAvatarEmoji(value) {
+  if (typeof value !== 'string') return '';
+  const emoji = value.trim();
+  if (!emoji || emoji.length > 64) return '';
+  const segments = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(emoji));
+  if (segments.length !== 1 || !/(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[0-9#*]\uFE0F?\u20E3)/u.test(emoji)) return '';
+  return emoji;
+}
+
+function renderAvatar(node, value, fallbackIcon) {
+  const emoji = normalizeAvatarEmoji(value);
+  node.setAttribute('aria-hidden', 'true');
+  node.classList.toggle('emoji-avatar', Boolean(emoji));
+  node.replaceChildren(emoji ? document.createTextNode(emoji) : createIcon(fallbackIcon));
+}

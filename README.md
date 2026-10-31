@@ -218,6 +218,8 @@ The selection context menu uses Chrome's `contextMenus` permission and only rece
 text you explicitly select. It does not extract the whole page or send a request
 automatically. Chrome 116+ is required. The opening shortcut can be changed at
 `chrome://extensions/shortcuts`; in-panel shortcuts leave dialogs and IME input alone.
+The complete shortcut list is in **Settings → Keyboard shortcuts**, including sending,
+line breaks, new chats, input focus, stopping generation and picker navigation.
 
 Streaming uses a two-minute request timeout and a three-minute idle timeout after
 headers arrive. With streaming off, the whole answer must be ready before headers

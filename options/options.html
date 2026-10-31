@@ -30,6 +30,7 @@
           <a href="#roles"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#comment"></use></svg>Assistant roles</a>
           <a href="#conversation"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>Conversation</a>
           <a href="#appearance"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#sun"></use></svg>Appearance</a>
+          <a href="#shortcuts"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#keyboard"></use></svg>Keyboard shortcuts</a>
           <a href="#data"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#folder"></use></svg>Data &amp; about</a>
           <p class="nav-note">Your workspace.<br />Your choice of AI.</p>
         </nav>
@@ -181,6 +182,22 @@
                     </div>
                     <p class="parameter-description">Applies to SideMind and these settings.</p>
                   </fieldset>
+                  <div class="parameter-group avatar-settings">
+                    <h3>Chat avatars</h3>
+                    <p id="avatarHint" class="parameter-description">Enter one emoji for each avatar. Leave empty to use the default icon.</p>
+                    <label for="userAvatarInput">Your avatar</label>
+                    <div class="avatar-input-row">
+                      <span id="userAvatarPreview" class="avatar-preview" aria-hidden="true"></span>
+                      <input id="userAvatarInput" type="text" class="text-input" placeholder="For example: 🧑‍💻" autocomplete="off" spellcheck="false" aria-describedby="avatarHint userAvatarError" />
+                    </div>
+                    <p id="userAvatarError" class="field-error" hidden>Enter a single emoji, or clear the field for the default icon.</p>
+                    <label for="assistantAvatarInput">Assistant avatar</label>
+                    <div class="avatar-input-row">
+                      <span id="assistantAvatarPreview" class="avatar-preview" aria-hidden="true"></span>
+                      <input id="assistantAvatarInput" type="text" class="text-input" placeholder="For example: 🤖" autocomplete="off" spellcheck="false" aria-describedby="avatarHint assistantAvatarError" />
+                    </div>
+                    <p id="assistantAvatarError" class="field-error" hidden>Enter a single emoji, or clear the field for the default icon.</p>
+                  </div>
                   <div class="parameter-group">
                     <label for="fontSizeSelector">Conversation size</label>
                     <select id="fontSizeSelector" class="select-input">
@@ -222,9 +239,10 @@
               <div class="appearance-preview" aria-label="Live conversation preview">
                 <p class="preview-label">LIVE PREVIEW</p>
                 <div id="fontPreview" class="font-preview reading-content">
+                  <div id="previewUserHeader" class="preview-avatar-header" hidden><span id="previewUserAvatar" class="avatar-preview" aria-hidden="true"></span><span class="preview-name">You</span></div>
                   <div class="preview-user">Help me make this clearer.</div>
                   <div class="preview-assistant">
-                    <span class="preview-name">SideMind</span>
+                    <div class="preview-avatar-header"><span id="previewAssistantAvatar" class="avatar-preview" aria-hidden="true"></span><span class="preview-name">SideMind</span></div>
                     <p>A little clarity goes a long way.</p>
                     <p>
                       Keep the important details, give each idea room, and make the next step easy
@@ -235,6 +253,43 @@
                   <div class="preview-composer">Ask a question…<span>↑</span></div>
                 </div>
               </div>
+            </div>
+          </section>
+          <section id="shortcuts" class="section" hidden aria-labelledby="shortcutsHeading">
+            <div class="section-heading">
+              <div>
+                <h2 id="shortcutsHeading">Keyboard shortcuts</h2>
+                <p>Keep your hands on the keyboard and your conversation in view.</p>
+              </div>
+            </div>
+            <div class="settings-card shortcut-group">
+              <h3>Open SideMind</h3>
+              <dl class="shortcut-list">
+                <div><dt>Open the sidebar<small>Default browser shortcut.</small></dt><dd><kbd>Alt / ⌥</kbd><span>+</span><kbd>Shift</kbd><span>+</span><kbd>S</kbd></dd></div>
+              </dl>
+              <p class="parameter-description">View or change your browser shortcut at <code>chrome://extensions/shortcuts</code>.</p>
+            </div>
+            <div class="settings-card shortcut-group">
+              <h3>Conversation</h3>
+              <p class="parameter-description">These shortcuts apply while focus is inside the SideMind sidebar. Use Ctrl on Windows or Linux, and ⌘ on macOS.</p>
+              <dl class="shortcut-list">
+                <div><dt>Send a message<small>Also submits an edited message. During generation, your next draft stays in the input.</small></dt><dd><kbd>Enter</kbd></dd></div>
+                <div><dt>Insert a new line<small>In the message input or message editor.</small></dt><dd><kbd>Shift</kbd><span>+</span><kbd>Enter</kbd></dd></div>
+                <div><dt>Start a new chat<small>Keeps the current draft with its conversation.</small></dt><dd><kbd>Ctrl / ⌘</kbd><span>+</span><kbd>Shift</kbd><span>+</span><kbd>O</kbd></dd></div>
+                <div><dt>Focus the message input<small>Also closes the model or role picker.</small></dt><dd><kbd>Shift</kbd><span>+</span><kbd>Esc</kbd></dd></div>
+                <div><dt>Stop generation<small>First closes an open picker or dialog, or cancels a message edit. Press again to stop.</small></dt><dd><kbd>Esc</kbd></dd></div>
+              </dl>
+            </div>
+            <div class="settings-card shortcut-group">
+              <h3>Lists &amp; dialogs</h3>
+              <dl class="shortcut-list">
+                <div><dt>Move between controls</dt><dd><kbd>Tab</kbd><span>/</span><kbd>Shift</kbd><span>+</span><kbd>Tab</kbd></dd></div>
+                <div><dt>Open a focused model or role picker<small>Then use the arrow keys to move through its options.</small></dt><dd><kbd>↑</kbd><span>/</span><kbd>↓</kbd></dd></div>
+                <div><dt>Select an option or activate a button</dt><dd><kbd>Enter</kbd></dd></div>
+                <div><dt>Jump to the first or last role<small>While the role picker is open.</small></dt><dd><kbd>Home</kbd><span>/</span><kbd>End</kbd></dd></div>
+                <div><dt>Close a picker or dialog, or cancel a message edit</dt><dd><kbd>Esc</kbd></dd></div>
+              </dl>
+              <p class="parameter-description">Conversation shortcuts stay inactive inside dialogs and while composing text with an input method.</p>
             </div>
           </section>
           <section id="data" class="section" hidden aria-labelledby="dataHeading">
@@ -261,16 +316,6 @@
                 ><input type="file" id="importFile" accept=".json,application/json" hidden />
               </div>
             </div>
-            <details class="advanced-settings keyboard-help">
-              <summary>Keyboard shortcuts</summary>
-              <dl class="shortcut-list">
-                <dt>Open SideMind</dt><dd>Alt + Shift + S</dd>
-                <dt>New chat</dt><dd>Ctrl / ⌘ + Shift + O</dd>
-                <dt>Focus message input</dt><dd>Shift + Esc</dd>
-                <dt>Stop generation</dt><dd>Esc</dd>
-              </dl>
-              <p class="parameter-description">Change the opening shortcut at chrome://extensions/shortcuts. To ask about a passage, right-click selected text and choose “Ask SideMind”.</p>
-            </details>
             <div class="about-details settings-card">
               <img src="../icons/icon128.png" alt="" />
               <div>

@@ -353,6 +353,52 @@
 }
 
 /* ===== Appearance preview ===== */
+.avatar-settings h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.avatar-settings label {
+  display: block;
+  margin-top: 16px;
+}
+.avatar-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.avatar-input-row input {
+  width: 100%;
+  min-width: 0;
+}
+.avatar-preview {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 22px;
+  line-height: 1;
+}
+.avatar-preview .ui-icon {
+  width: 17px;
+  height: 17px;
+}
+.avatar-preview.emoji-avatar {
+  background: transparent;
+}
+.preview-avatar-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+#previewUserHeader {
+  justify-content: flex-end;
+}
 .appearance-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
@@ -417,20 +463,64 @@
   border-radius: 7px;
 }
 
-/* ===== Data and about ===== */
-.keyboard-help {
-  margin-top: 24px;
+/* ===== Keyboard shortcuts ===== */
+.shortcut-group {
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.shortcut-group h3 {
+  margin: 0;
+  font-size: 14px;
 }
 .shortcut-list {
+  margin: 12px 0 0;
+  font-size: 13px;
+}
+.shortcut-list > div {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: start;
+  gap: 8px 20px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-secondary);
+}
+.shortcut-list > div:first-child {
+  border-top: 0;
+}
+.shortcut-list dt small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 .shortcut-list dd {
   margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
   color: var(--text-secondary);
 }
+.shortcut-list kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 5px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.shortcut-group code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 520px) {
+  .shortcut-list > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===== Data and about ===== */
 .save-feedback {
   min-width: 0;
 }
