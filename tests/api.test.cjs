@@ -7,8 +7,10 @@ const vm = require('node:vm');
 function loadScript(file, globals = {}) {
   const context = vm.createContext({
     console: { log() {}, warn() {}, error() {} },
-    document: { addEventListener() {} },
-    URL, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
+    document: { addEventListener() {}, body: { dataset: {} } },
+    location: { search: '', hash: '' },
+    navigator: {},
+    URL, URLSearchParams, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
     ...globals
   });
   vm.runInContext(readFileSync(resolve(__dirname, '..', 'sidebar/marked.umd.js'), 'utf8'), context);
@@ -757,6 +759,7 @@ function storageContext(data = {}) {
   vm.runInContext(`
     renderMessages = () => { globalThis.rendered = (globalThis.rendered || 0) + 1; };
     renderChatHistory = () => {};
+    restoreDraft = () => {}; updateInputState = () => {}; showNotification = () => {};
     globalThis.resaves = 0;
     debouncedSave = () => { resaves += 1; };
     state.sessions = {}; state.currentSessionId = null; state.drafts = {}; state.currentStreamingMessage = null;
@@ -971,18 +974,20 @@ test('stored changes made elsewhere are adopted unless this page has unsaved cha
   assert.equal('d' in first.store.state.sessions, false, 'removed elsewhere');
 });
 
-test('a chat that is open here stays when it is removed elsewhere, and comes back with the next change', async () => {
+test('a chat deleted elsewhere leaves the visible page and a missed deletion cannot be resurrected by a stale save', async () => {
   const { store, data } = storageContext();
   store.ready();
   store.state.sessions.c = chat([msg('u1', 'q')]);
   store.state.currentSessionId = 'c';
   await store.writeLocalChanges(true);
   delete data['session:c'];
-  store.handleStoredChanges({ 'session:c': {} });
-  assert.equal('c' in store.state.sessions, true);
-  store.state.sessions.c.messages.push(msg('u2', 'still here'));
+  const stale = store.state.sessions.c;
+  stale.messages.push(msg('u2', 'unsaved edit'));
   await store.writeLocalChanges(true);
-  assert.equal(data['session:c'].session.messages.length, 2);
+  assert.equal('session:c' in data, false);
+  assert.equal('c' in store.state.sessions, false);
+  assert.equal(store.state.currentSessionId, null);
+  assert.equal(store.baseline('c').rev, undefined);
 });
 
 test('a deletion goes out with the rev it saw; undo writes the chat again', async () => {

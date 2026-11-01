@@ -8,12 +8,25 @@
     <script src="../assets/js/ui.js"></script>
     <script src="../assets/js/generation-settings.js"></script>
     <link rel="stylesheet" href="sidebar.css" />
+    <link rel="stylesheet" href="workspace.css" />
   </head>
   <body>
+    <nav id="workspaceNav" class="workspace-only workspace-nav" aria-label="Conversations" hidden>
+      <div class="workspace-brand"><img src="../icons/icon48.png" alt="" /><strong>SideMind</strong><button id="closeNavBtn" class="icon-btn" aria-label="Collapse navigation"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#panel-left"></use></svg></button></div>
+      <button id="workspaceNewBtn" class="btn workspace-new" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#pen"></use></svg>New chat</button>
+      <div id="workspaceHistory" class="workspace-history"></div>
+      <button id="workspaceSettingsBtn" class="btn workspace-settings" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>Settings</button>
+    </nav>
     <div class="app-container">
       <header class="header">
-        <div class="brand"><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
+        <div class="brand"><button id="toggleNavBtn" class="icon-btn workspace-only" aria-label="Toggle navigation" aria-controls="workspaceNav" aria-expanded="true" hidden><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#panel-left"></use></svg></button><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
         <div class="header-right">
+          <button id="togglePanelBtn" class="icon-btn workspace-only" aria-label="Conversation panel" title="Outline and attachments" aria-controls="conversationPanel" aria-expanded="false" hidden><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#list"></use></svg></button>
+          <button id="switchViewBtn" class="icon-btn" aria-label="Open full page" title="Open full page" disabled><svg class="ui-icon" aria-hidden="true"><use id="switchViewIcon" href="../assets/icons.svg#expand"></use></svg><span class="workspace-only" hidden>Back to sidebar</span></button>
+          <details id="conversationMenu" class="conversation-menu workspace-only" hidden>
+            <summary class="icon-btn" aria-label="Conversation actions" title="Conversation actions"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#more"></use></svg></summary>
+            <div class="conversation-menu-items"><button id="renameCurrentBtn" type="button">Rename chat</button><button id="exportCurrentBtn" type="button">Export chat</button><button id="deleteCurrentBtn" type="button">Delete chat</button></div>
+          </details>
           <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat (Ctrl/⌘ + Shift + O)">
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>
           </button>
@@ -54,6 +67,7 @@
         <div id="storageStatus" class="storage-status hidden" role="status">
           <span id="storageStatusText"></span><button id="retryStorageBtn" class="undo-btn" type="button">Retry save</button>
         </div>
+        <div id="draftConflict" class="storage-status hidden" role="status"><span>A draft from another page is available. Your input has been kept.</span><button id="restoreExternalDraftBtn" class="undo-btn" type="button">Restore other draft</button></div>
         <div id="generationStatus" class="generation-status" role="status" aria-live="polite">
           Ready when you are
         </div>
@@ -70,6 +84,7 @@
           ></textarea>
           <div class="composer-toolbar">
             <button id="attachBtn" class="icon-btn" type="button" aria-label="Attach images or files" title="Attach images or files"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg></button>
+            <button id="viewAttachmentsBtn" class="icon-btn workspace-only" type="button" aria-label="Conversation attachments" title="Conversation attachments" hidden><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#paperclip"></use></svg></button>
             <div id="modelControl" class="model-control">
               <button id="modelSelector" class="composer-selector model-selector" type="button" aria-label="Choose a model and provider" aria-describedby="modelName modelProvider" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPickerPanel">
                 <span class="selector-label">Model</span>
@@ -107,6 +122,14 @@
         </div>
       </footer>
     </div>
+    <aside id="conversationPanel" class="workspace-only conversation-panel" aria-label="Conversation panel" hidden>
+      <div class="conversation-panel-header">
+        <div role="tablist" aria-label="Conversation details"><button id="outlineTab" type="button" role="tab" aria-selected="true" aria-controls="conversationPanelContent">Outline</button><button id="attachmentsTab" type="button" role="tab" aria-selected="false" aria-controls="conversationPanelContent" tabindex="-1">Attachments</button></div>
+        <button id="closePanelBtn" class="icon-btn" aria-label="Close conversation panel"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg></button>
+      </div>
+      <div id="conversationPanelContent" class="conversation-panel-content" role="tabpanel" aria-labelledby="outlineTab"></div>
+    </aside>
+    <button id="workspaceBackdrop" class="workspace-backdrop" aria-label="Close drawer" hidden></button>
 
     <dialog id="chatHistoryDropdown" class="chat-history-dropdown" aria-labelledby="historyTitle">
       <div class="modal-panel">

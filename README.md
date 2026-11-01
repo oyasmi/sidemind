@@ -13,6 +13,7 @@
 ### 🚀 Key Features
 
 - **🎯 Always Accessible** - Chat with LLMs in your browser sidebar, available on any webpage
+- **🖥️ Full-page Workspace** - Persistent conversation navigation, question outline and a shared attachment panel
 - **🔐 Privacy First** - All conversations stored locally, no data collection or tracking
 - **🤖 Multi-Provider Support** - Works with OpenAI, Claude, and any OpenAI-compatible API (Chat Completions or Responses)
 - **⚡ Real-time Streaming** - Watch AI responses appear in real-time with smooth animations
@@ -77,6 +78,26 @@ SideMind is designed with your privacy as the top priority:
    - Click the SideMind icon to open the sidebar
    - Choose your AI model and system prompt
    - Start chatting with your AI assistant!
+
+### Full-page workspace
+
+Use **Open full page** in the sidebar header for a dedicated chat tab. The workspace
+shares conversations, reasoning and protocol records, drafts, attachments and settings
+with the sidebar. Its navigation searches titles and message text; conversation menus
+support renaming, export and deletion. **Conversation panel** opens the question outline
+or the attachment list, including links back to the original messages.
+
+**Back to sidebar** opens the sidebar and returns to the webpage you came from when it
+is still available. The workspace tab stays open and is reused within that window.
+Switching waits for saves and for the other view to become ready. During attachment
+preparation, requests and stop cleanup, finish or stop the current work before switching.
+Chrome 141+ can close the sidebar after entering the workspace; older Chrome versions
+leave it open with a notice.
+
+Each page navigates independently. Only one page can generate in a given conversation
+at a time, while different conversations can run independently. External draft saves
+update idle inputs; conflicting local edits remain available with **Restore other draft**.
+Closing a page interrupts its request; generation is not transferred to the other view.
 
 ## 🔧 Supported Providers
 
@@ -273,6 +294,9 @@ Playwright download. Set `UI_SCREENSHOTS` to an existing directory to save visua
 previews. These checks exercise draft preservation, stream reading, stop/retry,
 selection, history, modal focus, local save recovery, configuration size limits,
 code expansion/copy, Markdown exports, shortcuts and import previews.
+Workspace checks include 1440/1024/768px layouts, drawers, outline and attachment projections,
+explicit routes, draft conflicts, deletion propagation, concurrent requests and save/target
+failures. The MV3 smoke test also verifies view switching, tab reuse and busy-target rejection.
 The suite uses fixture providers and makes no real AI requests.
 Attachment checks use real IndexedDB, clipboard/drop events and file inputs, including
 reload, download, edit/undo, cancelled preparation, save failure recovery and cross-page

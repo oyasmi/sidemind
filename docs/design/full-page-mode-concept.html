@@ -1,0 +1,402 @@
+<div id="sidemind-workspace-concept" aria-label="SideMind 全页面布局方案">
+  <style>
+    #sidemind-workspace-concept {
+      container-type: inline-size;
+      color-scheme: light dark;
+      --sm-bg: light-dark(#fdfcf9, #232724);
+      --sm-nav: light-dark(#f1f0ea, #1c1f1d);
+      --sm-soft: light-dark(#eeede8, #2c312c);
+      --sm-text: light-dark(#292c29, #e1e5dc);
+      --sm-muted: light-dark(#62675f, #b3bbad);
+      --sm-line: light-dark(#e3e3da, #353c33);
+      --sm-accent: light-dark(#c45117, #ffad75);
+      --sm-selected: light-dark(#fff0e4, #3d2d22);
+      --sm-action: light-dark(#c45117, #f09450);
+      --sm-on-action: light-dark(#ffffff, #271e17);
+      font: 14px/1.6 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: var(--sm-text);
+    }
+    #sidemind-workspace-concept * { box-sizing: border-box; }
+    #sidemind-workspace-concept [hidden] { display: none !important; }
+    #sidemind-workspace-concept button,
+    #sidemind-workspace-concept input,
+    #sidemind-workspace-concept textarea,
+    #sidemind-workspace-concept select { font: inherit; color: inherit; }
+    #sidemind-workspace-concept button { background: transparent; border: 0; border-radius: 8px; padding: 7px 10px; text-align: start; }
+    #sidemind-workspace-concept button:hover:not(:disabled) { background: var(--sm-soft); }
+    #sidemind-workspace-concept button:disabled { opacity: .5; cursor: not-allowed; }
+    #sidemind-workspace-concept svg { width: 17px; height: 17px; flex-shrink: 0; }
+    #sidemind-workspace-concept h2,
+    #sidemind-workspace-concept h3,
+    #sidemind-workspace-concept p { margin: 0; }
+    #sidemind-workspace-concept .sm-shell { position: relative; display: grid; grid-template-columns: var(--sm-nav-width, 236px) minmax(0, 1fr); width: 100%; background: var(--sm-bg); min-height: 720px; }
+    #sidemind-workspace-concept .sm-shell[data-nav="false"] { grid-template-columns: minmax(0, 1fr); }
+    #sidemind-workspace-concept .sm-shell[data-nav="false"] > .sm-nav { display: none; }
+    #sidemind-workspace-concept .sm-nav { display: flex; flex-direction: column; gap: 16px; padding: 20px 12px 12px; background: var(--sm-nav); border-right: 1px solid var(--sm-line); min-width: 0; }
+    #sidemind-workspace-concept .sm-brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 8px; font-size: 17px; font-weight: 600; }
+    #sidemind-workspace-concept .sm-brand-mark { display: grid; place-items: center; width: 26px; height: 26px; color: var(--sm-accent); }
+    #sidemind-workspace-concept .sm-new { display: flex; align-items: center; gap: 10px; width: 100%; border: 1px solid var(--sm-line); background: var(--sm-bg); }
+    #sidemind-workspace-concept .sm-search { display: flex; align-items: center; gap: 8px; padding: 5px 10px; color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-search input { width: 100%; min-width: 0; background: transparent; border: 0; padding: 4px 0; }
+    #sidemind-workspace-concept .sm-history { flex: 1; }
+    #sidemind-workspace-concept .sm-group { color: var(--sm-muted); font-size: 12px; padding: 16px 10px 6px; }
+    #sidemind-workspace-concept .sm-chat { display: flex; gap: 10px; align-items: center; width: 100%; margin: 2px 0; }
+    #sidemind-workspace-concept .sm-chat span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #sidemind-workspace-concept .sm-chat[aria-current="page"] { color: var(--sm-accent); background: var(--sm-selected); }
+    #sidemind-workspace-concept .sm-bottom { border-top: 1px solid var(--sm-line); padding-top: 10px; }
+    #sidemind-workspace-concept .sm-bottom button { display: flex; align-items: center; gap: 10px; width: 100%; }
+    #sidemind-workspace-concept .sm-main { display: flex; flex-direction: column; min-width: 0; }
+    #sidemind-workspace-concept .sm-header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--sm-line); }
+    #sidemind-workspace-concept .sm-header h2 { flex: 1; min-width: 90px; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+    #sidemind-workspace-concept .sm-icon { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; min-height: 34px; }
+    #sidemind-workspace-concept .sm-mode { display: inline-flex; align-items: center; gap: 7px; color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-reading { width: 100%; max-width: var(--sm-reading-width, 820px); margin: 0 auto; padding: 32px 40px 20px; display: flex; flex-direction: column; gap: var(--sm-message-gap, 28px); flex: 1; }
+    #sidemind-workspace-concept .sm-user { align-self: flex-end; max-width: 90%; padding: 12px 16px; background: var(--sm-soft); border-radius: 14px 14px 4px 14px; overflow-wrap: anywhere; }
+    #sidemind-workspace-concept .sm-assistant { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
+    #sidemind-workspace-concept .sm-author { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--sm-accent); }
+    #sidemind-workspace-concept .sm-answer-title { font-size: 17px; font-weight: 600; }
+    #sidemind-workspace-concept .sm-assistant ul { padding-left: 20px; margin: 0; }
+    #sidemind-workspace-concept .sm-assistant li + li { margin-top: 5px; }
+    #sidemind-workspace-concept .sm-message-tools { display: flex; gap: 3px; color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-message-tools button { padding: 5px; }
+    #sidemind-workspace-concept .sm-file { display: inline-flex; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 12px; color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-compose-wrap { width: 100%; max-width: var(--sm-reading-width, 820px); margin: 0 auto; padding: 16px 32px 20px; }
+    #sidemind-workspace-concept .sm-status { min-height: 22px; padding: 0 4px 5px; font-size: 12px; color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-compose { border: 1px solid var(--sm-line); border-radius: 16px; padding: 12px; background: var(--sm-bg); box-shadow: 0 3px 18px light-dark(#292c2908, #00000018); }
+    #sidemind-workspace-concept textarea { display: block; width: 100%; min-height: 70px; max-height: 180px; resize: vertical; background: transparent; border: 0; padding: 4px; }
+    #sidemind-workspace-concept .sm-compose-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    #sidemind-workspace-concept select { min-width: 0; max-width: 100%; background: transparent; border: 0; border-radius: 6px; padding: 5px; font-size: 12px; }
+    #sidemind-workspace-concept .sm-send { margin-left: auto; display: grid; place-items: center; background: var(--sm-action); color: var(--sm-on-action); border-radius: 50%; width: 34px; height: 34px; padding: 0; }
+    #sidemind-workspace-concept .sm-send:hover:not(:disabled) { background: var(--sm-action); filter: brightness(.92); }
+    #sidemind-workspace-concept .sm-footnote { display: flex; justify-content: center; gap: 8px; font-size: 11px; color: var(--sm-muted); margin-top: 9px; }
+    #sidemind-workspace-concept .sm-panel { display: none; min-width: 0; padding: 18px 16px; background: var(--sm-bg); border-left: 1px solid var(--sm-line); }
+    #sidemind-workspace-concept .sm-shell[data-panel="true"] .sm-panel { display: block; position: absolute; z-index: 5; top: 0; bottom: 0; right: 0; width: min(304px, 100%); box-shadow: -12px 0 32px light-dark(#292c2914, #00000030); }
+    #sidemind-workspace-concept .sm-panel-head { display: flex; align-items: center; gap: 6px; padding-bottom: 15px; border-bottom: 1px solid var(--sm-line); }
+    #sidemind-workspace-concept .sm-panel-head button[aria-selected="true"] { color: var(--sm-accent); background: var(--sm-selected); }
+    #sidemind-workspace-concept .sm-panel-close { margin-left: auto; }
+    #sidemind-workspace-concept .sm-panel-content { padding-top: 18px; }
+    #sidemind-workspace-concept .sm-outline-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; margin-bottom: 8px; overflow-wrap: anywhere; }
+    #sidemind-workspace-concept .sm-outline-number { color: var(--sm-muted); font-size: 12px; padding-top: 2px; flex-shrink: 0; white-space: nowrap; }
+    #sidemind-workspace-concept .sm-outline-item > span:last-child { flex: 1; min-width: 0; }
+    #sidemind-workspace-concept .sm-file-row { display: flex; flex-direction: column; gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--sm-line); }
+    #sidemind-workspace-concept .sm-file-row button { display: flex; align-items: center; gap: 7px; overflow-wrap: anywhere; }
+    #sidemind-workspace-concept .sm-file-row small { color: var(--sm-muted); padding-left: 10px; }
+    #sidemind-workspace-concept .sm-preview { margin-top: 16px; padding: 12px; background: var(--sm-soft); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    #sidemind-workspace-concept .sm-empty { color: var(--sm-muted); }
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] { grid-template-columns: minmax(0, 1fr); max-width: 400px; margin-left: auto; }
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] > .sm-nav,
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] .sm-nav-toggle,
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] .sm-panel-toggle { display: none; }
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] .sm-reading { padding: 22px 20px; }
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] .sm-compose-wrap { padding: 12px; }
+    #sidemind-workspace-concept .sm-shell[data-mode="sidebar"] .sm-header { padding: 12px; }
+    #sidemind-workspace-concept dialog { max-width: min(380px, calc(100% - 32px)); width: 100%; color: var(--sm-text); background: var(--sm-bg); border: 1px solid var(--sm-line); border-radius: 12px; padding: 22px; }
+    #sidemind-workspace-concept dialog::backdrop { background: #00000055; }
+    #sidemind-workspace-concept .sm-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; }
+    @container (min-width: 1280px) {
+      #sidemind-workspace-concept .sm-shell[data-panel="true"][data-mode="workspace"] { grid-template-columns: var(--sm-nav-width, 236px) minmax(0, 1fr) 304px; }
+      #sidemind-workspace-concept .sm-shell[data-panel="true"][data-nav="false"][data-mode="workspace"] { grid-template-columns: minmax(0, 1fr) 304px; }
+      #sidemind-workspace-concept .sm-shell[data-panel="true"] .sm-panel { position: static; width: auto; box-shadow: none; }
+    }
+    @container (max-width: 899px) {
+      #sidemind-workspace-concept .sm-shell { grid-template-columns: minmax(0, 1fr); }
+      #sidemind-workspace-concept .sm-shell > .sm-nav { display: none; }
+      #sidemind-workspace-concept .sm-shell[data-nav="true"] > .sm-nav { display: flex; position: absolute; z-index: 6; top: 0; bottom: 0; left: 0; width: min(260px, 85%); box-shadow: 12px 0 32px light-dark(#292c2914, #00000030); }
+      #sidemind-workspace-concept .sm-reading { padding: 24px; }
+      #sidemind-workspace-concept .sm-compose-wrap { padding: 16px; }
+      #sidemind-workspace-concept .sm-header { padding: 12px; }
+    }
+    @container (max-width: 480px) {
+      #sidemind-workspace-concept .sm-mode span { display: none; }
+      #sidemind-workspace-concept .sm-user { max-width: 96%; }
+      #sidemind-workspace-concept .sm-reading { padding: 22px 16px; }
+      #sidemind-workspace-concept .sm-footnote { flex-wrap: wrap; }
+    }
+    @media (pointer: coarse) {
+      #sidemind-workspace-concept button { min-height: 44px; }
+      #sidemind-workspace-concept textarea,
+      #sidemind-workspace-concept input { font-size: 16px; }
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      #sidemind-workspace-concept .sm-user { transition: background 150ms ease; }
+    }
+  </style>
+  <div class="sm-shell" data-mode="workspace" data-nav="true" data-panel="false">
+    <nav class="sm-nav" aria-label="会话导航">
+      <div class="sm-brand"><span class="sm-brand-mark"><i data-lucide="brain" aria-hidden="true"></i></span>SideMind<button class="sm-icon sm-nav-close" type="button" aria-label="收起会话导航"><i data-lucide="panel-left-close" aria-hidden="true"></i></button></div>
+      <button class="sm-new" type="button"><i data-lucide="square-pen" aria-hidden="true"></i>新建对话</button>
+      <label class="sm-search"><i data-lucide="search" aria-hidden="true"></i><input type="search" aria-label="搜索会话标题与正文" placeholder="搜索对话…" /></label>
+      <div class="sm-history"></div>
+      <div class="sm-bottom"><button type="button" class="sm-settings"><i data-lucide="settings-2" aria-hidden="true"></i>设置</button></div>
+    </nav>
+    <main class="sm-main">
+      <header class="sm-header">
+        <button type="button" class="sm-icon sm-nav-toggle" aria-label="展开或收起会话导航" aria-expanded="true"><i data-lucide="panel-left" aria-hidden="true"></i></button>
+        <h2 class="sm-title">全页面工作台设计</h2>
+        <button type="button" class="sm-icon sm-panel-toggle" aria-label="打开对话大纲与附件" aria-expanded="false"><i data-lucide="list-tree" aria-hidden="true"></i></button>
+        <button type="button" class="sm-mode" aria-label="回到侧边栏"><i data-lucide="panel-right" aria-hidden="true"></i><span>回到侧边栏</span></button>
+      </header>
+      <div class="sm-reading" role="region" aria-label="当前对话"></div>
+      <footer class="sm-compose-wrap">
+        <div class="sm-status" role="status" aria-live="polite">可以继续讨论</div>
+        <div class="sm-compose">
+          <textarea aria-label="消息草稿" placeholder="继续讨论，或补充更多细节…" rows="2"></textarea>
+          <div class="sm-compose-bar">
+            <button type="button" class="sm-icon sm-attach" aria-label="查看本次对话附件"><i data-lucide="paperclip" aria-hidden="true"></i></button>
+            <select aria-label="选择模型"><option>日常模型 · 自定义 API</option><option>推理模型 · 自定义 API</option></select>
+            <select aria-label="选择角色"><option>默认角色</option><option>写作助手</option></select>
+            <button type="button" class="sm-send" aria-label="发送消息" disabled><i data-lucide="arrow-up" aria-hidden="true"></i></button>
+          </div>
+        </div>
+        <div class="sm-footnote"><span>Enter 发送</span><span>Shift + Enter 换行</span></div>
+      </footer>
+    </main>
+    <aside class="sm-panel" aria-label="对话辅助面板" hidden>
+      <div class="sm-panel-head">
+        <div role="tablist" aria-label="辅助面板内容">
+          <button type="button" class="sm-tab" id="sm-tab-outline" role="tab" aria-controls="sm-panel-content" data-tab="outline" aria-selected="true">大纲</button>
+          <button type="button" class="sm-tab" id="sm-tab-files" role="tab" aria-controls="sm-panel-content" data-tab="files" aria-selected="false">附件</button>
+        </div>
+        <button type="button" class="sm-icon sm-panel-close" aria-label="关闭对话面板"><i data-lucide="x" aria-hidden="true"></i></button>
+      </div>
+      <div class="sm-panel-content" id="sm-panel-content" role="tabpanel" aria-labelledby="sm-tab-outline"></div>
+    </aside>
+  </div>
+  <dialog class="sm-appearance" aria-label="外观设置">
+    <h3>外观</h3>
+    <label class="sm-setting">主题<select class="sm-theme" aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+    <form method="dialog" class="sm-setting"><button type="submit">完成</button></form>
+  </dialog>
+  <script>
+    (() => {
+      const root = document.getElementById('sidemind-workspace-concept');
+      const find = (selector) => root.querySelector(selector);
+      const shell = find('.sm-shell');
+      const reading = find('.sm-reading');
+      const input = find('textarea');
+      const send = find('.sm-send');
+      const mode = find('.sm-mode');
+      const status = find('.sm-status');
+      const panel = find('.sm-panel');
+      const conversations = [
+        { id: 'workspace', title: '全页面工作台设计', group: '今天', files: [{ name: '功能范围.md', size: '2.4 KB', text: '# 全页面模式\n\n同一份会话与草稿\n常驻历史导航\n按需展开大纲和附件\n生成期间暂不切换模式' }], messages: [
+          { role: 'user', text: '我们会长期来回讨论，想要一个更适合深入工作的全页面模式。' },
+          { role: 'assistant', title: '为长对话安排空间', text: '左侧保留会话导航，中间专注讨论。大纲和附件按需打开，查资料时也能继续对话。', list: ['历史搜索和切换常驻左侧。', '正文保持舒适行宽，输入区支持长提示词。', '同一份消息、草稿和附件在两个入口继续使用。'] },
+          { role: 'user', text: '生成途中切换不常用，第一版先不做，尽量保持简单。', file: '功能范围.md' },
+          { role: 'assistant', title: '第一版先把连续工作做顺畅', text: '可以。回答准备和生成期间，模式切换入口暂时不可用；完成后保存当前对话与草稿，再进入另一个模式。', list: ['大纲按提问跳转，方便回到之前的讨论。', '附件区集中查看本次对话引用的资料。', '无需迁移生成任务，也不改变现有 API 请求方式。'] }
+        ] },
+        { id: 'weekly', title: '团队周报的结构', group: '今天', files: [], messages: [
+          { role: 'user', text: '周报里应该怎样区分已完成的工作和接下来的计划？' },
+          { role: 'assistant', title: '围绕结果与下一步组织', text: '已完成部分写本周交付了什么、带来什么变化。计划部分写下一步要交付的结果，并标明需要协助的事项。', list: ['本周结果：交付内容与实际影响。', '风险与协作：待解决的问题和需要的支持。', '下周重点：两到三项明确的交付目标。'] }
+        ] },
+        { id: 'code', title: '解释一段异步代码', group: '昨天', files: [], messages: [
+          { role: 'user', text: '为什么修改输入框以后，要等待保存完成再跳到另一个页面？' },
+          { role: 'assistant', title: '让页面切换有明确的顺序', text: '输入框变化先进入当前页面的内存，随后才写入存储。等待写入完成，目标页面才能读取到最新草稿；如果保存失败，留在原页面可以保住正在编辑的内容。' }
+        ] }
+      ];
+      const defaults = { mode: 'workspace', chat: 'workspace', nav: true, panel: false, tab: 'outline', drafts: {}, theme: 'system' };
+      let state = { ...defaults };
+      let generating = false;
+      let timer = null;
+      let activeMessage = null;
+      const options = { navigationWidth: 236, readingWidth: 820, compact: false, generating: false };
+      const make = (tag, className, text) => {
+        const element = document.createElement(tag);
+        if (className) element.className = className;
+        if (text !== undefined) element.textContent = text;
+        return element;
+      };
+      const chat = () => conversations.find((item) => item.id === state.chat) || conversations[0];
+      function persist() {
+        if (window.openai?.setWidgetState) window.openai.setWidgetState({ modelContent: { mode: state.mode, panel: state.panel ? state.tab : 'closed' }, privateContent: state }).catch(() => {});
+      }
+      function rememberDraft() { state.drafts[state.chat] = input.value; }
+      function restore(value) {
+        const saved = value?.privateContent;
+        if (!saved || typeof saved !== 'object') return;
+        state = { ...defaults, ...saved, drafts: { ...(saved.drafts || {}) } };
+        if (!conversations.some((item) => item.id === state.chat)) state.chat = 'workspace';
+        if (!['workspace', 'sidebar'].includes(state.mode)) state.mode = 'workspace';
+        if (!['outline', 'files'].includes(state.tab)) state.tab = 'outline';
+      }
+      function updateControls() {
+        mode.disabled = generating;
+        mode.setAttribute('aria-label', generating ? '回答完成或停止后可切换模式' : state.mode === 'workspace' ? '回到侧边栏' : '在工作台中打开');
+        mode.querySelector('span').textContent = state.mode === 'workspace' ? '回到侧边栏' : '在工作台中打开';
+        send.disabled = !generating && !input.value.trim();
+        send.setAttribute('aria-label', generating ? '停止生成' : '发送消息');
+        send.textContent = generating ? '■' : '↑';
+        status.textContent = generating ? '正在生成 · 完成或停止后可切换模式' : '可以继续讨论';
+        find('.sm-new').disabled = generating;
+        root.querySelectorAll('.sm-chat').forEach((button) => { button.disabled = generating; });
+      }
+      function renderHistory() {
+        const target = find('.sm-history');
+        const query = find('.sm-search input').value.trim().toLowerCase();
+        target.replaceChildren();
+        let group = null;
+        conversations.filter((item) => !query || [item.title, ...item.messages.map((message) => message.text)].join(' ').toLowerCase().includes(query)).forEach((item) => {
+          if (item.group !== group) { group = item.group; target.append(make('div', 'sm-group', group)); }
+          const button = make('button', 'sm-chat cursor-interaction');
+          button.type = 'button';
+          if (item.id === state.chat) button.setAttribute('aria-current', 'page');
+          button.append(make('span', '', item.title));
+          button.addEventListener('click', () => {
+            if (generating) return;
+            rememberDraft(); state.chat = item.id;
+            if (root.clientWidth < 900) state.nav = false;
+            render(); persist();
+          });
+          target.append(button);
+        });
+        if (!target.childElementCount) target.append(make('p', 'sm-empty', '没有找到相关对话'));
+      }
+      function renderMessages() {
+        reading.replaceChildren();
+        if (!chat().messages.length) {
+          const greeting = make('article', 'sm-assistant');
+          greeting.append(make('h3', 'sm-answer-title', '今天想一起完成什么？'), make('p', 'sm-empty', '提出问题，或从左侧继续之前的对话。'));
+          reading.append(greeting);
+        }
+        chat().messages.forEach((message, index) => {
+          const article = make('article', message.role === 'user' ? 'sm-user' : 'sm-assistant');
+          article.id = 'sm-message-' + index;
+          if (message.file) {
+            const file = make('button', 'sm-file cursor-interaction', '↗ ' + message.file);
+            file.type = 'button'; file.addEventListener('click', () => openPanel('files')); article.append(file);
+          }
+          if (message.role === 'assistant') {
+            article.append(make('div', 'sm-author', 'Amy'));
+            if (message.title) article.append(make('h3', 'sm-answer-title', message.title));
+          }
+          article.append(make('p', '', message.text));
+          if (message.list) {
+            const list = make('ul'); message.list.forEach((text) => list.append(make('li', '', text))); article.append(list);
+          }
+          if (message.role === 'assistant') {
+            const tools = make('div', 'sm-message-tools');
+            const copy = make('button', 'cursor-interaction', '复制'); copy.type = 'button';
+            copy.addEventListener('click', async () => {
+              const text = [message.title, message.text, ...(message.list || [])].filter(Boolean).join('\n');
+              try { await navigator.clipboard.writeText(text); status.textContent = '已复制回答'; }
+              catch { status.textContent = '可以直接选择回答文字进行复制'; }
+            });
+            tools.append(copy); article.append(tools);
+          }
+          reading.append(article);
+        });
+      }
+      function renderPanel() {
+        const target = find('.sm-panel-content'); target.replaceChildren();
+        target.setAttribute('aria-labelledby', 'sm-tab-' + state.tab);
+        root.querySelectorAll('.sm-tab').forEach((button) => button.setAttribute('aria-selected', String(button.dataset.tab === state.tab)));
+        if (state.tab === 'outline') {
+          let number = 0;
+          chat().messages.forEach((message, index) => {
+            if (message.role !== 'user') return;
+            const button = make('button', 'sm-outline-item cursor-interaction'); button.type = 'button';
+            button.append(make('span', 'sm-outline-number', String(++number).padStart(2, '0')), make('span', '', message.text));
+            button.addEventListener('click', () => {
+              if (root.clientWidth < 1280) { state.panel = false; renderShell(); persist(); }
+              document.getElementById('sm-message-' + index).scrollIntoView({ block: 'center', behavior: 'auto' });
+              status.textContent = '已定位到第 ' + (chat().messages.slice(0, index + 1).filter((item) => item.role === 'user').length) + ' 次提问';
+            });
+            target.append(button);
+          });
+          if (!number) target.append(make('p', 'sm-empty', '发送消息后，对话大纲会显示在这里。'));
+        } else {
+          chat().files.forEach((file) => {
+            const row = make('div', 'sm-file-row');
+            const button = make('button', 'cursor-interaction', file.name); button.type = 'button';
+            button.addEventListener('click', () => {
+              target.querySelector('.sm-preview')?.remove();
+              target.append(make('pre', 'sm-preview', file.text));
+            });
+            row.append(button, make('small', '', file.size + ' · 对话附件')); target.append(row);
+          });
+          if (!chat().files.length) target.append(make('p', 'sm-empty', '这段对话还没有附件。'));
+        }
+      }
+      function renderShell() {
+        shell.dataset.mode = state.mode;
+        shell.dataset.nav = String(state.nav);
+        shell.dataset.panel = String(state.panel && state.mode === 'workspace');
+        panel.hidden = !state.panel || state.mode === 'sidebar';
+        find('.sm-nav-toggle').setAttribute('aria-expanded', String(state.nav));
+        find('.sm-panel-toggle').setAttribute('aria-expanded', String(state.panel));
+        root.style.colorScheme = state.theme === 'system' ? 'light dark' : state.theme;
+        find('.sm-theme').value = state.theme;
+        updateControls();
+      }
+      function render() {
+        find('.sm-title').textContent = chat().title;
+        input.value = state.drafts[state.chat] || '';
+        renderHistory(); renderMessages(); renderPanel(); renderShell();
+      }
+      function openPanel(tab) {
+        if (state.mode === 'sidebar') return;
+        state.tab = tab; state.panel = true;
+        if (root.clientWidth < 900) state.nav = false;
+        renderPanel(); renderShell(); persist();
+      }
+      function finish() {
+        clearTimeout(timer); timer = null;
+        if (activeMessage) { activeMessage.text = '已保留当前讨论。可以继续补充要求，也可以切换到另一个模式。'; activeMessage = null; renderMessages(); }
+        generating = false; options.generating = false; updateControls(); persist();
+      }
+      function submit() {
+        if (generating) { finish(); return; }
+        if (!input.value.trim()) return;
+        chat().messages.push({ role: 'user', text: input.value.trim() });
+        activeMessage = { role: 'assistant', text: '正在整理回答…' }; chat().messages.push(activeMessage);
+        state.drafts[state.chat] = ''; input.value = ''; generating = true; options.generating = true;
+        renderMessages(); renderPanel(); updateControls(); persist(); timer = setTimeout(finish, 4000);
+      }
+      mode.addEventListener('click', () => {
+        if (generating) return;
+        rememberDraft(); state.mode = state.mode === 'workspace' ? 'sidebar' : 'workspace';
+        state.panel = false; renderShell(); persist();
+      });
+      find('.sm-nav-toggle').addEventListener('click', () => { state.nav = !state.nav; if (root.clientWidth < 900) state.panel = false; renderShell(); persist(); });
+      find('.sm-nav-close').addEventListener('click', () => { state.nav = false; renderShell(); persist(); });
+      find('.sm-panel-toggle').addEventListener('click', () => { if (state.panel) { state.panel = false; renderShell(); persist(); } else openPanel(state.tab); });
+      find('.sm-panel-close').addEventListener('click', () => { state.panel = false; renderShell(); persist(); });
+      root.querySelectorAll('.sm-tab').forEach((button) => button.addEventListener('click', () => openPanel(button.dataset.tab)));
+      find('.sm-attach').addEventListener('click', () => { if (state.mode === 'workspace') openPanel('files'); else status.textContent = '功能范围.md · 2.4 KB'; });
+      find('.sm-search input').addEventListener('input', renderHistory);
+      input.addEventListener('input', () => { rememberDraft(); updateControls(); });
+      input.addEventListener('change', persist);
+      input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!generating) submit(); } });
+      send.addEventListener('click', submit);
+      find('.sm-new').addEventListener('click', () => {
+        if (generating) return;
+        rememberDraft(); const id = 'new-' + conversations.length;
+        conversations.unshift({ id, title: '新对话', group: '今天', files: [], messages: [] }); state.chat = id;
+        if (root.clientWidth < 900) state.nav = false;
+        render(); persist(); input.focus();
+      });
+      find('.sm-settings').addEventListener('click', () => find('.sm-appearance').showModal());
+      find('.sm-theme').addEventListener('change', (event) => { state.theme = event.target.value; renderShell(); persist(); });
+      restore(window.openai?.widgetState);
+      if (!window.openai?.widgetState && root.clientWidth < 900) state.nav = false;
+      render();
+      root.querySelectorAll('button').forEach((button) => button.classList.add('cursor-interaction'));
+      window.addEventListener('openai:set_globals', (event) => { if (!generating) { restore(event.detail?.globals?.widgetState); render(); } });
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({ container: root, onChange() {
+          root.style.setProperty('--sm-nav-width', options.navigationWidth + 'px');
+          root.style.setProperty('--sm-reading-width', options.readingWidth + 'px');
+          root.style.setProperty('--sm-message-gap', options.compact ? '18px' : '28px');
+          if (generating !== options.generating) {
+            if (options.generating) { generating = true; updateControls(); }
+            else finish();
+          }
+        } });
+        tweak.addSlider(options, 'navigationWidth', { label: '会话导航宽度', min: 208, max: 280, step: 8, unit: 'px' });
+        tweak.addSlider(options, 'readingWidth', { label: '正文最大宽度', min: 680, max: 920, step: 20, unit: 'px' });
+        tweak.addToggle(options, 'compact', { label: '紧凑消息间距' });
+        tweak.addToggle(options, 'generating', { label: '查看生成中的切换状态' });
+      }
+    })();
+  </script>
+</div>

@@ -95,7 +95,7 @@ function seedLayout({ sessions, __legacyLayout, ...rest }) {
 async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {}, prepare, browserContext = null) {
   const local = seedLayout(rawLocal);
   const page = browserContext ? await browserContext.newPage() : await browser.newPage({
-    viewport: { width: kind === 'sidebar' ? 380 : 1160, height: 800 },
+    viewport: { width: kind === 'sidebar' ? 380 : kind === 'workspace' ? 1440 : 1160, height: 800 },
     reducedMotion: 'reduce'
   });
   await prepare?.(page);
@@ -230,12 +230,12 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
       version: JSON.parse(readFileSync(resolve(root, 'manifest.json'), 'utf8')).version
     }
   );
-  await page.goto(`${baseUrl}/${kind}/${kind}.html`);
+  await page.goto(kind === 'workspace' ? `${baseUrl}/sidebar/sidebar.html?view=workspace` : `${baseUrl}/${kind}/${kind}.html`);
   await page.waitForFunction(
     (kind) =>
-      kind === 'sidebar'
+      kind !== 'options'
         ? typeof state !== 'undefined' &&
-          state.currentSessionId &&
+          (state.currentSessionId || storageReady || storageLoadFailed) &&
           document.querySelector('#generationStatus').textContent
         : Boolean(document.querySelector('#versionBadge')?.textContent),
     kind
@@ -691,8 +691,10 @@ browserTest(
     await page.getByRole('textbox', { name: 'Conversation title' }).press('Enter');
     assert.match(await page.locator('.chat-history-title').textContent(), /Fruit/);
     await page.getByRole('button', { name: 'Delete chat' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 0);
     assert.equal(await page.locator('.chat-history-item').count(), 0);
     await page.locator('#historyUndoBtn').click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
     assert.equal(await page.locator('.chat-history-item').count(), 1);
     assert.equal(await page.evaluate(() => state.drafts.first), 'Keep my draft');
     await page.keyboard.press('Escape');
@@ -1108,6 +1110,39 @@ browserTest(
       await chat.getByRole('button', { name: 'View pixel.png', exact: true }).click();
       await chat.waitForFunction(() => document.querySelector('#attachmentPreviewDialog img').naturalWidth > 0);
       await chat.getByRole('button', { name: 'Close image preview', exact: true }).click();
+      const sessionId = await chat.evaluate(() => state.currentSessionId);
+      const openingWorkspace = context.waitForEvent('page');
+      await chat.locator('#switchViewBtn').click();
+      const workspace = await openingWorkspace;
+      workspace.on('pageerror', (error) => errors.push(error.message));
+      await workspace.waitForFunction((sessionId) => state.currentSessionId === sessionId && !navigationRequest, sessionId);
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.match(workspace.url(), /view=workspace#session=/);
+      assert.equal(await workspace.locator('#messageInput').inputValue(), await chat.locator('#messageInput').inputValue());
+      assert.equal(await workspace.evaluate(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length), 1);
+      const count = context.pages().length;
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.equal(context.pages().length, count, 're-entering reuses the workspace tab');
+      await workspace.evaluate(() => { elements.messageInput.value = 'Unsaved workspace draft'; saveDraftSoon(); clearTimeout(draftTimeout); });
+      await chat.locator('#messageInput').fill('Explicit source draft');
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.equal(await workspace.locator('#messageInput').inputValue(), 'Explicit source draft', 'handoff restores the source draft even if the target has local edits');
+      await workspace.locator('#draftConflict').waitFor({ state: 'visible' });
+      await workspace.locator('#restoreExternalDraftBtn').click();
+      assert.equal(await workspace.locator('#messageInput').inputValue(), 'Unsaved workspace draft', 'the target draft remains recoverable');
+      await chat.waitForFunction(() => elements.messageInput.value === 'Unsaved workspace draft');
+      await workspace.evaluate(() => { state.isPreparing = true; updateInputState(); });
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching && elements.notifications.textContent.includes('Preparing'));
+      await workspace.evaluate(() => { state.isPreparing = false; updateInputState(); });
+      await workspace.locator('#messageInput').fill('Returned safely with my attachment');
+      await workspace.locator('#switchViewBtn').click();
+      await workspace.waitForFunction(() => !viewSwitching);
+      await chat.waitForFunction(() => elements.messageInput.value === 'Returned safely with my attachment');
+      assert.equal(await workspace.evaluate(() => Boolean(elements.notifications.textContent)), false, 'sidebar open succeeds from the click gesture');
+      assert.equal(await chat.evaluate(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length), 1);
       assert.deepEqual(errors, []);
     } finally {
       await context?.close();
@@ -1263,7 +1298,7 @@ browserTest('composer selectors fit narrow sidebars and open above the toolbar i
     await page.evaluate(async (theme) => chrome.storage.sync.set({ config: { ...state.config, theme } }), theme);
     for (const width of [320, 380, 480]) {
       await page.setViewportSize({ width, height: width === 320 ? 480 : 800 });
-      const controls = await page.locator('.composer-toolbar > button, .composer-toolbar > div > button').evaluateAll(
+      const controls = await page.locator('.composer-toolbar > button:visible, .composer-toolbar > div > button:visible').evaluateAll(
         (nodes) => nodes.map((node) => {
           const rect = node.getBoundingClientRect();
           return { left: rect.left, right: rect.right, top: rect.top, height: rect.height };
@@ -1690,9 +1725,9 @@ async function openSharedPages(initialConfig = fixtureConfig) {
   }, initialConfig);
   const ready = (page) =>
     page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
-  const open = async () => {
+  const open = async (view = 'sidebar', sessionId = null) => {
     const page = await context.newPage();
-    await page.goto(`${baseUrl}/sidebar/sidebar.html`);
+    await page.goto(`${baseUrl}/sidebar/sidebar.html${view === 'workspace' ? '?view=workspace' : ''}${sessionId ? '#session=' + encodeURIComponent(sessionId) : ''}`);
     await ready(page);
     // The startup save of a first-run chat must land before the test acts or
     // the next page opens; the races under test start from a settled store.
@@ -2070,7 +2105,7 @@ browserTest('a reply stopped mid-thought keeps its thinking as reasoning', async
   await page.evaluate(() => window.__stream.delta('<think>Still weighing'));
   await page.waitForFunction(() => document.querySelector('.message.assistant .reasoning-header'));
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone);
   const stored = await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1));
   assert.equal(stored.reasoning, 'Still weighing');
   assert.equal(stored.content, '');
@@ -2120,8 +2155,10 @@ browserTest('undoing the deletion of the open chat returns to it', async () => {
   });
   await page.locator('#chatHistoryBtn').click();
   await page.getByRole('button', { name: 'Delete chat' }).click();
+  await page.waitForFunction(() => state.currentSessionId !== 'only');
   assert.notEqual(await page.evaluate(() => state.currentSessionId), 'only');
   await page.locator('#historyUndoBtn').click();
+  await page.waitForFunction(() => state.currentSessionId === 'only');
   assert.equal(await page.evaluate(() => state.currentSessionId), 'only');
   // The blank chat created to replace it is gone again
   assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions)), ['only']);
@@ -2426,7 +2463,7 @@ browserTest('history pages remain searchable and renaming an inactive chat persi
   await page.getByRole('button', { name: 'Rename chat' }).click();
   await page.locator('.history-rename-input').fill('Renamed conversation');
   await page.locator('.history-rename-input').press('Enter');
-  await page.evaluate(() => storageWriteQueue);
+  await page.waitForFunction(() => window.__storage.local['session:h124'].session.title === 'Renamed conversation');
   assert.equal(await page.evaluate(() => window.__storage.local['session:h124'].session.title), 'Renamed conversation');
   assert.equal(await page.evaluate(() => sessionSearchCache.has('h1')), true);
   await page.locator('#historySearch').fill('renamed conversation');
@@ -2749,7 +2786,7 @@ browserTest('two sidebars serialize server turns and refresh the saved conversat
     await b.evaluate(async () => { await sendMessageToAPI({ content: 'Second sidebar', attachments: [] }); });
     assert.equal(await b.evaluate(() => window.__serverCalls.length), 0, 'another sidebar cannot append while the first turn is active');
     await a.evaluate(() => window.__finishServer());
-    await a.waitForFunction(() => !state.isStreaming);
+    await a.waitForFunction(() => !state.generationDone && !heldSessionLocks.size);
     assert.equal(await b.evaluate(() => state.sessions[state.currentSessionId].serverConversation), undefined);
     await b.evaluate(async () => {
       state.config.stream = false;
@@ -2868,11 +2905,11 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
   await page.locator('#messageInput').fill('Read these');
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && window.__fetchCalls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.__fetchCalls[0].messages.find(message => message.role === 'user').content.map(part => part.type)), ['text', 'image_url', 'file']);
   await page.locator('#messageInput').fill('A text-only follow-up');
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 2);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && window.__fetchCalls.length === 2);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('file_data')), false);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('data:image/')), false);
   await page.evaluate(() => { state.config.providers[0].apiType = 'responses'; });
@@ -2881,7 +2918,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.locator('#messageInput').fill('Keep this draft');
   await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 4);
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2);
@@ -2899,7 +2936,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
     });
   });
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'missing bytes never become a request containing only the filename');
   await page.evaluate(() => {
@@ -2913,7 +2950,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.waitForFunction(() => state.isPreparing && typeof window.__releasePreparation === 'function');
   await page.locator('#sendBtn').click();
   await page.evaluate(() => window.__releasePreparation());
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'cancelling local preparation does not send a request');
   assert.deepEqual(errors, []);
@@ -3019,6 +3056,211 @@ browserTest('paste and drop retain unsaved attachments until retry and reject a 
     return (await (await AttachmentStore.get(refs[0])).text()) === 'Dropped text';
   }), true);
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('workspace layout, outline, deduplicated attachments and explicit routes work at all breakpoints', async () => {
+  const timestamp = new Date().toISOString();
+  const ref = { id: 'guide', name: 'guide.txt', mime: 'text/plain', kind: 'text', size: 20 };
+  const local = { currentSessionId: 'first', drafts: { first: { text: 'Keep this long prompt', attachments: [ref] } }, sessions: {
+    first: { title: 'Planning a better workspace', timestamp, messages: [
+      { id: 'u1', role: 'user', content: '\nHow should we organize this project?', attachments: [ref], timestamp },
+      { id: 'a1', role: 'assistant', content: ('### A practical approach\n\nStart with the goals, then work through each decision with enough room to think.\n\n').repeat(18), reasoning: 'Consider the constraints first.', reasoningCollapsed: true, protocol: { api: 'responses', output: [] }, timestamp },
+      { id: 'u2', role: 'user', content: '', attachments: [ref], timestamp }
+    ] },
+    second: { title: 'Another topic', timestamp, messages: [{ id: 'u3', role: 'user', content: 'A rare pineapple in the second conversation.', timestamp }] }
+  } };
+  const { page, errors } = await openPage('workspace', fixtureConfig, local);
+  await page.waitForFunction(() => document.body.dataset.view === 'workspace');
+  assert.equal(await page.locator('#chatHistoryDropdown .modal-panel').count(), 0, 'workspace uses the existing history nodes');
+  assert.equal(await page.locator('.chat-history-item').count(), 2);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this long prompt');
+  await page.locator('#togglePanelBtn').click();
+  assert.deepEqual(await page.locator('.outline-link').allTextContents(), ['How should we organize this project?', 'guide.txt']);
+  await page.locator('.outline-link').first().click();
+  assert.equal(await page.evaluate(() => state.userScrolledUp), true);
+  assert.equal(await page.locator('.message').first().evaluate((node) => node === document.activeElement), true);
+  await page.locator('#attachmentsTab').click();
+  assert.equal(await page.locator('#conversationPanelContent .attachment-card').count(), 1);
+  assert.equal(await page.locator('#conversationPanelContent').getByRole('button', { name: 'Go to message', exact: true }).count(), 2);
+  const readingAnchor = await page.evaluate(() => { elements.messagesList.scrollTop = 450; handleScroll(); return captureReadingAnchor(); });
+  assert.equal(readingAnchor.messageId, 'a1');
+  for (const width of [1440, 1024, 768]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(async (anchor) => { setPanelOpen(true); await restoreReadingAnchor(anchor); }, readingAnchor);
+    const restoredAnchor = await page.evaluate(() => captureReadingAnchor());
+    assert.equal(restoredAnchor.messageId, readingAnchor.messageId);
+    assert.ok(Math.abs(restoredAnchor.offset - readingAnchor.offset) < 0.02, `${width}: relative reading anchor is retained`);
+    const geometry = await page.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth > innerWidth,
+      panel: elements.conversationPanel.getBoundingClientRect().width,
+      mainRight: document.querySelector('.app-container').getBoundingClientRect().right,
+      backdrop: !elements.workspaceBackdrop.hidden,
+      navigation: !elements.workspaceNav.hidden,
+      readingWidth: elements.messagesList.clientWidth - parseFloat(getComputedStyle(elements.messagesList).paddingLeft) - parseFloat(getComputedStyle(elements.messagesList).paddingRight)
+    }));
+    assert.equal(geometry.overflow, false, `${width}: page has no horizontal overflow`);
+    assert.equal(geometry.panel, 304);
+    assert.ok(geometry.readingWidth <= 821);
+    assert.equal(geometry.backdrop, width < 1280);
+    if (width === 1440) assert.equal(geometry.mainRight, width - 304);
+    if (width === 768) assert.equal(geometry.navigation, false);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/workspace-${width}.png` });
+    if (width < 1280) {
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#conversationPanel').isVisible(), false);
+      assert.equal(await page.locator('#togglePanelBtn').evaluate((node) => node === document.activeElement), true);
+    }
+  }
+  await page.locator('#toggleNavBtn').click();
+  assert.equal(await page.locator('#workspaceNav').isVisible(), true);
+  await page.locator('#historySearch').fill('pineapple');
+  await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
+  assert.match(await page.locator('.history-snippet').textContent(), /pineapple/);
+  await page.locator('.chat-history-content').click();
+  assert.match(page.url(), /#session=second$/);
+  assert.equal(await page.locator('#workspaceNav').isVisible(), false);
+  await page.goBack();
+  await page.waitForFunction(() => state.currentSessionId === 'first');
+  await page.reload();
+  await page.waitForFunction(() => state.currentSessionId === 'first');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this long prompt');
+  await page.evaluate(() => { document.documentElement.classList.add('dark-theme'); setPanelOpen(true); });
+  if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/workspace-dark.png` });
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('workspace drafts follow external saves, retain local edits and recover the other draft', async () => {
+  const { context, a, open } = await openSharedPages();
+  try {
+    const id = await a.evaluate(() => state.currentSessionId);
+    const b = await open('workspace', id);
+    await a.locator('#messageInput').fill('Shared draft');
+    await a.evaluate(() => persistDrafts());
+    await b.waitForFunction(() => elements.messageInput.value === 'Shared draft');
+    await b.evaluate(() => { elements.messageInput.value = 'Local unsaved input'; saveDraftSoon(); clearTimeout(draftTimeout); });
+    await a.locator('#messageInput').fill('New external draft');
+    await a.evaluate(() => persistDrafts());
+    await b.locator('#draftConflict').waitFor({ state: 'visible' });
+    assert.equal(await b.locator('#messageInput').inputValue(), 'Local unsaved input');
+    await b.locator('#restoreExternalDraftBtn').click();
+    assert.equal(await b.locator('#messageInput').inputValue(), 'New external draft');
+    await b.locator('#restoreExternalDraftBtn').click();
+    assert.equal(await b.locator('#messageInput').inputValue(), 'Local unsaved input', 'restoring a conflict is reversible');
+    await b.evaluate(async () => { await chrome.storage.session.set({ 'selection:1': { text: 'Only the sidebar imports this.' } }); });
+    // Workspace never subscribes to selection:<windowId>.
+    assert.equal(await b.evaluate(() => selectionStorageKey), null);
+  } finally { await context.close(); }
+});
+
+browserTest('all adapters lock the session through cleanup, reject a second page, and allow unrelated conversations', async () => {
+  const { context, a, b, open } = await openSharedPages();
+  try {
+    const id = await a.evaluate(() => state.currentSessionId);
+    const workspace = await open('workspace', id);
+    for (const page of [a, b, workspace]) {
+      await page.evaluate(() => {
+        window.__calls = 0;
+        window.fetch = async (url, options) => {
+          window.__calls++;
+          await new Promise((resolve, reject) => {
+            window.__release = resolve;
+            options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          });
+          return Response.json({ choices: [{ message: { content: 'Finished safely' }, finish_reason: 'stop' }] });
+        };
+        state.config.stream = false;
+      });
+    }
+    await a.locator('#messageInput').fill('First page asks');
+    await workspace.locator('#messageInput').fill('Workspace asks');
+    await Promise.all([
+      a.evaluate(() => { void sendMessageToAPI({ content: 'First page asks', attachments: [] }); }),
+      workspace.evaluate(() => { void sendMessageToAPI({ content: 'Workspace asks', attachments: [] }); })
+    ]);
+    await a.waitForFunction(() => heldSessionLocks.size || remoteBusySessions.size);
+    await workspace.waitForFunction(() => heldSessionLocks.size || remoteBusySessions.size);
+    const firstWon = await a.evaluate(() => heldSessionLocks.size > 0);
+    const winner = firstWon ? a : workspace;
+    const loser = firstWon ? workspace : a;
+    await winner.waitForFunction(() => window.__calls === 1);
+    assert.equal(await loser.evaluate(() => window.__calls), 0, 'only one actual request');
+    assert.equal(await winner.locator('#switchViewBtn').isDisabled(), true);
+    await loser.evaluate((id) => deleteSession(id), id);
+    assert.equal(await loser.evaluate((id) => Boolean(state.sessions[id]), id), true);
+    await b.locator('#newChatBtn').click();
+    await b.locator('#messageInput').fill('An independent question');
+    await b.locator('#sendBtn').click();
+    await b.waitForFunction(() => window.__calls === 1);
+    await b.evaluate(() => window.__release());
+    await b.waitForFunction(() => !state.generationDone);
+    await winner.evaluate(() => window.__release());
+    await winner.waitForFunction(() => !state.generationDone && !state.isAcquiring);
+    await loser.waitForFunction(() => !remoteBusySessions.has(state.currentSessionId));
+    assert.equal(await winner.locator('#switchViewBtn').isEnabled(), true);
+    await loser.evaluate((id) => deleteSession(id), id);
+    await winner.waitForFunction((id) => !state.sessions[id], id);
+    await winner.evaluate(() => saveToStorage());
+    assert.equal((await readShared(winner))['session:' + id], undefined, 'a stale page never resurrects a deleted conversation');
+  } finally { await context.close(); }
+});
+
+browserTest('mode switching retains the source on save failure and stays disabled while preparing and cleaning up', async () => {
+  const { page, errors } = await openPage();
+  await page.locator('#messageInput').fill('Preserve my draft');
+  await page.evaluate(() => {
+    window.__failLocalSave = true;
+    chrome.runtime.sendMessage = async () => { window.__navigated = true; return { ok: true }; };
+  });
+  await page.locator('#switchViewBtn').click();
+  await page.waitForFunction(() => !viewSwitching && !elements.storageStatus.classList.contains('hidden'));
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Preserve my draft');
+  assert.equal(await page.evaluate(() => Boolean(window.__navigated)), false);
+  await page.evaluate(() => { window.__failLocalSave = false; chrome.runtime.sendMessage = async () => ({ ok: false, error: 'Target could not load' }); });
+  await page.locator('#switchViewBtn').click();
+  await page.waitForFunction(() => !viewSwitching && elements.notifications.textContent.includes('Target could not load'));
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Preserve my draft');
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.chat.buildRequestBody;
+    API_ADAPTERS.chat.buildRequestBody = async (context) => { await new Promise((resolve) => { window.__prepare = resolve; }); return build(context); };
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => state.isPreparing);
+  assert.match(await page.locator('#switchViewBtn').getAttribute('title'), /Preparing/);
+  await page.evaluate(() => window.__prepare());
+  await page.waitForFunction(() => window.__stream);
+  assert.match(await page.locator('#switchViewBtn').getAttribute('title'), /Generating/);
+  await page.evaluate(() => {
+    const set = chrome.storage.local.set;
+    chrome.storage.local.set = async (data) => { await new Promise((resolve) => { window.__save = resolve; }); return set(data); };
+    window.__stream.delta('Keep the partial answer');
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__save && state.generationDone));
+  assert.equal(await page.locator('#switchViewBtn').isDisabled(), true);
+  await page.evaluate(() => window.__save());
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
+  assert.equal(await page.locator('#switchViewBtn').isEnabled(), true);
+  assert.match(await page.locator('.message.assistant').textContent(), /partial answer/);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('an unavailable explicit workspace route never creates a replacement conversation', async () => {
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('workspace', fixtureConfig, {
+    currentSessionId: 'kept', sessions: { kept: { title: 'Existing chat', timestamp, messages: [{ id: 'q', role: 'user', content: 'Preserve this conversation', timestamp }] } }
+  }, async (page) => {
+    await page.addInitScript(() => { history.replaceState(null, '', location.pathname + location.search + '#session=missing'); });
+  });
+  assert.equal(await page.evaluate(() => state.currentSessionId), null);
+  assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions)), ['kept']);
+  assert.equal(await page.evaluate(() => Object.keys(window.__storage.local).filter((key) => key.startsWith('session:')).length), 1);
+  await page.locator('.chat-history-content').click();
+  await page.waitForFunction(() => state.currentSessionId === 'kept');
+  assert.match(page.url(), /#session=kept$/);
   assert.deepEqual(errors, []);
   await page.close();
 });

@@ -5,6 +5,9 @@
 // GLOBAL STATE MANAGEMENT
 // ========================================
 
+const VIEW = new URLSearchParams(location.search).get('view') === 'workspace' ? 'workspace' : 'sidebar';
+document.body.dataset.view = VIEW;
+
 const state = {
   currentSessionId: null,
   sessions: {},
@@ -40,6 +43,7 @@ const state = {
   streamTicker: null,
   followOutput: false,
   readingResponse: false,
+  isAcquiring: false,
   generationDone: null,
   resolveGeneration: null
 };
@@ -169,9 +173,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('SideMind initializing...');
 
   cacheElements();
+  initializeView();
   await loadFromStorage();
   setupEventListeners();
   initializeUI();
+  await initializeNavigation();
+  await refreshSessionLocks();
   await initializeSelectionImport();
 
   setTimeout(cleanupAttachments, 5000);
@@ -223,7 +230,13 @@ function cacheElements() {
     'attachmentInput',
     'draftAttachments',
     'attachmentStatus',
-    'cancelAttachmentsBtn'
+    'cancelAttachmentsBtn',
+    'workspaceNav', 'workspaceHistory', 'workspaceNewBtn', 'workspaceSettingsBtn',
+    'toggleNavBtn', 'closeNavBtn', 'togglePanelBtn', 'closePanelBtn', 'conversationPanel',
+    'outlineTab', 'attachmentsTab', 'conversationPanelContent', 'workspaceBackdrop',
+    'switchViewBtn', 'switchViewIcon', 'viewAttachmentsBtn', 'conversationMenu',
+    'renameCurrentBtn', 'exportCurrentBtn', 'deleteCurrentBtn',
+    'draftConflict', 'restoreExternalDraftBtn'
   ].forEach((id) => {
     elements[id] = document.getElementById(id);
   });
@@ -231,6 +244,7 @@ function cacheElements() {
 
 // Setup Event Listeners
 function setupEventListeners() {
+  setupViewListeners();
   elements.modelSelector.addEventListener('click', toggleModelPicker);
   elements.modelSelector.addEventListener('keydown', handleModelTriggerKeydown);
   elements.modelSearch.addEventListener('input', renderModelOptions);
@@ -364,9 +378,7 @@ async function loadFromStorage() {
       state.drafts = localResult.drafts;
     }
 
-    if (localResult.currentSessionId) {
-      state.currentSessionId = localResult.currentSessionId;
-    }
+    state.currentSessionId = routedSessionId() || localResult.currentSessionId || null;
 
     rememberSaved(state.sessions, revs, state.drafts, state.currentSessionId);
     storageReady = true;
@@ -375,13 +387,16 @@ async function loadFromStorage() {
       repairedChats = 0;
     }
     if (!state.sessions[state.currentSessionId]) {
-      await createNewSession();
+      if (routedSessionId()) {
+        state.currentSessionId = null;
+        showNotification('This conversation is unavailable. Select a conversation or start a new chat.');
+      } else await createNewSession();
     }
   } catch (error) {
     console.error('Storage load error:', error);
     storageLoadFailed = true;
     showStorageFailure();
-    await createNewSession();
+    if (!routedSessionId()) await createNewSession();
   }
 }
 
@@ -423,9 +438,9 @@ function retryStorageSave() {
 // Merge rules: messages are merged by id, so independent additions from
 // several pages all survive. A message both pages changed differently takes
 // the version of whoever saves last, as does every other chat field. A chat
-// removed by one page is kept if another page changed it meanwhile. Pages also
-// follow each other (`handleStoredChanges`), so such overlaps are rare. Drafts
-// and the selected chat are last writer wins.
+// removed by one page is kept if another page changed it meanwhile. Once a
+// removal lands, stale saves cannot revive it. Pages follow stored messages
+// and drafts, but keep their own navigation and preserve conflicting input.
 let savedSessions = {};
 let savedSessionRefs = {};
 const dirtySessionIds = new Set();
@@ -465,7 +480,7 @@ function withStorageLock(task) {
 function collectChanges(includeSessions) {
   const changes = { sessions: {}, removed: {}, drafts: {} };
   const snapshots = {};
-  const nextDrafts = structuredClone(state.drafts);
+
   if (includeSessions) {
     Object.entries(state.sessions).forEach(([id, session]) => {
       // Only the visible chat can be edited without an explicit mutation
@@ -493,7 +508,10 @@ function collectChanges(includeSessions) {
     if (!sameValue(savedDrafts[id], text)) changes.drafts[id] = structuredClone(text);
   });
   const commit = () => {
-    savedDrafts = nextDrafts;
+    Object.entries(changes.drafts).forEach(([id, draft]) => {
+      if (draft === null) delete savedDrafts[id];
+      else savedDrafts[id] = structuredClone(draft);
+    });
     if (changes.currentSessionId !== undefined) savedCurrentSessionId = changes.currentSessionId;
   };
   const empty =
@@ -545,6 +563,8 @@ function applyChanges(tables, changes) {
   const touched = new Set();
   Object.entries(changes.sessions || {}).forEach(([id, { base, baseRev, mine }]) => {
     const stored = sessions[id];
+    // A stale page or unload stash must never resurrect a deleted conversation.
+    if (!stored && base !== null && base !== undefined) return;
     // The stored chat is still the one this page last saw: nothing to merge.
     // (A changeset without a rev - an older build's - is always merged.)
     const untouched = !stored || (baseRev !== undefined && stored.rev === baseRev);
@@ -692,7 +712,7 @@ function adoptStored(id, entry) {
     renderMessages();
     if (elements.sendBtn) updateInputState();
   }
-  if (elements.chatHistoryDropdown?.open) renderChatHistory();
+  refreshHistory();
   return true;
 }
 
@@ -705,7 +725,7 @@ function settleSaved(changes, snapshots, sessions) {
   let resave = false;
   Object.entries(changes.sessions).forEach(([id, { mine }]) => {
     const entry = sessions[id];
-    if (!entry) return;
+    if (!entry) { followStoredSession(id, undefined); return; }
     const live = state.sessions[id];
     if (sameValue(entry.session, mine) || !live) {
       savedSessions[id] = snapshots[id];
@@ -734,15 +754,31 @@ function followStoredSession(id, entry) {
   const live = state.sessions[id];
   const unsaved = live && JSON.stringify(live) !== savedSessions[id];
   if (!entry) {
-    // Removed elsewhere; a chat this page is looking at or has changed stays.
-    if (live && !unsaved && id !== state.currentSessionId) {
+    if (live) {
+      const current = id === state.currentSessionId;
+      if (current) cancelEditing(false);
       delete state.sessions[id];
+      delete state.drafts[id];
+      delete savedDrafts[id];
+      externalDrafts.delete(id);
       delete savedSessions[id];
       delete savedSessionRefs[id];
       delete savedRevs[id];
       dirtySessionIds.delete(id);
       invalidateSessionSearch(id);
-      if (elements.chatHistoryDropdown?.open) renderChatHistory();
+      if (current) {
+        state.currentSessionId = null;
+        const recent = Object.keys(state.sessions).sort((a, b) => Date.parse(state.sessions[b].timestamp) - Date.parse(state.sessions[a].timestamp))[0];
+        if (recent) activateSession(recent);
+        else {
+          renderMessages();
+          restoreDraft();
+          updateInputState();
+          updateSessionRoute(true);
+        }
+        showNotification('This conversation was deleted in another page.');
+      }
+      refreshHistory();
     }
     return;
   }
@@ -757,11 +793,14 @@ function handleStoredChanges(changes) {
   Object.entries(changes).forEach(([key, change]) => {
     if (key.startsWith(SESSION_PREFIX)) {
       followStoredSession(key.slice(SESSION_PREFIX.length), change.newValue);
+    } else if (key === 'drafts') {
+      followStoredDrafts(change.newValue || {});
     } else if (key.startsWith(PENDING_PREFIX) && change.newValue && !key.startsWith(`${PENDING_PREFIX}${pageId}:`)) {
       fold = true;
     }
   });
   if (fold) queueLocalSave(true, true);
+  refreshSessionLocks();
 }
 
 // With `scanAll` (at load, and when another page left a stash) the whole
@@ -1009,6 +1048,7 @@ function persistDrafts() {
 function restoreDraft() {
   elements.messageInput.value = normalizeDraft(state.drafts[state.currentSessionId]).text;
   renderDraftAttachments();
+  updateDraftConflict();
   autoResizeTextarea();
 }
 
@@ -1071,7 +1111,7 @@ function cancelAttachmentJobs() {
 }
 
 async function receiveAttachments(files, editorId = null) {
-  if (state.isPreparing || !files.length) return;
+  if (state.isPreparing || viewSwitching || navigationRequest || !files.length) return;
   const sessionId = state.currentSessionId;
   const job = { sessionId, editorId, cancelled: false };
   attachmentJobs.add(job);
@@ -1203,6 +1243,7 @@ function renderDraftAttachments() {
     updateInputState();
   });
   elements.attachmentStatus.hidden = ![...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
+  renderConversationPanel();
 }
 
 function renderEditingAttachments() {
@@ -1257,6 +1298,7 @@ async function cleanupAttachments() {
       const refs = AttachmentStore.references(stored);
       AttachmentStore.references(state.sessions, refs);
       AttachmentStore.references(state.drafts, refs);
+      AttachmentStore.references([...externalDrafts.values()], refs);
       await AttachmentStore.collect(refs);
     });
   } catch (error) { console.warn('Attachment cleanup deferred:', error.name); }
@@ -1268,6 +1310,7 @@ let selectionStorageKey = null;
 let selectionImportQueue = Promise.resolve();
 
 async function initializeSelectionImport() {
+  if (VIEW !== 'sidebar') return;
   try {
     const window = await chrome.windows.getCurrent();
     selectionStorageKey = `selection:${window.id}`;
@@ -1278,7 +1321,7 @@ async function initializeSelectionImport() {
 }
 
 function importSelectedText() {
-  selectionImportQueue = selectionImportQueue.then(async () => {
+  selectionImportQueue = selectionImportQueue.then(() => navigator.locks.request(`sidemind-selection:${selectionStorageKey}`, async () => {
     try {
       const result = await chrome.storage.session.get([selectionStorageKey]);
       const selection = result[selectionStorageKey];
@@ -1300,7 +1343,7 @@ function importSelectedText() {
       console.error('Selection import:', error);
       showNotification('Could not import selected text. Try the context menu again.');
     }
-  });
+  }));
   return selectionImportQueue;
 }
 
@@ -1312,10 +1355,10 @@ function importSelectedText() {
 const UNDO_TIMEOUT = 10000;
 let pendingUndo = null;
 
-function offerUndo(text, restore) {
+function offerUndo(text, restore, sessionId = state.currentSessionId) {
   clearUndo();
 
-  pendingUndo = { restore, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
+  pendingUndo = { restore, sessionId, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
   elements.undoText.textContent = text;
   elements.undoBar.classList.remove('hidden');
   elements.historyUndoText.textContent = text;
@@ -1334,7 +1377,9 @@ async function applyUndo() {
   clearUndo();
   if (!undo) return;
 
-  await undo.restore();
+  await stopStreamingIfActive();
+  await storageWriteQueue;
+  await withSessionLock(undo.sessionId, async () => { await undo.restore(); await saveToStorage(); });
   announce('Undone.');
 }
 
@@ -1372,6 +1417,8 @@ function activateSession(sessionId) {
   renderMessages();
   restoreDraft();
   updateInputState();
+  updateSessionRoute();
+  refreshSessionLocks();
 }
 
 async function createNewSession() {
@@ -1384,6 +1431,7 @@ async function createNewSession() {
     return;
   }
 
+  if (viewSwitching || navigationRequest) return;
   const sessionId = crypto.randomUUID();
   state.sessions[sessionId] = {
     messages: [],
@@ -1398,7 +1446,7 @@ async function createNewSession() {
 }
 
 async function switchSession(sessionId) {
-  if (!state.sessions[sessionId]) return;
+  if (!state.sessions[sessionId] || viewSwitching || navigationRequest) return;
 
   if (sessionId !== state.currentSessionId) {
     await stopStreamingIfActive();
@@ -1410,6 +1458,12 @@ async function switchSession(sessionId) {
 }
 
 async function deleteSession(sessionId) {
+  if (viewSwitching || navigationRequest) return;
+  if (sessionId === state.currentSessionId) await stopStreamingIfActive();
+  return withSessionLock(sessionId, () => deleteUnlockedSession(sessionId));
+}
+
+async function deleteUnlockedSession(sessionId) {
   if (!state.sessions[sessionId]) return;
 
   const wasCurrent = sessionId === state.currentSessionId;
@@ -1443,12 +1497,11 @@ async function deleteSession(sessionId) {
     // Deleting the open chat moved away from it; undoing moves back.
     if (wasCurrent) activateSession(sessionId);
     else saveToStorage(sessionId);
-    if (elements.chatHistoryDropdown.open) renderChatHistory();
-  });
+    refreshHistory();
+  }, sessionId);
 
-  if (elements.chatHistoryDropdown.open) {
-    renderChatHistory();
-  }
+  await saveToStorage();
+  refreshHistory();
 }
 
 // ========================================
@@ -1495,6 +1548,9 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false,
 // ========================================
 
 function renderMessages() {
+  document.body.dataset.empty = String(!state.sessions[state.currentSessionId]?.messages.length);
+  renderConversationPanel();
+  refreshHistory();
   Promise.resolve().then(releaseAttachmentPreviews);
   updateSessionTitle();
   // Every caller either replaces the transcript or appends to it; neither is a
@@ -1989,7 +2045,7 @@ function createMessageActions(message) {
     editBtn.className = 'edit-btn';
     editBtn.setAttribute('aria-label', 'Edit message');
     editBtn.setAttribute('title', 'Edit message');
-    editBtn.disabled = historyIsServerManaged();
+    editBtn.disabled = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
     if (editBtn.disabled) editBtn.title = 'History is managed by the server. Start a new chat instead.';
     editBtn.replaceChildren(createIcon('pen'));
     editBtn.addEventListener('click', () => startEditing(message));
@@ -2001,7 +2057,7 @@ function createMessageActions(message) {
   regenBtn.className = 'regenerate-btn';
   regenBtn.setAttribute('aria-label', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
-  regenBtn.disabled = historyIsServerManaged();
+  regenBtn.disabled = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
   if (regenBtn.disabled) regenBtn.title = 'History is managed by the server. Start a new chat instead.';
   regenBtn.replaceChildren(createIcon('redo'));
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
@@ -2059,12 +2115,15 @@ function copyMessage(message, button) {
 // bar as regenerating.
 let editingMessageId = null;
 
-function startEditing(message) {
+async function startEditing(message) {
   if (historyIsServerManaged()) {
     showNotification('History is managed by the server. Start a new chat to use different messages.');
     return;
   }
-  if (state.isStreaming || editingMessageId) return;
+  if (viewSwitching || navigationRequest || state.isAcquiring || state.generationDone || state.isStreaming || editingMessageId) return;
+  const sessionId = state.currentSessionId;
+  if (!(await withSessionLock(sessionId, () => true))) return;
+  if (sessionId !== state.currentSessionId || !state.sessions[sessionId]?.messages.includes(message)) return;
 
   const element = messageElementCache.get(message.id);
   const bubble = element?.querySelector('.message-bubble');
@@ -2175,7 +2234,7 @@ async function submitEdit(message, rawText) {
     showNotification('History is managed by the server. Start a new chat to use different messages.');
     return;
   }
-  if (state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
+  if (viewSwitching || navigationRequest || state.generationDone || state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
   const text = rawText.trim();
   const attachments = structuredClone(editingMessageId === message.id ? editingAttachments : message.attachments || []);
   const session = state.sessions[state.currentSessionId];
@@ -2534,6 +2593,9 @@ async function grantAccessAndRetry(message, element) {
 }
 
 function responseCompletionNotice(message) {
+  if (message.role === 'assistant' && message.startedAt && !message.outcome && !isStreamingMessage(message.id)) {
+    return remoteBusySessions.has(state.currentSessionId) ? 'Generating in another page…' : 'Generation interrupted · saved partial response. You can retry.';
+  }
   if (message.serverConversationUnconfirmed) return 'Server turn unconfirmed. Check it on the server and start a new chat before sending again.';
   if (message.stopped) return 'Generation stopped · partial response';
   if (message.incompleteReason === 'max_output_tokens') {
@@ -2751,24 +2813,25 @@ function autoResizeTextarea() {
     textarea.style.height = 'auto';
     const newHeight = Math.min(
       Math.max(textarea.scrollHeight + 2, 62),
-      Math.min(240, window.innerHeight * 0.3)
+      VIEW === 'workspace' ? window.innerHeight * 0.3 : Math.min(240, window.innerHeight * 0.3)
     );
     textarea.style.height = newHeight + 'px';
   });
 }
 
-function updateInputState() {
+function updateInputState(preserveStatus = false) {
+  updateViewSwitchState();
   const provider = getCurrentProvider();
   const hasConfig = Boolean(getReadyProvider());
   const hasMessage = elements.messageInput.value.trim().length > 0 || normalizeDraft(state.drafts[state.currentSessionId]).attachments.length > 0;
   const hasJobs = [...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
-  const conversationNotice = serverConversationNotice();
-  const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed && !conversationNotice;
+  const conversationNotice = remoteBusySessions.has(state.currentSessionId) ? REMOTE_BUSY_NOTICE : serverConversationNotice();
+  const canSend = hasConfig && hasMessage && !state.isStreaming && !state.generationDone && !state.isAcquiring && !viewSwitching && !hasJobs && !attachmentSaveFailed && !conversationNotice;
   if (elements.attachBtn) elements.attachBtn.disabled = state.isPreparing;
   elements.draftAttachments?.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
   // Disabling a focused textarea blurs it. Lock the captured draft without
   // removing keyboard focus while attachments and the request are prepared.
-  elements.messageInput.readOnly = state.isPreparing;
+  elements.messageInput.readOnly = state.isPreparing || viewSwitching || navigationRequest;
   const editor = messageElementCache.get(editingMessageId)?.querySelector('.message-editor');
   if (editor) {
     editor.querySelector('.message-edit-input').readOnly = state.isPreparing;
@@ -2793,11 +2856,11 @@ function updateInputState() {
     closeRolePicker(false);
   }
   elements.systemPromptSelector.disabled = state.isStreaming;
-  const managed = historyIsServerManaged();
+  const managed = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
   if (managed !== historyControlsManaged) {
     elements.messagesList.querySelectorAll('.edit-btn, .regenerate-btn').forEach((button) => {
       button.disabled = managed;
-      button.title = managed ? 'History is managed by the server. Start a new chat instead.' : button.getAttribute('aria-label');
+      button.title = managed ? (remoteBusySessions.has(state.currentSessionId) ? REMOTE_BUSY_NOTICE : 'History is managed by the server. Start a new chat instead.') : button.getAttribute('aria-label');
     });
     historyControlsManaged = managed;
   }
@@ -2806,6 +2869,7 @@ function updateInputState() {
     : hasConfig
       ? 'Ask a question…'
       : 'Connect a provider and choose a model…';
+  if (preserveStatus) return;
   clearTimeout(generationStatusTimer);
   elements.generationStatus.dataset.state = state.isStreaming ? 'active' : hasConfig ? 'idle' : 'setup';
   elements.generationStatus.textContent = state.isStreaming
@@ -3145,6 +3209,8 @@ function handleGlobalKeydown(event) {
     return;
   }
   if (event.key !== 'Escape') return;
+  if (closeWorkspaceDrawer()) { event.preventDefault(); return; }
+  if (elements.conversationMenu.open) { elements.conversationMenu.open = false; event.preventDefault(); return; }
 
   if (elements.chatHistoryDropdown.open) return;
   if (editingMessageId && !state.isPreparing) {
@@ -3171,6 +3237,13 @@ function handleScroll() {
 }
 
 async function handleSendMessage() {
+  if (viewSwitching || navigationRequest || state.isAcquiring) return;
+  if (!state.currentSessionId) {
+    const text = elements.messageInput.value;
+    await createNewSession();
+    elements.messageInput.value = text;
+    saveDraftSoon();
+  }
   const content = elements.messageInput.value.trim();
   const attachments = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
   if ((!content && !attachments.length) || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
@@ -3184,6 +3257,7 @@ async function handleStopGeneration() {
   state.abortController.abort();
   elements.sendBtn.disabled = true;
   elements.generationStatus.textContent = 'Stopping…';
+  updateViewSwitchState();
   if (done) await done;
 }
 
@@ -3201,6 +3275,7 @@ function openOptions() {
 }
 
 function openChatHistory() {
+  if (VIEW === 'workspace') { setNavigationOpen(true); elements.historySearch.focus(); return; }
   closeModelPicker(false);
   closeRolePicker(false);
   clearTimeout(historySearchTimer);
@@ -3212,6 +3287,10 @@ function openChatHistory() {
 }
 
 function closeChatHistory() {
+  if (VIEW === 'workspace') {
+    if (window.innerWidth < 900) setNavigationOpen(false);
+    return;
+  }
   clearTimeout(historySearchTimer);
   historyRenderVersion += 1;
   elements.chatHistoryList.setAttribute('aria-busy', 'false');
@@ -3362,7 +3441,17 @@ async function renderChatHistory() {
     meta.className = 'chat-history-meta';
     const when = group === 'Today' ? formatTime(session.timestamp) : date.toLocaleDateString();
     meta.textContent = `${when} · ${describeModel(session.modelUsed).join(' / ') || 'No model'}`;
+    if (draftHasContent(state.drafts[sessionId])) {
+      const draft = document.createElement('span'); draft.className = 'history-draft'; draft.textContent = 'Draft'; meta.appendChild(draft);
+    }
     content.append(title, meta);
+    if (query) {
+      const text = session.messages.map((message) => message.content || (message.attachments || []).map((ref) => ref.name).join(' ')).join(' ').replace(/\s+/g, ' ');
+      const start = Math.max(0, text.toLocaleLowerCase().indexOf(query) - 35);
+      const snippet = document.createElement('div'); snippet.className = 'history-snippet';
+      snippet.textContent = `${start ? '…' : ''}${text.slice(start, start + 110)}`;
+      content.appendChild(snippet);
+    }
     content.addEventListener('click', () => switchSession(sessionId));
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -3379,6 +3468,26 @@ async function renderChatHistory() {
       button.addEventListener('click', handler);
       actions.appendChild(button);
     });
+    if (VIEW === 'workspace') {
+      const menu = document.createElement('details'); menu.className = 'conversation-menu';
+      const trigger = document.createElement('summary'); trigger.className = 'icon-btn'; trigger.setAttribute('aria-label', `Actions for ${session.title}`); trigger.appendChild(createIcon('more'));
+      const items = document.createElement('div'); items.className = 'conversation-menu-items';
+      while (actions.firstChild) {
+        const button = actions.firstChild;
+        button.textContent = button.getAttribute('aria-label');
+        button.className = '';
+        button.addEventListener('click', () => { menu.open = false; });
+        items.appendChild(button);
+      }
+      menu.append(trigger, items); actions.appendChild(menu);
+      menu.addEventListener('toggle', () => {
+        if (!menu.open) return;
+        elements.chatHistoryList.querySelectorAll('details[open]').forEach((other) => { if (other !== menu) other.open = false; });
+        const rect = trigger.getBoundingClientRect();
+        menu.style.setProperty('--menu-top', `${Math.min(rect.bottom, window.innerHeight - 135)}px`);
+        menu.style.setProperty('--menu-left', `${Math.max(8, rect.right - 170)}px`);
+      });
+    }
     item.append(content, actions);
     fragment.appendChild(item);
   });
@@ -3402,6 +3511,7 @@ async function loadMoreChatHistory() {
 }
 
 function renameSession(sessionId, item) {
+  if (viewSwitching || remoteBusySessions.has(sessionId)) { showNotification(REMOTE_BUSY_NOTICE); return; }
   const session = state.sessions[sessionId];
   const input = document.createElement('input');
   input.className = 'history-rename-input';
@@ -3423,11 +3533,14 @@ function renameSession(sessionId, item) {
   });
   input.addEventListener(
     'blur',
-    () => {
+    async () => {
       if (!cancelled && input.value.trim()) {
-        session.title = input.value.trim();
-        updateSessionTitle();
-        saveToStorage(sessionId);
+        await withSessionLock(sessionId, async () => {
+          if (!state.sessions[sessionId]) return;
+          state.sessions[sessionId].title = input.value.trim();
+          updateSessionTitle();
+          await saveToStorage(sessionId);
+        });
       }
       renderChatHistory();
       elements.historySearch.focus();
@@ -3495,35 +3608,39 @@ function serverConversationNotice(provider = getCurrentProvider(), session = sta
 // Hold a separate lock through the whole turn. The storage lock still only
 // covers read/merge/write, so saving drafts in other chats stays responsive.
 async function sendMessageToAPI(draft = null, revision = null) {
-  if (!historyIsServerManaged()) return sendPreparedMessage(draft, revision);
-  if (state.isStreaming || state.generationDone) return;
+  if (state.isStreaming || state.generationDone || state.isAcquiring || viewSwitching) return;
   const sessionId = state.currentSessionId;
   const provider = structuredClone(getCurrentProvider());
   const modelKey = state.config.selectedModel;
+  const before = JSON.stringify(state.sessions[sessionId]);
+  state.isAcquiring = true;
+  updateInputState();
   try {
-    if (typeof navigator === 'undefined' || !navigator.locks) {
-      throw new Error('Server conversations require browser Web Locks support. Update Chrome and try again.');
-    }
-    await navigator.locks.request(`sidemind-server-conversation:${sessionId}`, { ifAvailable: true }, async (lock) => {
-      if (!lock) throw new Error('This server conversation is busy in another sidebar. Wait for it to finish.');
+    await withSessionLock(sessionId, async () => {
       if (!(await queueLocalSave(true, true))) throw new Error('Could not save this conversation. Your draft is kept. Retry saving first.');
-      if (sessionId !== state.currentSessionId) return;
+      if (sessionId !== state.currentSessionId || !state.sessions[sessionId]) return;
       const stored = await chrome.storage.local.get([SESSION_PREFIX + sessionId]);
       if (sessionId !== state.currentSessionId) return;
       if (modelKey !== state.config.selectedModel || !sameValue(provider, getCurrentProvider())) {
         showNotification('The provider or model changed while preparing. Your draft is kept; send again with your chosen configuration.');
-        updateInputState();
         return;
       }
       const entry = stored[SESSION_PREFIX + sessionId];
-      if (entry) adoptStored(sessionId, entry);
-      const notice = serverConversationNotice();
-      if (notice) { showNotification(notice); updateInputState(); return; }
+      if (!entry) { followStoredSession(sessionId, undefined); return; }
+      if (revision && !sameValue(JSON.parse(before), entry.session)) {
+        showNotification('This conversation changed in another page. Review it and try again.');
+        return;
+      }
+      if (!revision) adoptStored(sessionId, entry);
+      state.isAcquiring = false;
       await sendPreparedMessage(draft, revision);
     });
   } catch (error) {
-    console.error('Preparing server conversation:', error.name);
+    console.error('Preparing conversation:', error.name);
     showNotification(error.message);
+  } finally {
+    state.isAcquiring = false;
+    updateInputState(true);
   }
 }
 
@@ -3598,11 +3715,13 @@ async function sendPreparedMessage(draft = null, revision = null) {
   } finally {
     try {
       state.isPreparing = false;
-      cleanupStreaming(assistantMessage?.id, preparationError);
+      await cleanupStreaming(assistantMessage?.id, preparationError);
+      await storageWriteQueue;
     } finally {
       state.resolveGeneration?.();
       state.resolveGeneration = null;
       state.generationDone = null;
+      updateViewSwitchState();
     }
   }
 }
@@ -4301,7 +4420,7 @@ async function makeApiRequest(provider, endpoint, body, signal) {
   }
 }
 
-function cleanupStreaming(messageId, preparationError = null) {
+async function cleanupStreaming(messageId, preparationError = null) {
   const wasAborted = state.abortController?.signal.aborted;
   const session = state.sessions[state.currentSessionId];
   const message = session?.messages.find((item) => item.id === messageId);
@@ -4334,7 +4453,7 @@ function cleanupStreaming(messageId, preparationError = null) {
   state.abortController = null;
 
   if (!message && preparationError) {
-    saveToStorage();
+    await saveToStorage();
     updateInputState();
     elements.generationStatus.textContent = preparationError.name === 'AbortError'
       ? 'Preparation cancelled · draft kept' : 'Message could not be prepared · draft kept';
@@ -4351,7 +4470,7 @@ function cleanupStreaming(messageId, preparationError = null) {
         : responseCompletionNotice(message || {}) || 'Response complete.'
   );
 
-  saveToStorage();
+  const saving = saveToStorage();
   // Repaint once more now that the message counts as finished: final markdown
   // goes into the cache, code blocks get their copy buttons, the reasoning
   // header settles on its final duration.
@@ -4375,6 +4494,7 @@ function cleanupStreaming(messageId, preparationError = null) {
       elements.generationStatus.dataset.state = 'idle';
     }, 3000);
   }
+  await saving;
 }
 
 function finalizeTiming(messageId) {
@@ -4510,3 +4630,495 @@ function showError(message) {
 }
 
 console.log('SideMind loaded');
+
+// ========================================
+// DUAL VIEW NAVIGATION AND CONVERSATION PROJECTIONS
+// ========================================
+let navigationOpen = true;
+let panelOpen = false;
+let panelTab = 'outline';
+let viewSwitching = false;
+let currentWindowId = null;
+let navigationPort = null;
+let navigationRequest = false;
+let routeQueue = Promise.resolve();
+let shellPreference = {};
+const externalDrafts = new Map();
+const remoteBusySessions = new Set();
+const heldSessionLocks = new Set();
+const REMOTE_BUSY_NOTICE = 'This conversation is generating in another page. Please wait.';
+const generationChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sidemind-generation') : null;
+let locksRefreshVersion = 0;
+
+function routedSessionId() {
+  return new URLSearchParams(location.hash.slice(1)).get('session');
+}
+
+function updateSessionRoute(replace = false) {
+  if (VIEW !== 'workspace' || routedSessionId() === state.currentSessionId) return;
+  const url = new URL(location.href);
+  url.hash = state.currentSessionId ? `session=${encodeURIComponent(state.currentSessionId)}` : '';
+  history[replace ? 'replaceState' : 'pushState'](null, '', url);
+}
+
+function initializeView() {
+  if (VIEW !== 'workspace') return;
+  try { shellPreference = JSON.parse(localStorage.getItem('sidemind-workspace-layout') || '{}'); } catch {}
+  navigationOpen = window.innerWidth >= 900 && shellPreference.navigation !== false;
+  panelOpen = shellPreference.panel === true;
+  panelTab = shellPreference.tab === 'attachments' ? 'attachments' : 'outline';
+  if (window.innerWidth < 900 && panelOpen) navigationOpen = false;
+  document.querySelectorAll('.workspace-only').forEach((node) => { node.hidden = false; });
+  // Move the existing history nodes: both views keep the same search, renderer,
+  // rename and undo behavior, with a single set of element references.
+  elements.workspaceHistory.appendChild(elements.chatHistoryDropdown.firstElementChild);
+  elements.switchViewIcon.setAttribute('href', '../assets/icons.svg#panel-right');
+  elements.switchViewBtn.setAttribute('aria-label', 'Back to sidebar');
+  renderWorkspaceLayout();
+}
+
+function setupViewListeners() {
+  elements.switchViewBtn.addEventListener('click', switchView);
+  elements.workspaceNewBtn.addEventListener('click', createNewSession);
+  elements.workspaceSettingsBtn.addEventListener('click', openOptions);
+  elements.toggleNavBtn.addEventListener('click', toggleNavigation);
+  elements.closeNavBtn.addEventListener('click', () => setNavigationOpen(false));
+  elements.togglePanelBtn.addEventListener('click', () => setPanelOpen(!panelOpen));
+  elements.closePanelBtn.addEventListener('click', () => setPanelOpen(false));
+  elements.viewAttachmentsBtn.addEventListener('click', () => selectPanelTab('attachments'));
+  elements.outlineTab.addEventListener('click', () => selectPanelTab('outline'));
+  elements.attachmentsTab.addEventListener('click', () => selectPanelTab('attachments'));
+  [elements.outlineTab, elements.attachmentsTab].forEach((tab) => tab.addEventListener('keydown', handlePanelTabKeydown));
+  elements.workspaceBackdrop.addEventListener('click', closeWorkspaceDrawer);
+  elements.restoreExternalDraftBtn.addEventListener('click', restoreExternalDraft);
+  elements.renameCurrentBtn.addEventListener('click', renameCurrentSession);
+  elements.exportCurrentBtn.addEventListener('click', () => { elements.conversationMenu.open = false; exportSession(state.currentSessionId); });
+  elements.deleteCurrentBtn.addEventListener('click', () => { elements.conversationMenu.open = false; deleteSession(state.currentSessionId); });
+  window.addEventListener('resize', handleWorkspaceResize);
+  window.addEventListener('hashchange', handleSessionRoute);
+  window.addEventListener('popstate', handleSessionRoute);
+  window.addEventListener('focus', refreshSessionLocks);
+  document.addEventListener('keydown', trapWorkspaceDrawerFocus);
+  document.addEventListener('click', closeConversationMenus);
+  generationChannel?.addEventListener('message', async (event) => {
+    await refreshSessionLocks();
+    const id = event.data?.sessionId;
+    if (id && !remoteBusySessions.has(id) && !heldSessionLocks.has(id)) {
+      const stored = await chrome.storage.local.get([SESSION_PREFIX + id]);
+      followStoredSession(id, stored[SESSION_PREFIX + id]);
+    }
+  });
+}
+
+function refreshHistory() {
+  if (VIEW === 'workspace' || elements.chatHistoryDropdown?.open) renderChatHistory();
+}
+
+function persistWorkspaceLayout() {
+  try { localStorage.setItem('sidemind-workspace-layout', JSON.stringify(shellPreference)); } catch {}
+}
+
+function toggleNavigation() { setNavigationOpen(!navigationOpen); }
+
+function setNavigationOpen(open) {
+  navigationOpen = open;
+  shellPreference.navigation = open;
+  if (open && window.innerWidth < 900) panelOpen = false;
+  persistWorkspaceLayout();
+  renderWorkspaceLayout();
+  if (open && window.innerWidth < 900) elements.historySearch.focus();
+  else if (!open) elements.toggleNavBtn.focus({ preventScroll: true });
+}
+
+function setPanelOpen(open) {
+  panelOpen = open;
+  shellPreference.panel = open;
+  if (open && window.innerWidth < 900) navigationOpen = false;
+  persistWorkspaceLayout();
+  renderWorkspaceLayout();
+  if (open) elements[panelTab === 'outline' ? 'outlineTab' : 'attachmentsTab'].focus({ preventScroll: true });
+  else elements.togglePanelBtn.focus({ preventScroll: true });
+}
+
+function handleWorkspaceResize() {
+  if (window.innerWidth < 900 && panelOpen) navigationOpen = false;
+  renderWorkspaceLayout();
+}
+
+function renderWorkspaceLayout() {
+  if (VIEW !== 'workspace') return;
+  document.body.dataset.nav = String(navigationOpen);
+  document.body.dataset.panel = String(panelOpen);
+  elements.workspaceNav.hidden = !navigationOpen;
+  elements.conversationPanel.hidden = !panelOpen;
+  elements.toggleNavBtn.setAttribute('aria-expanded', String(navigationOpen));
+  elements.togglePanelBtn.setAttribute('aria-expanded', String(panelOpen));
+  const drawer = activeWorkspaceDrawer();
+  elements.workspaceBackdrop.hidden = !drawer;
+  document.querySelector('.app-container').inert = Boolean(drawer);
+  elements.workspaceNav.inert = Boolean(drawer && drawer !== elements.workspaceNav);
+  elements.conversationPanel.inert = Boolean(drawer && drawer !== elements.conversationPanel);
+  renderConversationPanel();
+  autoResizeTextarea();
+}
+
+function activeWorkspaceDrawer() {
+  if (VIEW !== 'workspace') return null;
+  if (panelOpen && window.innerWidth < 1280) return elements.conversationPanel;
+  if (navigationOpen && window.innerWidth < 900) return elements.workspaceNav;
+  return null;
+}
+
+function closeWorkspaceDrawer() {
+  const drawer = activeWorkspaceDrawer();
+  if (!drawer) return false;
+  if (drawer === elements.workspaceNav) setNavigationOpen(false);
+  else setPanelOpen(false);
+  return true;
+}
+
+function trapWorkspaceDrawerFocus(event) {
+  const drawer = activeWorkspaceDrawer();
+  if (!drawer || event.key !== 'Tab' || isCompositionKey(event) || document.querySelector('dialog[open]')) return;
+  const focusable = [...drawer.querySelectorAll('button, input, summary, [tabindex="0"]')].filter((node) => !node.disabled && node.getClientRects().length && !node.closest('[hidden]'));
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+}
+
+function closeConversationMenus(event) {
+  document.querySelectorAll('.conversation-menu[open]').forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+}
+
+async function renameCurrentSession() {
+  elements.conversationMenu.open = false;
+  setNavigationOpen(true);
+  elements.historySearch.value = '';
+  await renderChatHistory();
+  const item = elements.chatHistoryList.querySelector('.chat-history-item.active');
+  if (item) renameSession(state.currentSessionId, item);
+}
+
+function selectPanelTab(tab) {
+  panelTab = tab;
+  shellPreference.tab = tab;
+  setPanelOpen(true);
+}
+
+function handlePanelTabKeydown(event) {
+  if (isCompositionKey(event) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  selectPanelTab(event.key === 'Home' ? 'outline' : event.key === 'End' ? 'attachments' : panelTab === 'outline' ? 'attachments' : 'outline');
+}
+
+function locateMessage(messageId) {
+  closeWorkspaceDrawer();
+  const node = messageElementCache.get(messageId);
+  if (!node) return;
+  state.userScrolledUp = true;
+  state.followOutput = false;
+  node.scrollIntoView({ block: 'start' });
+  node.tabIndex = -1;
+  node.focus({ preventScroll: true });
+  node.classList.add('located');
+  setTimeout(() => node.classList.remove('located'), 1400);
+  updateScrollButton();
+}
+
+function renderConversationPanel() {
+  if (VIEW !== 'workspace' || !panelOpen || !elements.conversationPanelContent) return;
+  const attachments = panelTab === 'attachments';
+  elements.outlineTab.setAttribute('aria-selected', String(!attachments));
+  elements.attachmentsTab.setAttribute('aria-selected', String(attachments));
+  elements.outlineTab.tabIndex = attachments ? -1 : 0;
+  elements.attachmentsTab.tabIndex = attachments ? 0 : -1;
+  const container = elements.conversationPanelContent;
+  container.setAttribute('aria-labelledby', attachments ? 'attachmentsTab' : 'outlineTab');
+  const messages = state.sessions[state.currentSessionId]?.messages || [];
+  const signature = JSON.stringify([state.currentSessionId, panelTab, messages.filter((message) => message.role === 'user').map((message) => [message.id, message.content, message.attachments]), normalizeDraft(state.drafts[state.currentSessionId]).attachments]);
+  if (container.projectionSignature === signature) return;
+  container.projectionSignature = signature;
+  container.replaceChildren();
+  if (!attachments) {
+    const list = document.createElement('ol'); list.className = 'outline-list';
+    messages.filter((message) => message.role === 'user').forEach((message) => {
+      const title = (message.content || '').split('\n').map((line) => line.trim()).find(Boolean) || (message.attachments || []).map((ref) => ref.name).join(', ') || 'Attachment';
+      const item = document.createElement('li');
+      const link = document.createElement('button'); link.type = 'button'; link.className = 'outline-link'; link.title = title; link.textContent = Array.from(title).slice(0, 100).join('');
+      link.addEventListener('click', () => locateMessage(message.id)); item.appendChild(link); list.appendChild(item);
+    });
+    if (list.childElementCount) container.appendChild(list);
+    else { const empty = document.createElement('p'); empty.textContent = 'Your questions will appear here. Select one to return to that turn.'; container.appendChild(empty); }
+  } else {
+    const refs = new Map();
+    const add = (ref, id) => {
+      if (!refs.has(ref.id)) refs.set(ref.id, { ref, origins: new Set() });
+      refs.get(ref.id).origins.add(id);
+    };
+    messages.forEach((message) => (message.attachments || []).forEach((ref) => add(ref, message.id)));
+    normalizeDraft(state.drafts[state.currentSessionId]).attachments.forEach((ref) => add(ref, null));
+    const list = document.createElement('div'); list.className = 'attachment-list';
+    renderAttachmentList(list, [...refs.values()].map((entry) => entry.ref));
+    [...refs.values()].forEach(({ ref, origins }, index) => {
+      const sources = document.createElement('div'); sources.className = 'attachment-origin';
+      const type = document.createElement('span'); type.textContent = ref.mime || ref.kind; sources.appendChild(type);
+      origins.forEach((id) => {
+        const link = document.createElement('button'); link.className = 'undo-btn'; link.type = 'button'; link.textContent = id ? 'Go to message' : 'Current draft';
+        link.addEventListener('click', () => { if (id) locateMessage(id); else { closeWorkspaceDrawer(); elements.messageInput.focus(); } });
+        sources.appendChild(link);
+      });
+      list.children[index].appendChild(sources);
+    });
+    if (refs.size) container.appendChild(list);
+    else { const empty = document.createElement('p'); empty.textContent = 'Files from this conversation and your current draft will appear here.'; container.appendChild(empty); }
+  }
+  queueMicrotask(releaseAttachmentPreviews);
+}
+
+// Only drafts without pending local edits can be replaced by an external save.
+function followStoredDrafts(drafts) {
+  for (const id of new Set([...Object.keys(savedDrafts), ...Object.keys(drafts)])) {
+    const next = drafts[id];
+    if (sameValue(next, savedDrafts[id])) continue;
+    const mine = state.drafts[id];
+    if (sameValue(mine, next) || (!viewSwitching && sameValue(mine, savedDrafts[id]))) {
+      if (next === undefined) delete state.drafts[id];
+      else state.drafts[id] = structuredClone(next);
+      if (id === state.currentSessionId && !sameValue(mine, next)) { restoreDraft(); updateInputState(); }
+    } else {
+      externalDrafts.set(id, structuredClone(next ?? null));
+      protectExternalDraft(id);
+    }
+    if (next === undefined) delete savedDrafts[id];
+    else savedDrafts[id] = structuredClone(next);
+  }
+  updateDraftConflict();
+  refreshHistory();
+  renderConversationPanel();
+}
+
+function protectExternalDraft(id) {
+  const refs = [...AttachmentStore.references(externalDrafts.get(id))].map((refId) => ({ id: refId }));
+  if (refs.length) withStorageLock(() => AttachmentStore.pin(`${pageId}:draft:${id}`, refs)).catch((error) => console.warn('Draft attachment protection:', error.name));
+}
+
+function updateDraftConflict() {
+  elements.draftConflict?.classList.toggle('hidden', !externalDrafts.has(state.currentSessionId));
+}
+
+async function restoreExternalDraft() {
+  const id = state.currentSessionId;
+  if (!externalDrafts.has(id) || state.isPreparing || viewSwitching) return;
+  const draft = externalDrafts.get(id);
+  // Keep the displaced local draft available, making recovery reversible.
+  externalDrafts.set(id, structuredClone(state.drafts[id] ?? null));
+  protectExternalDraft(id);
+  if (draft === null) delete state.drafts[id];
+  else state.drafts[id] = structuredClone(draft);
+  restoreDraft();
+  await persistDrafts();
+  updateInputState();
+  elements.messageInput.focus();
+}
+
+function sessionLockName(id) { return `sidemind-server-conversation:${id}`; }
+
+async function withSessionLock(id, task) {
+  if (!id || !navigator.locks) { showNotification('Conversation protection requires Web Locks. Reload in a supported Chrome version.'); return false; }
+  let acquired = false;
+  try {
+    return await navigator.locks.request(sessionLockName(id), { ifAvailable: true }, async (lock) => {
+      if (!lock) { showNotification(REMOTE_BUSY_NOTICE); await refreshSessionLocks(); return false; }
+      acquired = true;
+      heldSessionLocks.add(id);
+      generationChannel?.postMessage({ sessionId: id });
+      return (await task()) ?? true;
+    });
+  } catch (error) {
+    console.error('Conversation operation:', error.name);
+    showNotification(error.message || 'Could not update the conversation. Please try again.');
+    return false;
+  } finally {
+    if (acquired) {
+      heldSessionLocks.delete(id);
+      generationChannel?.postMessage({ sessionId: id });
+      await refreshSessionLocks();
+    }
+  }
+}
+
+async function refreshSessionLocks() {
+  if (!navigator.locks?.query || !storageReady) return;
+  const version = ++locksRefreshVersion;
+  const snapshot = await navigator.locks.query();
+  if (version !== locksRefreshVersion) return;
+  const previous = [...remoteBusySessions].sort().join();
+  remoteBusySessions.clear();
+  Object.keys(state.sessions).forEach((id) => {
+    if (!heldSessionLocks.has(id) && snapshot.held.some((lock) => lock.name === sessionLockName(id))) remoteBusySessions.add(id);
+  });
+  if (previous !== [...remoteBusySessions].sort().join()) {
+    historyControlsManaged = null;
+    elements.messagesList.querySelectorAll('.message').forEach((node) => { const message = elementMessages.get(node); if (message) updateResponseStatus(node, message); });
+    updateInputState();
+  }
+}
+
+function viewSwitchReason(requireSession = true) {
+  if (storageLoadFailed || !storageReady) return 'Reload to restore conversations before switching views.';
+  if (viewSwitching || navigationRequest) return 'Opening the other view…';
+  if ([...attachmentJobs].some((job) => job.sessionId === state.currentSessionId)) return 'Wait for attachments to finish preparing.';
+  if (state.isAcquiring || state.isPreparing) return 'Preparing the request. Stop it before switching views.';
+  if (state.isStreaming) return state.abortController?.signal.aborted ? 'Stopping and saving the response…' : 'Generating a response. Stop it before switching views.';
+  if (state.generationDone) return 'Finishing and saving the response…';
+  if (editingMessageId) return 'Send or cancel the message edit before switching views.';
+  if (requireSession && !state.currentSessionId) return 'Select a conversation or start a new chat first.';
+  return '';
+}
+
+function updateViewSwitchState() {
+  if (!elements.switchViewBtn) return;
+  const reason = viewSwitchReason();
+  elements.switchViewBtn.disabled = Boolean(reason);
+  elements.switchViewBtn.title = reason || (VIEW === 'workspace' ? 'Back to sidebar' : 'Open full page');
+  elements.switchViewBtn.setAttribute('aria-description', elements.switchViewBtn.title);
+}
+
+function captureReadingAnchor() {
+  const list = elements.messagesList;
+  if (list.scrollHeight - list.clientHeight - list.scrollTop < 50) return { latest: true };
+  const top = list.getBoundingClientRect().top;
+  const nodes = [...list.querySelectorAll('.message')];
+  const node = nodes.find((message) => message.getBoundingClientRect().bottom > top);
+  if (!node) return { latest: true };
+  const rect = node.getBoundingClientRect();
+  return { messageId: node.dataset.messageId, offset: (top - rect.top) / Math.max(1, rect.height) };
+}
+
+async function restoreReadingAnchor(anchor) {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  if (!anchor || anchor.latest) { scrollToBottom(true); return; }
+  const node = messageElementCache.get(anchor.messageId);
+  if (!node) return;
+  const list = elements.messagesList;
+  const rect = node.getBoundingClientRect();
+  list.scrollTop += rect.top - list.getBoundingClientRect().top + rect.height * Math.max(-1, Math.min(1, Number(anchor.offset) || 0));
+  state.userScrolledUp = true;
+  state.followOutput = false;
+  updateScrollButton();
+}
+
+function adoptNavigationDraft(id, next) {
+  const mine = state.drafts[id];
+  if (!sameValue(mine, next) && (!sameValue(mine, savedDrafts[id]) || externalDrafts.has(id))) {
+    externalDrafts.set(id, structuredClone(mine ?? null));
+    protectExternalDraft(id);
+  }
+  if (next === undefined) { delete state.drafts[id]; delete savedDrafts[id]; }
+  else { state.drafts[id] = structuredClone(next); savedDrafts[id] = structuredClone(next); }
+  if (id === state.currentSessionId) restoreDraft();
+}
+
+function sendNavigationMessage(message) {
+  return chrome.runtime.sendMessage({ ...message, namespace: 'sidemind-navigation' });
+}
+
+async function initializeNavigation() {
+  try {
+    currentWindowId = (await chrome.windows.getCurrent()).id;
+    if (VIEW === 'workspace') { updateSessionRoute(true); refreshHistory(); }
+    if (!chrome.runtime.connect) { updateViewSwitchState(); return; }
+    connectNavigation();
+  } catch (error) { console.error('Navigation initialization:', error); }
+  updateViewSwitchState();
+}
+
+function connectNavigation() {
+  navigationPort = chrome.runtime.connect({ name: 'sidemind-page' });
+  navigationPort.postMessage({ type: 'ready', view: VIEW, windowId: currentWindowId });
+  navigationPort.onMessage.addListener(async (message) => {
+    if (message.type !== 'navigate') return;
+    let error;
+    if (viewSwitchReason(false)) error = viewSwitchReason(false);
+    else {
+      navigationRequest = true;
+      updateInputState();
+      try {
+        const incoming = await chrome.storage.local.get(['drafts']);
+        adoptNavigationDraft(message.sessionId, incoming.drafts?.[message.sessionId]);
+        if (!(await saveToStorage())) throw new Error('Could not save the conversation currently open in the target page.');
+        const stored = await chrome.storage.local.get([SESSION_PREFIX + message.sessionId, 'drafts']);
+        const entry = stored[SESSION_PREFIX + message.sessionId];
+        if (!entry) throw new Error('The requested conversation is unavailable.');
+        adoptStored(message.sessionId, entry);
+        followStoredDrafts(stored.drafts || {});
+        activateSession(message.sessionId);
+        await restoreReadingAnchor(message.anchor);
+      } catch (failure) { error = failure.message; }
+      finally { navigationRequest = false; updateInputState(); }
+    }
+    navigationPort?.postMessage({ type: 'navigated', requestId: message.requestId, error });
+  });
+  navigationPort.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    navigationPort = null;
+    setTimeout(() => { try { connectNavigation(); } catch {} }, 500);
+  });
+}
+
+async function switchView() {
+  if (viewSwitchReason()) return;
+  // Chrome requires open() to run in the original click, before any awaits.
+  let opening;
+  try {
+    if (VIEW === 'workspace') opening = chrome.sidePanel.open({ windowId: currentWindowId });
+  } catch (error) { showNotification(error.message); return; }
+  // Attach a rejection handler immediately while the independent save runs.
+  const opened = opening ? opening.then(() => null, (error) => error) : Promise.resolve(null);
+  const sessionId = state.currentSessionId;
+  const anchor = captureReadingAnchor();
+  saveDraftSoon();
+  clearTimeout(draftTimeout);
+  viewSwitching = true;
+  updateInputState();
+  const app = document.querySelector('.app-container');
+  app.inert = true;
+  elements.workspaceNav.inert = true;
+  elements.conversationPanel.inert = true;
+  elements.messageInput.readOnly = true;
+  try {
+    if (!(await saveToStorage()) || !(await storageWriteQueue)) return;
+    if (!state.sessions[sessionId]) throw new Error('This conversation was deleted before it could be opened.');
+    const openError = await opened;
+    if (openError) throw openError;
+    const result = await sendNavigationMessage({ type: 'switch', view: VIEW === 'sidebar' ? 'workspace' : 'sidebar', windowId: currentWindowId, sessionId, anchor });
+    if (!result?.ok) throw new Error(result?.error || 'The other view could not be opened. Your conversation is still available here.');
+    if (VIEW === 'sidebar' && result.closed === false) showNotification('Opened in full page. You can close this sidebar when ready.');
+  } catch (error) {
+    console.error('Switching SideMind view:', error);
+    showNotification(error.message || 'Could not open the other view. Please try again.');
+  } finally {
+    viewSwitching = false;
+    app.inert = false;
+    elements.workspaceNav.inert = false;
+    elements.conversationPanel.inert = false;
+    renderWorkspaceLayout();
+    updateInputState();
+  }
+}
+
+function handleSessionRoute() {
+  if (VIEW !== 'workspace') return;
+  const id = routedSessionId();
+  routeQueue = routeQueue.then(async () => {
+    if (id === state.currentSessionId) return;
+    if (viewSwitchReason() && (state.isAcquiring || state.generationDone || viewSwitching)) { updateSessionRoute(true); return; }
+    if (!id || !state.sessions[id]) {
+      showNotification('This conversation is unavailable.'); updateSessionRoute(true); return;
+    }
+    await switchSession(id);
+  }).catch((error) => console.error('Conversation route:', error));
+}
