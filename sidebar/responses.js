@@ -39,31 +39,49 @@ const ResponsesProtocol = (() => {
     protocol.conversationId = id;
   }
 
-  function project(message) {
-    const output = record(message).output;
+  function view(message) {
+    const output = message.protocol?.output || [];
     const answers = [];
     const thoughts = [];
+    const progress = [];
     const unsupported = [];
-    output.forEach((item) => {
+    output.forEach((item, index) => {
       if (!item) return;
+      const key = item.id || `output-${index}`;
       if (item.type === 'message') {
         const text = (item.content || []).map((part) => {
           if (part?.type === 'output_text') return part.text || '';
           if (part?.type === 'refusal') return part.refusal || '';
           return '';
         }).join('');
-        if (text) answers.push(text);
+        if (item.phase === 'commentary') {
+          if (text) progress.push({ key, type: 'commentary', text, status: item.status, level: item.pipiclaw_level });
+        } else if (text) answers.push(text);
       } else if (item.type === 'reasoning') {
+        const parts = [];
         [...(item.summary || []), ...(item.content || [])].forEach((part) => {
-          if (part?.text) thoughts.push(part.text);
+          if (part?.text) parts.push(part.text);
         });
-      } else if (!SERVER_TOOL_ITEMS.has(item.type)) {
+        const text = parts.join('\n\n');
+        if (text) {
+          thoughts.push(text);
+          progress.push({ key, type: 'reasoning', text, status: item.status });
+        }
+      } else if (SERVER_TOOL_ITEMS.has(item.type)) {
+        progress.push({ key, type: 'tool', item });
+      } else {
         unsupported.push(item.type || 'unknown');
       }
     });
-    message.content = answers.join('\n\n');
-    message.reasoning = thoughts.join('\n\n');
-    message.unsupportedOutput = unsupported.length ? [...new Set(unsupported)] : null;
+    return {
+      content: answers.join('\n\n'), reasoning: thoughts.join('\n\n'), progress,
+      unsupportedOutput: unsupported.length ? [...new Set(unsupported)] : null
+    };
+  }
+
+  function project(message) {
+    const { content, reasoning, unsupportedOutput } = view(message);
+    Object.assign(message, { content, reasoning, unsupportedOutput });
   }
 
   function itemFor(event, message, type = 'message') {
@@ -268,5 +286,5 @@ const ResponsesProtocol = (() => {
     });
   }
 
-  return { applyEvent, applyBody, history, sameSource, project };
+  return { applyEvent, applyBody, history, sameSource, project, view };
 })();

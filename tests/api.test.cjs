@@ -7,8 +7,10 @@ const vm = require('node:vm');
 function loadScript(file, globals = {}) {
   const context = vm.createContext({
     console: { log() {}, warn() {}, error() {} },
-    document: { addEventListener() {} },
-    URL, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
+    document: { addEventListener() {}, body: { dataset: {} } },
+    location: { search: '', hash: '' },
+    navigator: {},
+    URL, URLSearchParams, AbortController, DOMException, TextDecoder, TextEncoder, setTimeout, clearTimeout, structuredClone, crypto: require('node:crypto'),
     ...globals
   });
   vm.runInContext(readFileSync(resolve(__dirname, '..', 'sidebar/marked.umd.js'), 'utf8'), context);
@@ -787,6 +789,7 @@ function storageContext(data = {}) {
   vm.runInContext(`
     renderMessages = () => { globalThis.rendered = (globalThis.rendered || 0) + 1; };
     renderChatHistory = () => {};
+    restoreDraft = () => {}; updateInputState = () => {}; showNotification = () => {};
     globalThis.resaves = 0;
     debouncedSave = () => { resaves += 1; };
     state.sessions = {}; state.currentSessionId = null; state.drafts = {}; state.currentStreamingMessage = null;
@@ -1001,18 +1004,20 @@ test('stored changes made elsewhere are adopted unless this page has unsaved cha
   assert.equal('d' in first.store.state.sessions, false, 'removed elsewhere');
 });
 
-test('a chat that is open here stays when it is removed elsewhere, and comes back with the next change', async () => {
+test('a chat deleted elsewhere leaves the visible page and a missed deletion cannot be resurrected by a stale save', async () => {
   const { store, data } = storageContext();
   store.ready();
   store.state.sessions.c = chat([msg('u1', 'q')]);
   store.state.currentSessionId = 'c';
   await store.writeLocalChanges(true);
   delete data['session:c'];
-  store.handleStoredChanges({ 'session:c': {} });
-  assert.equal('c' in store.state.sessions, true);
-  store.state.sessions.c.messages.push(msg('u2', 'still here'));
+  const stale = store.state.sessions.c;
+  stale.messages.push(msg('u2', 'unsaved edit'));
   await store.writeLocalChanges(true);
-  assert.equal(data['session:c'].session.messages.length, 2);
+  assert.equal('session:c' in data, false);
+  assert.equal('c' in store.state.sessions, false);
+  assert.equal(store.state.currentSessionId, null);
+  assert.equal(store.baseline('c').rev, undefined);
 });
 
 test('a deletion goes out with the rev it saw; undo writes the chat again', async () => {
@@ -1418,7 +1423,16 @@ test('Responses replays structured output within a compatible history segment', 
   assert.equal(input.find(item => item.id === 'msg_1').status, 'completed', 'replayed output messages keep the required id/status wire fields');
   assert.deepEqual(input.find(item => item.type === 'mcp_call'), { type: 'mcp_call', id: 'mcp_1', server_label: 'pipiclaw', name: 'bash', arguments: '{"command":"ls"}', output: 'a.txt', status: 'completed' });
   assert.equal(answer.unsupportedOutput, null);
-  assert.equal(answer.content, 'Checking.\n\nDone.');
+  assert.equal(answer.content, 'Done.');
+  const view = plain(app.displayParts(answer));
+  assert.deepEqual(view.progress.map(entry => entry.type), ['commentary', 'tool']);
+  assert.equal(view.progress[0].text, 'Checking.');
+  assert.equal(view.progress[1].item.arguments, '{"command":"ls"}');
+  // Previously saved replies still contain the old combined text projection.
+  // Reading them must use protocol order without changing the stored record.
+  const saved = { ...plain(answer), role: 'assistant', content: 'Checking.\n\nDone.' };
+  assert.equal(app.displayParts(saved).content, 'Done.');
+  assert.equal(saved.content, 'Checking.\n\nDone.');
   app.state.config.selectedModel = 'other-model - provider';
   assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false);
   app.state.config.selectedModel = 'test-model - provider';

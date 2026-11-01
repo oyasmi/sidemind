@@ -8,12 +8,31 @@
     <script src="../assets/js/ui.js"></script>
     <script src="../assets/js/generation-settings.js"></script>
     <link rel="stylesheet" href="sidebar.css" />
+    <link rel="stylesheet" href="workspace.css" />
   </head>
   <body>
+    <nav id="workspaceNav" class="workspace-only workspace-nav" aria-label="Conversations" hidden>
+      <div class="workspace-brand"><img src="../icons/icon48.png" alt="" /><strong>SideMind</strong><button id="workspaceSettingsBtn" class="icon-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg></button></div>
+      <div class="workspace-actions">
+        <button id="workspaceNewBtn" class="btn workspace-new" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#pen"></use></svg>New chat</button>
+        <button id="workspaceSearchBtn" class="icon-btn" type="button" aria-label="Search conversations" title="Search conversations" aria-controls="historySearchContainer" aria-expanded="false"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#search"></use></svg></button>
+      </div>
+      <div id="workspaceHistory" class="workspace-history"></div>
+    </nav>
     <div class="app-container">
       <header class="header">
-        <div class="brand"><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
+        <div class="brand"><button id="toggleNavBtn" class="icon-btn workspace-only" aria-label="Toggle navigation" aria-controls="workspaceNav" aria-expanded="true" hidden><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#panel-left"></use></svg></button><img src="../icons/icon48.png" alt="" /><span id="sessionTitle">SideMind</span></div>
         <div class="header-right">
+          <button id="togglePanelBtn" class="icon-btn workspace-only" aria-label="Conversation panel" title="Outline and attachments" aria-controls="conversationPanel" aria-expanded="false" hidden><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#list"></use></svg></button>
+          <button id="switchViewBtn" class="icon-btn" aria-label="Open full page" title="Open full page" disabled><svg class="ui-icon" aria-hidden="true"><use id="switchViewIcon" href="../assets/icons.svg#expand"></use></svg><span class="workspace-only" hidden>Back to sidebar</span></button>
+          <details id="conversationMenu" class="conversation-menu workspace-only" hidden>
+            <summary class="icon-btn" aria-label="Conversation actions" title="Conversation actions"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#more"></use></svg></summary>
+            <div class="conversation-menu-items">
+              <button id="renameCurrentBtn" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#pen"></use></svg>Rename chat</button>
+              <button id="exportCurrentBtn" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#download"></use></svg>Export chat</button>
+              <button id="deleteCurrentBtn" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#trash-alt"></use></svg>Delete chat</button>
+            </div>
+          </details>
           <button id="newChatBtn" class="icon-btn" aria-label="New chat" title="New chat (Ctrl/⌘ + Shift + O)">
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg>
           </button>
@@ -29,22 +48,6 @@
           <button id="optionsBtn" class="icon-btn" aria-label="Settings" title="Settings">
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>
           </button>
-        </div>
-        <div id="modelControl" class="model-control">
-          <button id="modelSelector" class="model-selector" type="button" aria-label="Choose a model" aria-describedby="modelName modelProvider" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPickerPanel">
-            <span id="modelAvatar" class="model-selector-mark" aria-hidden="true"><svg class="ui-icon"><use href="../assets/icons.svg#robot"></use></svg></span>
-            <span class="model-selector-text"><span id="modelName">Choose a model</span><span id="modelProvider">Your available models</span></span>
-            <svg class="ui-icon model-selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
-          </button>
-          <div id="modelPickerPanel" class="model-picker-panel" role="dialog" aria-label="Choose a model" hidden>
-            <div class="model-picker-search">
-              <label class="sr-only" for="modelSearch">Search models</label>
-              <input id="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-controls="modelOptions" aria-expanded="false" placeholder="Search models or providers…" autocomplete="off" spellcheck="false" />
-            </div>
-            <div id="modelOptions" class="model-options" role="listbox" aria-label="Available models"></div>
-            <p id="modelPickerEmpty" class="model-picker-empty" role="status" hidden></p>
-            <button id="manageModelsBtn" class="model-picker-manage" type="button"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#cog"></use></svg>Manage models</button>
-          </div>
         </div>
       </header>
 
@@ -70,6 +73,7 @@
         <div id="storageStatus" class="storage-status hidden" role="status">
           <span id="storageStatusText"></span><button id="retryStorageBtn" class="undo-btn" type="button">Retry save</button>
         </div>
+        <div id="draftConflict" class="storage-status hidden" role="status"><span>A draft from another page is available. Your input has been kept.</span><button id="restoreExternalDraftBtn" class="undo-btn" type="button">Restore other draft</button></div>
         <div id="generationStatus" class="generation-status" role="status" aria-live="polite">
           Ready when you are
         </div>
@@ -83,15 +87,31 @@
             class="message-input reading-content"
             placeholder="Ask a question…"
             rows="2"
-            aria-describedby="inputHint"
           ></textarea>
           <div class="composer-toolbar">
             <button id="attachBtn" class="icon-btn" type="button" aria-label="Attach images or files" title="Attach images or files"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#plus"></use></svg></button>
-            <div class="role-control">
-              <label for="systemPromptSelector">Role</label
-              ><select id="systemPromptSelector" class="system-prompt-selector">
-                <option value="default">Default</option>
-              </select>
+            <div id="modelControl" class="model-control">
+              <button id="modelSelector" class="composer-selector model-selector" type="button" aria-label="Choose a model and provider" aria-describedby="modelName modelProvider" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelPickerPanel">
+                <span id="modelAvatar" class="model-selector-mark" aria-hidden="true"><svg class="ui-icon"><use href="../assets/icons.svg#robot"></use></svg></span>
+                <span class="selector-label">Model</span>
+                <span class="model-selector-text"><span id="modelName">Choose a model</span><span id="modelProvider">Your available models</span></span>
+                <svg class="ui-icon selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
+              </button>
+              <div id="modelPickerPanel" class="model-picker-panel composer-picker-panel" role="dialog" aria-label="Choose a model and provider" hidden>
+                <div class="model-picker-search">
+                  <label class="sr-only" for="modelSearch">Search models</label>
+                  <input id="modelSearch" type="search" role="combobox" aria-autocomplete="list" aria-controls="modelOptions" aria-expanded="false" placeholder="Search models or providers…" autocomplete="off" spellcheck="false" />
+                </div>
+                <div id="modelOptions" class="model-options" role="listbox" aria-label="Available models"></div>
+                <p id="modelPickerEmpty" class="model-picker-empty" role="status" hidden></p>
+              </div>
+            </div>
+            <div id="roleControl" class="role-control">
+              <button id="systemPromptSelector" class="composer-selector role-selector" type="button" aria-label="Choose a role" aria-describedby="roleName" aria-haspopup="listbox" aria-expanded="false" aria-controls="rolePickerPanel">
+                <span class="selector-label">Role</span><span id="roleName">Default</span>
+                <svg class="ui-icon selector-chevron" aria-hidden="true"><use href="../assets/icons.svg#chevron-down"></use></svg>
+              </button>
+              <div id="rolePickerPanel" class="role-picker-panel composer-picker-panel" role="listbox" aria-label="Roles" hidden></div>
             </div>
             <button
               id="sendBtn"
@@ -106,9 +126,16 @@
             </button>
           </div>
         </div>
-        <p id="inputHint" class="input-hint">Enter to send · Shift + Enter for a new line</p>
       </footer>
     </div>
+    <aside id="conversationPanel" class="workspace-only conversation-panel" aria-label="Conversation panel" hidden>
+      <div class="conversation-panel-header">
+        <div role="tablist" aria-label="Conversation details"><button id="outlineTab" type="button" role="tab" aria-selected="true" aria-controls="conversationPanelContent">Outline</button><button id="attachmentsTab" type="button" role="tab" aria-selected="false" aria-controls="conversationPanelContent" tabindex="-1">Attachments</button></div>
+        <button id="closePanelBtn" class="icon-btn" aria-label="Close conversation panel"><svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg></button>
+      </div>
+      <div id="conversationPanelContent" class="conversation-panel-content" role="tabpanel" aria-labelledby="outlineTab"></div>
+    </aside>
+    <button id="workspaceBackdrop" class="workspace-backdrop" aria-label="Close drawer" hidden></button>
 
     <dialog id="chatHistoryDropdown" class="chat-history-dropdown" aria-labelledby="historyTitle">
       <div class="modal-panel">
@@ -118,7 +145,7 @@
             <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
           </button>
         </div>
-        <div class="history-search">
+        <div id="historySearchContainer" class="history-search">
           <label for="historySearch" class="sr-only">Search conversations</label
           ><input
             id="historySearch"

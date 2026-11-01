@@ -4,7 +4,7 @@
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Published-blue.svg)](https://chromewebstore.google.com/detail/sidemind/hhaldjkbgpmkalamncelaoplklphdfnp)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.2-orange.svg)](manifest.json)
+[![Version](https://img.shields.io/badge/Version-1.5.0-orange.svg)](manifest.json)
 
 ## ✨ Why SideMind?
 
@@ -13,10 +13,11 @@
 ### 🚀 Key Features
 
 - **🎯 Always Accessible** - Chat with LLMs in your browser sidebar, available on any webpage
+- **🖥️ Full-page Workspace** - Persistent conversation navigation, question outline and a shared attachment panel
 - **🔐 Privacy First** - All conversations stored locally, no data collection or tracking
 - **🤖 Multi-Provider Support** - Works with OpenAI, Claude, and any OpenAI-compatible API (Chat Completions or Responses)
 - **⚡ Real-time Streaming** - Watch AI responses appear in real-time with smooth animations
-- **🧠 Thinking Display** - See AI reasoning process in collapsible sections
+- **🧠 Thinking & Progress** - Follow reasoning summaries, commentary and server-run tools in order, with expandable tool arguments, results and status
 - **💬 Smart Chat Management** - Multiple chat sessions with auto-generated titles
 - **🎨 Beautiful Themes** - Light/Dark themes with smooth transitions
 - **⚙️ Flexible Configuration** - Custom system prompts, temperature, and token limits
@@ -69,7 +70,7 @@ SideMind is designed with your privacy as the top priority:
    - Click the SideMind icon in your toolbar
    - Open Options (right-click → Extension Options)
    - Add your AI provider with API key
-   - Optionally choose an **Emoji avatar** to identify the provider in the model picker and its chat replies; leave it blank for the default robot
+   - Optionally choose an **Emoji avatar** to identify the provider in the model picker and its chat replies; replies without a provider avatar use the assistant avatar from Appearance, or the default robot
    - Pick the API type: **Chat Completions** (`/chat/completions`) or **Responses** (`/responses`)
    - Click **Check connection** to verify the URL and key; the provider's model IDs then appear as suggestions
    - Select your preferred model
@@ -78,6 +79,26 @@ SideMind is designed with your privacy as the top priority:
    - Click the SideMind icon to open the sidebar
    - Choose your AI model and system prompt
    - Start chatting with your AI assistant!
+
+### Full-page workspace
+
+Use **Open full page** in the sidebar header for a dedicated chat tab. The workspace
+shares conversations, reasoning and protocol records, drafts, attachments and settings
+with the sidebar. Its navigation searches titles and message text; conversation menus
+support renaming, export and deletion. **Conversation panel** opens the question outline
+or the attachment list, including links back to the original messages.
+
+**Back to sidebar** opens the sidebar and returns to the webpage you came from when it
+is still available. The workspace tab stays open and is reused within that window.
+Switching waits for saves and for the other view to become ready. During attachment
+preparation, requests and stop cleanup, finish or stop the current work before switching.
+Chrome 141+ can close the sidebar after entering the workspace; older Chrome versions
+leave it open with a notice.
+
+Each page navigates independently. Only one page can generate in a given conversation
+at a time, while different conversations can run independently. External draft saves
+update idle inputs; conflicting local edits remain available with **Restore other draft**.
+Closing a page interrupts its request; generation is not transferred to the other view.
 
 ## 🔧 Supported Providers
 
@@ -219,6 +240,8 @@ The selection context menu uses Chrome's `contextMenus` permission and only rece
 text you explicitly select. It does not extract the whole page or send a request
 automatically. Chrome 116+ is required. The opening shortcut can be changed at
 `chrome://extensions/shortcuts`; in-panel shortcuts leave dialogs and IME input alone.
+The complete shortcut list is in **Settings → Keyboard shortcuts**, including sending,
+line breaks, new chats, input focus, stopping generation and picker navigation.
 
 Streaming uses a two-minute request timeout and a three-minute idle timeout after
 headers arrive. With streaming off, the whole answer must be ready before headers
@@ -254,6 +277,8 @@ response modes, SSE chunk boundaries, cancellation, request and idle timeouts,
 terminal events, output limits, and the selection context menu.
 They also cover structured Responses replay, compatible context boundaries,
 authoritative snapshots, false completion markers and generation-setting migration.
+Responses progress checks cover ordered reasoning, commentary and `mcp_call` items,
+tool details during streaming and reload, and tool-only replies stopped mid-run.
 Server-conversation checks cover creation and persistence, current-turn input,
 attachment-only messages, reloads, interrupted turns, configuration isolation and
 concurrent sidebars.
@@ -272,6 +297,9 @@ Playwright download. Set `UI_SCREENSHOTS` to an existing directory to save visua
 previews. These checks exercise draft preservation, stream reading, stop/retry,
 selection, history, modal focus, local save recovery, configuration size limits,
 code expansion/copy, Markdown exports, shortcuts and import previews.
+Workspace checks include 1440/1024/768px layouts, drawers, outline and attachment projections,
+explicit routes, draft conflicts, deletion propagation, concurrent requests and save/target
+failures. The MV3 smoke test also verifies view switching, tab reuse and busy-target rejection.
 The suite uses fixture providers and makes no real AI requests.
 Attachment checks use real IndexedDB, clipboard/drop events and file inputs, including
 reload, download, edit/undo, cancelled preparation, save failure recovery and cross-page

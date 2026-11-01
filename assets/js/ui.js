@@ -138,7 +138,7 @@ function createIcon(name, className = '') {
   return svg;
 }
 
-// ===== Provider avatars =====
+// ===== Emoji avatars =====
 const AVATAR_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 // Include flags, keycaps, skin tones, tag flags and joined emoji such as 👩‍💻.
 const AVATAR_EMOJI_PATTERN = /^(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier}|[\u{E0020}-\u{E007F}])*)*)$/u;
@@ -154,13 +154,17 @@ function validAvatarEmoji(value) {
   return typeof value === 'string' && (!value.trim() || Boolean(normalizeAvatarEmoji(value)));
 }
 
-function renderProviderAvatar(element, provider) {
-  const emoji = normalizeAvatarEmoji(provider?.avatarEmoji);
+function renderAvatar(node, value, fallbackIcon) {
+  const emoji = normalizeAvatarEmoji(value);
   // Config updates also arrive during streaming: leave unchanged nodes attached.
-  if (element.dataset.avatarEmoji === emoji) return;
-  element.dataset.avatarEmoji = emoji;
-  element.setAttribute('aria-hidden', 'true');
-  element.classList.toggle('emoji-avatar', Boolean(emoji));
-  if (emoji) element.textContent = emoji;
-  else element.replaceChildren(createIcon('robot'));
+  const key = emoji || `icon:${fallbackIcon}`;
+  if (node.dataset.avatarKey === key) return;
+  node.dataset.avatarKey = key;
+  node.setAttribute('aria-hidden', 'true');
+  node.classList.toggle('emoji-avatar', Boolean(emoji));
+  node.replaceChildren(emoji ? document.createTextNode(emoji) : createIcon(fallbackIcon));
+}
+
+function renderProviderAvatar(element, provider) {
+  renderAvatar(element, provider?.avatarEmoji, 'robot');
 }

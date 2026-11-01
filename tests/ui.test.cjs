@@ -95,7 +95,7 @@ function seedLayout({ sessions, __legacyLayout, ...rest }) {
 async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {}, prepare, browserContext = null) {
   const local = seedLayout(rawLocal);
   const page = browserContext ? await browserContext.newPage() : await browser.newPage({
-    viewport: { width: kind === 'sidebar' ? 380 : 1160, height: 800 },
+    viewport: { width: kind === 'sidebar' ? 380 : kind === 'workspace' ? 1440 : 1160, height: 800 },
     reducedMotion: 'reduce'
   });
   await prepare?.(page);
@@ -202,6 +202,7 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
           { once: true }
         );
         window.__stream = {
+          event: (event) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)),
           delta: (content) =>
             controller.enqueue(
               new TextEncoder().encode(
@@ -230,12 +231,12 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
       version: JSON.parse(readFileSync(resolve(root, 'manifest.json'), 'utf8')).version
     }
   );
-  await page.goto(`${baseUrl}/${kind}/${kind}.html`);
+  await page.goto(kind === 'workspace' ? `${baseUrl}/sidebar/sidebar.html?view=workspace` : `${baseUrl}/${kind}/${kind}.html`);
   await page.waitForFunction(
     (kind) =>
-      kind === 'sidebar'
+      kind !== 'options'
         ? typeof state !== 'undefined' &&
-          state.currentSessionId &&
+          (state.currentSessionId || storageReady || storageLoadFailed) &&
           document.querySelector('#generationStatus').textContent
         : Boolean(document.querySelector('#versionBadge')?.textContent),
     kind
@@ -285,6 +286,14 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
         true,
         `${kind} width=${width}`
       );
+      if (kind === 'options') {
+        await openSettingsSection(page, 'shortcuts');
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `shortcuts width=${width}`);
+        if (process.env.UI_SCREENSHOTS && [320, 1160].includes(width)) {
+          await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/shortcuts-light-${width}.png`, fullPage: true });
+        }
+        await openSettingsSection(page, 'providers');
+      }
     }
     if (kind === 'options') {
       await setTheme(page, 'dark');
@@ -297,6 +306,11 @@ browserTest('chat and settings fit narrow viewports and manual dark themes', asy
         await page.locator('#fontPreview').evaluate((node) => getComputedStyle(node).fontSize),
         '16px'
       );
+      if (process.env.UI_SCREENSHOTS) {
+        await openSettingsSection(page, 'shortcuts');
+        await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/shortcuts-dark.png`, fullPage: true });
+        await openSettingsSection(page, 'appearance');
+      }
     }
     if (process.env.UI_SCREENSHOTS) {
       await page.setViewportSize({ width: kind === 'sidebar' ? 380 : 1160, height: 800 });
@@ -678,8 +692,10 @@ browserTest(
     await page.getByRole('textbox', { name: 'Conversation title' }).press('Enter');
     assert.match(await page.locator('.chat-history-title').textContent(), /Fruit/);
     await page.getByRole('button', { name: 'Delete chat' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 0);
     assert.equal(await page.locator('.chat-history-item').count(), 0);
     await page.locator('#historyUndoBtn').click();
+    await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
     assert.equal(await page.locator('.chat-history-item').count(), 1);
     assert.equal(await page.evaluate(() => state.drafts.first), 'Keep my draft');
     await page.keyboard.press('Escape');
@@ -872,6 +888,48 @@ browserTest('provider avatars follow each historical reply and update in place w
   assert.deepEqual(errors, []);
   await page.close();
 });
+
+for (const view of ['sidebar', 'workspace']) {
+  browserTest(`${view} provider avatars override global avatars and follow config across chats`, async () => {
+    const settings = structuredClone(fixtureConfig);
+    settings.providers[0].avatarEmoji = '🧠';
+    settings.userAvatar = '🧑‍💻';
+    settings.assistantAvatar = '🦊';
+    const timestamp = new Date().toISOString();
+    const conversation = (id) => ({ title: id, timestamp, messages: [
+      { id: `${id}-u`, role: 'user', content: 'Question', timestamp },
+      { id: `${id}-a`, role: 'assistant', content: 'Provider answer', modelUsed: settings.selectedModel, timestamp },
+      { id: `${id}-b`, role: 'assistant', content: 'Legacy answer', timestamp }
+    ] });
+    const { page, errors } = await openPage(view, settings, {
+      currentSessionId: 'first', sessions: { first: conversation('first'), second: conversation('second') }
+    });
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🧠', '🦊']);
+    assert.equal(await page.locator('.message.user .message-avatar').textContent(), '🧑‍💻');
+    await page.evaluate(async () => {
+      await switchSession('second');
+      window.__cachedAvatar = messageElementCache.get('second-a');
+      const latest = structuredClone(state.config);
+      latest.providers[0].avatarEmoji = '';
+      latest.assistantAvatar = '🚀';
+      latest.userAvatar = '🐱';
+      await chrome.storage.sync.set({ config: latest });
+    });
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '🚀']);
+    assert.equal(await page.evaluate(() => window.__cachedAvatar.querySelector('.message-avatar').textContent), '🚀');
+    assert.equal(await page.evaluate(() => window.__cachedAvatar === document.querySelector('[data-message-id="second-a"]')), true);
+    await page.evaluate(() => switchSession('first'));
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '🚀']);
+    assert.equal(await page.locator('.message.user .message-avatar').textContent(), '🐱');
+    await page.evaluate(async () => {
+      await chrome.storage.sync.set({ config: { ...state.config, assistantAvatar: '', userAvatar: '' } });
+    });
+    assert.equal(await page.locator('.message.assistant .message-avatar use').count(), 2);
+    assert.equal(await page.locator('.message.user .message-header').isVisible(), false);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+}
 
 browserTest('changing provider avatars during streaming preserves content, selection and scroll', async () => {
   const { page, errors } = await openPage();
@@ -1177,12 +1235,24 @@ browserTest(
       await settings.waitForFunction(() => document.querySelector('#versionBadge').textContent);
       await settings.waitForFunction(() => document.querySelector('.settings-nav .ui-icon').getBBox().width > 0);
       await chat.waitForFunction(() => document.querySelector('#newChatBtn .ui-icon').getBBox().width > 0);
+      await chat.evaluate(() => {
+        const timestamp = new Date().toISOString();
+        state.sessions[state.currentSessionId].messages.push(
+          { id: 'avatar-user', role: 'user', content: 'Hello', timestamp },
+          { id: 'avatar-assistant', role: 'assistant', content: 'Hi', timestamp }
+        );
+        renderMessages();
+      });
       await setTheme(settings, 'dark');
       await settings.locator('#fontSizeSelector').selectOption('16px');
+      await settings.locator('#userAvatarInput').fill('🧑‍💻');
+      await settings.locator('#assistantAvatarInput').fill('🦊');
       await chat.waitForFunction(
         () =>
           document.documentElement.classList.contains('dark-theme') &&
-          getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px'
+          getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px' &&
+          document.querySelector('.message.user .message-avatar').textContent === '🧑‍💻' &&
+          document.querySelector('.message.assistant .message-avatar').textContent === '🦊'
       );
       assert.equal(
         await settings.locator('#versionBadge').textContent(),
@@ -1221,6 +1291,39 @@ browserTest(
       await chat.getByRole('button', { name: 'View pixel.png', exact: true }).click();
       await chat.waitForFunction(() => document.querySelector('#attachmentPreviewDialog img').naturalWidth > 0);
       await chat.getByRole('button', { name: 'Close image preview', exact: true }).click();
+      const sessionId = await chat.evaluate(() => state.currentSessionId);
+      const openingWorkspace = context.waitForEvent('page');
+      await chat.locator('#switchViewBtn').click();
+      const workspace = await openingWorkspace;
+      workspace.on('pageerror', (error) => errors.push(error.message));
+      await workspace.waitForFunction((sessionId) => typeof state !== 'undefined' && state.currentSessionId === sessionId && !navigationRequest, sessionId);
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.match(workspace.url(), /view=workspace#session=/);
+      assert.equal(await workspace.locator('#messageInput').inputValue(), await chat.locator('#messageInput').inputValue());
+      assert.equal(await workspace.evaluate(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length), 1);
+      const count = context.pages().length;
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.equal(context.pages().length, count, 're-entering reuses the workspace tab');
+      await workspace.evaluate(() => { elements.messageInput.value = 'Unsaved workspace draft'; saveDraftSoon(); clearTimeout(draftTimeout); });
+      await chat.locator('#messageInput').fill('Explicit source draft');
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching);
+      assert.equal(await workspace.locator('#messageInput').inputValue(), 'Explicit source draft', 'handoff restores the source draft even if the target has local edits');
+      await workspace.locator('#draftConflict').waitFor({ state: 'visible' });
+      await workspace.locator('#restoreExternalDraftBtn').click();
+      assert.equal(await workspace.locator('#messageInput').inputValue(), 'Unsaved workspace draft', 'the target draft remains recoverable');
+      await chat.waitForFunction(() => elements.messageInput.value === 'Unsaved workspace draft');
+      await workspace.evaluate(() => { state.isPreparing = true; updateInputState(); });
+      await chat.locator('#switchViewBtn').click();
+      await chat.waitForFunction(() => !viewSwitching && elements.notifications.textContent.includes('Preparing'));
+      await workspace.evaluate(() => { state.isPreparing = false; updateInputState(); });
+      await workspace.locator('#messageInput').fill('Returned safely with my attachment');
+      await workspace.locator('#switchViewBtn').click();
+      await workspace.waitForFunction(() => !viewSwitching);
+      await chat.waitForFunction(() => elements.messageInput.value === 'Returned safely with my attachment');
+      assert.equal(await workspace.evaluate(() => Boolean(elements.notifications.textContent)), false, 'sidebar open succeeds from the click gesture');
+      assert.equal(await chat.evaluate(() => normalizeDraft(state.drafts[state.currentSessionId]).attachments.length), 1);
       assert.deepEqual(errors, []);
     } finally {
       await context?.close();
@@ -1337,8 +1440,7 @@ browserTest('the model picker handles mouse selection, outside focus, IME and ge
   assert.equal(await page.locator('#messageInput').evaluate((node) => node === document.activeElement), true);
   await page.locator('#modelSelector').click();
   await page.keyboard.press('Tab');
-  assert.equal(await page.locator('#manageModelsBtn').evaluate((node) => node === document.activeElement), true);
-  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#systemPromptSelector').evaluate((node) => node === document.activeElement), true);
   assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
   await startResponse(page);
   assert.equal(await page.locator('#modelSelector').isDisabled(), true);
@@ -1358,10 +1460,155 @@ browserTest('the model picker refreshes external changes and guides an empty con
   assert.equal(await page.locator('#modelOptions').getByRole('option').count(), 0);
   assert.match(await page.locator('#modelPickerEmpty').textContent(), /Add a provider/);
   assert.equal(await page.locator('#modelSearch').getAttribute('aria-activedescendant'), null);
-  await page.locator('#manageModelsBtn').click();
+  assert.equal(await page.getByRole('button', { name: 'Manage models' }).count(), 0);
+  await page.locator('#optionsBtn').click();
   assert.equal(await page.evaluate(() => window.__openedOptions), true);
   assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
   assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('composer selectors fit narrow sidebars and open above the toolbar in both themes', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.providers[0].name = 'A service with a very long name';
+  settings.providers[0].models[0].name = 'A model with a very long name';
+  settings.systemPrompts.push({ id: 'writer', name: '互联网研发老哥 — a role with a very long name', content: 'Write clearly.' });
+  settings.selectedSystemPrompt = 'writer';
+  const { page, errors } = await openPage('sidebar', settings);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(async (theme) => chrome.storage.sync.set({ config: { ...state.config, theme } }), theme);
+    for (const width of [320, 380, 480]) {
+      await page.setViewportSize({ width, height: width === 320 ? 480 : 800 });
+      const controls = await page.locator('.composer-toolbar > button:visible, .composer-toolbar > div > button:visible').evaluateAll(
+        (nodes) => nodes.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, top: rect.top, height: rect.height };
+        })
+      );
+      assert.equal(controls.length, 4);
+      controls.forEach((rect, index) => {
+        assert.ok(rect.left >= 0 && rect.right <= width);
+        assert.equal(rect.top, controls[0].top);
+        assert.ok(rect.height <= 36);
+        if (index) assert.ok(rect.left >= controls[index - 1].right);
+      });
+      assert.ok((await page.locator('.header').boundingBox()).height <= 70);
+      assert.equal(await page.locator('#modelSelector .selector-label').textContent(), 'Model');
+      assert.equal(await page.locator('#modelProvider').textContent(), settings.providers[0].name);
+      assert.equal(await page.locator('#modelProvider').isVisible(), true);
+      assert.ok((await page.locator('#modelProvider').boundingBox()).width > 12);
+      for (const [trigger, panel] of [['#modelSelector', '#modelPickerPanel'], ['#systemPromptSelector', '#rolePickerPanel']]) {
+        await page.locator(trigger).click();
+        const popup = await page.locator(panel).boundingBox();
+        assert.ok(popup.x >= 0 && popup.x + popup.width <= width);
+        assert.ok(popup.y >= 0 && popup.y + popup.height < controls[0].top);
+        if (process.env.UI_SCREENSHOTS && width === 380) {
+          await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/composer-${theme}-${panel.slice(1)}.png` });
+        }
+        await page.keyboard.press('Escape');
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    }
+  }
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('the role picker selects and persists roles with the keyboard and preserves drafts', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.systemPrompts.push({ id: 'writer', name: '互联网研发老哥', content: 'Write clearly.' });
+  const { page, errors } = await openPage('sidebar', settings);
+  await page.locator('#messageInput').fill('Keep this draft');
+  await page.locator('#systemPromptSelector').focus();
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.locator('#rolePickerPanel [aria-selected="true"]').evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#roleName').textContent(), '互联网研发老哥');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
+  assert.equal(await page.locator('#systemPromptSelector').getAttribute('aria-expanded'), 'false');
+  await page.waitForFunction(() => window.__storage.sync.config.selectedSystemPrompt === 'writer');
+  await page.locator('#systemPromptSelector').click();
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => state.config.selectedSystemPrompt), 'writer');
+  assert.equal(await page.locator('#systemPromptSelector').evaluate((node) => node === document.activeElement), true);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#modelSelector').click();
+  assert.equal(await page.locator('#rolePickerPanel').isVisible(), false);
+  await page.locator('#systemPromptSelector').click();
+  assert.equal(await page.locator('#modelPickerPanel').isVisible(), false);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.locator('#sendBtn').evaluate((node) => node === document.activeElement), true);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#messageInput').click();
+  assert.equal(await page.locator('#rolePickerPanel').isVisible(), false);
+  await page.locator('#systemPromptSelector').click();
+  await page.locator('#rolePickerPanel').getByRole('option', { name: 'Default', exact: true }).click();
+  assert.equal(await page.locator('#roleName').textContent(), 'Default');
+  await startResponse(page);
+  assert.equal(await page.locator('#systemPromptSelector').isDisabled(), true);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('#systemPromptSelector').isEnabled(), true);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('emoji avatars preview, save, validate and restore default icons', async () => {
+  const { page, errors } = await openPage('options');
+  await openSettingsSection(page, 'appearance');
+  await page.locator('#userAvatarInput').fill('🧑🏽‍💻');
+  await page.locator('#assistantAvatarInput').fill('🦊');
+  assert.equal(await page.locator('#previewUserAvatar').textContent(), '🧑🏽‍💻');
+  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
+  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '🧑🏽‍💻' && window.__storage.sync.config.assistantAvatar === '🦊');
+  await page.locator('#assistantAvatarInput').fill('🦊🤖');
+  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
+  assert.equal(await page.locator('#assistantAvatarError').isVisible(), true);
+  assert.equal(await page.evaluate(() => config.assistantAvatar), '🦊');
+  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
+  await page.locator('#assistantAvatarInput').fill('<img src=x>');
+  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
+  assert.equal(await page.evaluate(() => validateConfig({ ...config, assistantAvatar: '<script>' })), false);
+  const saved = await page.evaluate(() => structuredClone(window.__storage.sync.config));
+  const timestamp = new Date().toISOString();
+  const chat = await openPage('sidebar', saved, {
+    currentSessionId: 'avatars',
+    sessions: { avatars: { title: 'Avatars', timestamp, messages: [
+      { id: 'user', role: 'user', content: 'A question', timestamp },
+      { id: 'assistant', role: 'assistant', content: 'An answer', timestamp, modelUsed: saved.selectedModel },
+      { id: 'error', role: 'system', content: 'An error', timestamp }
+    ] } }
+  });
+  assert.equal(await chat.page.locator('.message.user .message-avatar').textContent(), '🧑🏽‍💻');
+  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), true);
+  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🦊');
+  assert.equal(await chat.page.locator('.message.system .message-avatar use').getAttribute('href'), '../assets/icons.svg#triangle-exclamation');
+  await chat.page.evaluate(async () => {
+    window.__originalMessage = document.querySelector('.message.assistant');
+    await chrome.storage.sync.set({ config: { ...state.config, assistantAvatar: '🇨🇳', userAvatar: '' } });
+  });
+  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🇨🇳');
+  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), false);
+  assert.equal(await chat.page.evaluate(() => window.__originalMessage === document.querySelector('.message.assistant')), true);
+  for (const width of [320, 1160]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator('#assistantAvatarInput').fill('🦊');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/avatar-settings-${width}.png`, fullPage: true });
+  }
+  await page.evaluate(() => sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage)));
+  await page.reload();
+  await page.locator('#userAvatarInput').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#userAvatarInput').inputValue(), '🧑🏽‍💻');
+  await page.locator('#userAvatarInput').fill('');
+  await page.locator('#assistantAvatarInput').fill('');
+  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '' && window.__storage.sync.config.assistantAvatar === '');
+  assert.equal(await page.locator('#previewUserHeader').isVisible(), false);
+  assert.equal(await page.locator('#previewAssistantAvatar use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.deepEqual(errors.concat(chat.errors), []);
+  await chat.page.close();
   await page.close();
 });
 
@@ -1659,9 +1906,9 @@ async function openSharedPages(initialConfig = fixtureConfig) {
   }, initialConfig);
   const ready = (page) =>
     page.waitForFunction(() => typeof state !== 'undefined' && state.currentSessionId && document.querySelector('#generationStatus').textContent);
-  const open = async () => {
+  const open = async (view = 'sidebar', sessionId = null) => {
     const page = await context.newPage();
-    await page.goto(`${baseUrl}/sidebar/sidebar.html`);
+    await page.goto(`${baseUrl}/sidebar/sidebar.html${view === 'workspace' ? '?view=workspace' : ''}${sessionId ? '#session=' + encodeURIComponent(sessionId) : ''}`);
     await ready(page);
     // The startup save of a first-run chat must land before the test acts or
     // the next page opens; the races under test start from a settled store.
@@ -2039,7 +2286,7 @@ browserTest('a reply stopped mid-thought keeps its thinking as reasoning', async
   await page.evaluate(() => window.__stream.delta('<think>Still weighing'));
   await page.waitForFunction(() => document.querySelector('.message.assistant .reasoning-header'));
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone);
   const stored = await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1));
   assert.equal(stored.reasoning, 'Still weighing');
   assert.equal(stored.content, '');
@@ -2089,8 +2336,10 @@ browserTest('undoing the deletion of the open chat returns to it', async () => {
   });
   await page.locator('#chatHistoryBtn').click();
   await page.getByRole('button', { name: 'Delete chat' }).click();
+  await page.waitForFunction(() => state.currentSessionId !== 'only');
   assert.notEqual(await page.evaluate(() => state.currentSessionId), 'only');
   await page.locator('#historyUndoBtn').click();
+  await page.waitForFunction(() => state.currentSessionId === 'only');
   assert.equal(await page.evaluate(() => state.currentSessionId), 'only');
   // The blank chat created to replace it is gone again
   assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions)), ['only']);
@@ -2395,7 +2644,7 @@ browserTest('history pages remain searchable and renaming an inactive chat persi
   await page.getByRole('button', { name: 'Rename chat' }).click();
   await page.locator('.history-rename-input').fill('Renamed conversation');
   await page.locator('.history-rename-input').press('Enter');
-  await page.evaluate(() => storageWriteQueue);
+  await page.waitForFunction(() => window.__storage.local['session:h124'].session.title === 'Renamed conversation');
   assert.equal(await page.evaluate(() => window.__storage.local['session:h124'].session.title), 'Renamed conversation');
   assert.equal(await page.evaluate(() => sessionSearchCache.has('h1')), true);
   await page.locator('#historySearch').fill('renamed conversation');
@@ -2718,7 +2967,7 @@ browserTest('two sidebars serialize server turns and refresh the saved conversat
     await b.evaluate(async () => { await sendMessageToAPI({ content: 'Second sidebar', attachments: [] }); });
     assert.equal(await b.evaluate(() => window.__serverCalls.length), 0, 'another sidebar cannot append while the first turn is active');
     await a.evaluate(() => window.__finishServer());
-    await a.waitForFunction(() => !state.isStreaming);
+    await a.waitForFunction(() => !state.generationDone && !heldSessionLocks.size);
     assert.equal(await b.evaluate(() => state.sessions[state.currentSessionId].serverConversation), undefined);
     await b.evaluate(async () => {
       state.config.stream = false;
@@ -2734,6 +2983,110 @@ browserTest('two sidebars serialize server turns and refresh the saved conversat
   } finally {
     await context.close();
   }
+});
+
+browserTest('Responses progress preserves item order, tool details and commentary across streaming and reload', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  const { page, errors } = await openPage('sidebar', config);
+  await page.locator('#messageInput').fill('Compare Xiaomi models');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__stream));
+  const output = [
+    { id: 'rs_plan', type: 'reasoning', status: 'completed', summary: [{ type: 'summary_text', text: 'Planning **official sources**.' }] },
+    { id: 'mcp_search', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_search', status: 'in_progress', arguments: JSON.stringify({ query: '小米 15 Ultra 与 17 Ultra 参数对比' }), output: null },
+    { id: 'msg_progress', type: 'message', role: 'assistant', phase: 'commentary', status: 'completed', content: [{ type: 'output_text', text: 'Verifying the camera and battery specifications.' }] },
+    { id: 'mcp_fetch', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_fetch', status: 'in_progress', arguments: JSON.stringify({ url: 'https://www.mi.com/prod/xiaomi-17-ultra/specs' }), output: null }
+  ];
+  await page.evaluate((items) => {
+    window.__stream.event({ type: 'response.output_item.done', output_index: 0, item: items[0] });
+    window.__stream.event({ type: 'response.output_item.added', output_index: 1, item: items[1] });
+  }, output);
+  const section = page.locator('.assistant .reasoning-section');
+  await section.locator('.progress-preview').filter({ hasText: '小米' }).waitFor();
+  await section.locator('.reasoning-header').click();
+  const search = section.locator('[data-progress-key="mcp_search"]');
+  await search.locator('summary').filter({ hasText: 'Running' }).waitFor();
+  await search.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await search.getAttribute('open'), '');
+  assert.match(await search.locator('pre').first().textContent(), /小米/);
+  await page.evaluate((items) => {
+    window.__progressToolNode = document.querySelector('[data-progress-key="mcp_search"]');
+    for (const index of [2, 3]) window.__stream.event({ type: 'response.output_item.added', output_index: index, item: items[index] });
+  }, output);
+  await section.locator('[data-progress-key="mcp_fetch"]').waitFor();
+  assert.deepEqual(await section.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.map(item => item.id));
+  assert.equal(await page.locator('.assistant .message-content').textContent(), '');
+  assert.equal(await search.getAttribute('open'), '', 'new progress must not close tool details');
+  assert.equal(await page.evaluate(() => document.activeElement === window.__progressToolNode.querySelector('summary')), true);
+  output[1] = { ...output[1], status: 'completed', output: 'Official search result' };
+  output[3] = { ...output[3], status: 'failed', output: '<img src="https://unsafe.invalid/tool">', pipiclaw_failure: 'The source could not be fetched.' };
+  output.push(
+    { id: 'rs_compare', type: 'reasoning', status: 'completed', summary: [{ type: 'summary_text', text: 'Comparing the confirmed specifications.' }] },
+    { id: 'msg_final', type: 'message', role: 'assistant', phase: 'final_answer', status: 'completed', content: [{ type: 'output_text', text: 'The final comparison.' }] }
+  );
+  await page.evaluate((items) => {
+    window.__stream.event({ type: 'response.output_item.done', output_index: 1, item: items[1] });
+    window.__stream.event({ type: 'response.output_item.done', output_index: 3, item: items[3] });
+    window.__stream.event({ type: 'response.completed', response: { id: 'resp_progress', status: 'completed', output: items } });
+    window.__stream.unconfirmed();
+  }, output);
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.evaluate(() => document.querySelector('[data-progress-key="mcp_search"]') === window.__progressToolNode), true);
+  assert.equal(await search.getAttribute('open'), '');
+  assert.match(await search.locator('summary').textContent(), /Done/);
+  const fetch = section.locator('[data-progress-key="mcp_fetch"]');
+  await fetch.locator('summary').click();
+  assert.match(await fetch.locator('summary').textContent(), /Failed/);
+  assert.match(await fetch.locator('.progress-tool-error').textContent(), /could not be fetched/);
+  assert.match(await fetch.locator('.progress-tool-output').textContent(), /<img/);
+  assert.equal(await section.locator('img').count(), 0, 'tool output is plain text');
+  assert.equal((await page.locator('.assistant .message-content').textContent()).trim(), 'The final comparison.');
+  assert.deepEqual(await section.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.slice(0, -1).map(item => item.id));
+  assert.equal(await section.locator('.reasoning-header').getAttribute('aria-expanded'), 'true', 'manual expansion survives the final answer');
+  await search.locator('summary').click();
+  await fetch.locator('summary').click();
+  await section.locator('.reasoning-content').evaluate(node => { node.scrollTop = 0; });
+  for (const theme of ['light', 'dark']) {
+    await page.setViewportSize({ width: theme === 'light' ? 380 : 320, height: 800 });
+    await page.evaluate((theme) => { state.config.theme = theme; applyTheme(); }, theme);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/progress-${theme}.png` });
+  }
+  await page.evaluate(async () => {
+    await saveToStorage();
+    sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
+  });
+  await page.reload();
+  await page.waitForFunction(() => storageReady && document.querySelectorAll('.progress-entry').length === 5);
+  assert.equal((await page.locator('.assistant .message-content').textContent()).trim(), 'The final comparison.');
+  assert.deepEqual(await page.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.slice(0, -1).map(item => item.id));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a tool-only Responses turn replaces waiting and survives stop with interrupted progress', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  const { page, errors } = await openPage('workspace', config);
+  await page.locator('#messageInput').fill('Search official specifications');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__stream));
+  await page.evaluate(() => window.__stream.event({ type: 'response.output_item.added', output_index: 0, item: {
+    id: 'tool_only', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_search', status: 'in_progress', arguments: '{"query":"Xiaomi Ultra"}', output: null
+  } }));
+  const section = page.locator('.assistant .reasoning-section');
+  await section.locator('.reasoning-header').click();
+  await section.locator('.progress-tool-status').filter({ hasText: 'Running' }).waitFor();
+  assert.equal(await page.locator('.assistant .typing-indicator').isVisible(), false);
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.assistant').count(), 1, 'stopping must retain a reply with only tool progress');
+  assert.equal(await section.locator('.progress-tool-status').textContent(), 'Interrupted');
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1).protocol.output[0].status), 'in_progress', 'the view must not rewrite the provider record');
+  assert.deepEqual(errors, []);
+  await page.close();
 });
 
 async function useCompleteFixture(page) {
@@ -2801,7 +3154,7 @@ browserTest('Responses attachments survive reload, follow-up, editing, undo and 
   assert.equal(await page.evaluate(() => typeof window.__fetchCalls[0].input[0].content), 'string');
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('file_data')), false);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[0]).includes('data:image/')), false);
-  assert.equal(await page.locator('#inputHint').textContent(), 'Enter to send · Shift + Enter for a new line');
+  assert.equal(await page.locator('#inputHint').count(), 0);
   await page.locator('.message.user .edit-btn').first().click();
   await page.locator('.message-edit-input').fill('Updated image question');
   await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
@@ -2837,11 +3190,11 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.waitForFunction(() => attachmentJobs.size === 0 && normalizeDraft(state.drafts[state.currentSessionId]).attachments.length === 2);
   await page.locator('#messageInput').fill('Read these');
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 1);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && window.__fetchCalls.length === 1);
   assert.deepEqual(await page.evaluate(() => window.__fetchCalls[0].messages.find(message => message.role === 'user').content.map(part => part.type)), ['text', 'image_url', 'file']);
   await page.locator('#messageInput').fill('A text-only follow-up');
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && window.__fetchCalls.length === 2);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && window.__fetchCalls.length === 2);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('file_data')), false);
   assert.equal(await page.evaluate(() => JSON.stringify(window.__fetchCalls[1]).includes('data:image/')), false);
   await page.evaluate(() => { state.config.providers[0].apiType = 'responses'; });
@@ -2850,7 +3203,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.locator('#messageInput').fill('Keep this draft');
   await page.evaluate(() => { state.config.providers[0].apiType = 'chat'; });
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring && document.querySelector('#generationStatus').textContent.includes('could not be prepared'));
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.length), 4);
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2);
@@ -2868,7 +3221,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
     });
   });
   await page.locator('#sendBtn').click();
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'missing bytes never become a request containing only the filename');
   await page.evaluate(() => {
@@ -2882,7 +3235,7 @@ browserTest('Chat attachment parts and preflight failures preserve the unsent dr
   await page.waitForFunction(() => state.isPreparing && typeof window.__releasePreparation === 'function');
   await page.locator('#sendBtn').click();
   await page.evaluate(() => window.__releasePreparation());
-  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
   assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this draft');
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 2, 'cancelling local preparation does not send a request');
   assert.deepEqual(errors, []);
@@ -2988,6 +3341,212 @@ browserTest('paste and drop retain unsaved attachments until retry and reject a 
     return (await (await AttachmentStore.get(refs[0])).text()) === 'Dropped text';
   }), true);
   assert.equal(await page.evaluate(() => window.__fetchCalls.length), 0);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('workspace layout, outline, deduplicated attachments and explicit routes work at all breakpoints', async () => {
+  const timestamp = new Date().toISOString();
+  const ref = { id: 'guide', name: 'guide.txt', mime: 'text/plain', kind: 'text', size: 20 };
+  const local = { currentSessionId: 'first', drafts: { first: { text: 'Keep this long prompt', attachments: [ref] } }, sessions: {
+    first: { title: 'Planning a better workspace', timestamp, messages: [
+      { id: 'u1', role: 'user', content: '\nHow should we organize this project?', attachments: [ref], timestamp },
+      { id: 'a1', role: 'assistant', content: ('### A practical approach\n\nStart with the goals, then work through each decision with enough room to think.\n\n').repeat(18), reasoning: 'Consider the constraints first.', reasoningCollapsed: true, protocol: { api: 'responses', output: [] }, timestamp },
+      { id: 'u2', role: 'user', content: '', attachments: [ref], timestamp }
+    ] },
+    second: { title: 'Another topic', timestamp, messages: [{ id: 'u3', role: 'user', content: 'A rare pineapple in the second conversation.', timestamp }] }
+  } };
+  const { page, errors } = await openPage('workspace', fixtureConfig, local);
+  await page.waitForFunction(() => document.body.dataset.view === 'workspace');
+  assert.equal(await page.locator('#chatHistoryDropdown .modal-panel').count(), 0, 'workspace uses the existing history nodes');
+  assert.equal(await page.locator('.chat-history-item').count(), 2);
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this long prompt');
+  await page.locator('#togglePanelBtn').click();
+  assert.deepEqual(await page.locator('.outline-link').allTextContents(), ['How should we organize this project?', 'guide.txt']);
+  await page.locator('.outline-link').first().click();
+  assert.equal(await page.evaluate(() => state.userScrolledUp), true);
+  assert.equal(await page.locator('.message').first().evaluate((node) => node === document.activeElement), true);
+  await page.locator('#attachmentsTab').click();
+  assert.equal(await page.locator('#conversationPanelContent .attachment-card').count(), 1);
+  assert.equal(await page.locator('#conversationPanelContent').getByRole('button', { name: 'Go to message', exact: true }).count(), 2);
+  const readingAnchor = await page.evaluate(() => { elements.messagesList.scrollTop = 450; handleScroll(); return captureReadingAnchor(); });
+  assert.equal(readingAnchor.messageId, 'a1');
+  for (const width of [1440, 1024, 768]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(async (anchor) => { setPanelOpen(true); await restoreReadingAnchor(anchor); }, readingAnchor);
+    const restoredAnchor = await page.evaluate(() => captureReadingAnchor());
+    assert.equal(restoredAnchor.messageId, readingAnchor.messageId);
+    assert.ok(Math.abs(restoredAnchor.offset - readingAnchor.offset) < 0.02, `${width}: relative reading anchor is retained`);
+    const geometry = await page.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth > innerWidth,
+      panel: elements.conversationPanel.getBoundingClientRect().width,
+      mainRight: document.querySelector('.app-container').getBoundingClientRect().right,
+      backdrop: !elements.workspaceBackdrop.hidden,
+      navigation: !elements.workspaceNav.hidden,
+      readingWidth: elements.messagesList.clientWidth - parseFloat(getComputedStyle(elements.messagesList).paddingLeft) - parseFloat(getComputedStyle(elements.messagesList).paddingRight)
+    }));
+    assert.equal(geometry.overflow, false, `${width}: page has no horizontal overflow`);
+    assert.equal(geometry.panel, 304);
+    assert.ok(geometry.readingWidth <= 821);
+    assert.equal(geometry.backdrop, width < 1280);
+    if (width === 1440) assert.equal(geometry.mainRight, width - 304);
+    if (width === 768) assert.equal(geometry.navigation, false);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/workspace-${width}.png` });
+    if (width < 1280) {
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#conversationPanel').isVisible(), false);
+      assert.equal(await page.locator('#togglePanelBtn').evaluate((node) => node === document.activeElement), true);
+    }
+  }
+  await page.locator('#toggleNavBtn').click();
+  assert.equal(await page.locator('#workspaceNav').isVisible(), true);
+  await page.locator('#workspaceSearchBtn').click();
+  await page.locator('#historySearch').fill('pineapple');
+  await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
+  assert.match(await page.locator('.history-snippet').textContent(), /pineapple/);
+  await page.locator('.chat-history-content').click();
+  assert.match(page.url(), /#session=second$/);
+  assert.equal(await page.locator('#workspaceNav').isVisible(), false);
+  await page.goBack();
+  await page.waitForFunction(() => state.currentSessionId === 'first');
+  await page.reload();
+  await page.waitForFunction(() => state.currentSessionId === 'first');
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Keep this long prompt');
+  await page.evaluate(() => { document.documentElement.classList.add('dark-theme'); setPanelOpen(true); });
+  if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/workspace-dark.png` });
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('workspace drafts follow external saves, retain local edits and recover the other draft', async () => {
+  const { context, a, open } = await openSharedPages();
+  try {
+    const id = await a.evaluate(() => state.currentSessionId);
+    const b = await open('workspace', id);
+    await a.locator('#messageInput').fill('Shared draft');
+    await a.evaluate(() => persistDrafts());
+    await b.waitForFunction(() => elements.messageInput.value === 'Shared draft');
+    await b.evaluate(() => { elements.messageInput.value = 'Local unsaved input'; saveDraftSoon(); clearTimeout(draftTimeout); });
+    await a.locator('#messageInput').fill('New external draft');
+    await a.evaluate(() => persistDrafts());
+    await b.locator('#draftConflict').waitFor({ state: 'visible' });
+    assert.equal(await b.locator('#messageInput').inputValue(), 'Local unsaved input');
+    await b.locator('#restoreExternalDraftBtn').click();
+    assert.equal(await b.locator('#messageInput').inputValue(), 'New external draft');
+    await b.locator('#restoreExternalDraftBtn').click();
+    assert.equal(await b.locator('#messageInput').inputValue(), 'Local unsaved input', 'restoring a conflict is reversible');
+    await b.evaluate(async () => { await chrome.storage.session.set({ 'selection:1': { text: 'Only the sidebar imports this.' } }); });
+    // Workspace never subscribes to selection:<windowId>.
+    assert.equal(await b.evaluate(() => selectionStorageKey), null);
+  } finally { await context.close(); }
+});
+
+browserTest('all adapters lock the session through cleanup, reject a second page, and allow unrelated conversations', async () => {
+  const { context, a, b, open } = await openSharedPages();
+  try {
+    const id = await a.evaluate(() => state.currentSessionId);
+    const workspace = await open('workspace', id);
+    for (const page of [a, b, workspace]) {
+      await page.evaluate(() => {
+        window.__calls = 0;
+        window.fetch = async (url, options) => {
+          window.__calls++;
+          await new Promise((resolve, reject) => {
+            window.__release = resolve;
+            options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          });
+          return Response.json({ choices: [{ message: { content: 'Finished safely' }, finish_reason: 'stop' }] });
+        };
+        state.config.stream = false;
+      });
+    }
+    await a.locator('#messageInput').fill('First page asks');
+    await workspace.locator('#messageInput').fill('Workspace asks');
+    await Promise.all([
+      a.evaluate(() => { void sendMessageToAPI({ content: 'First page asks', attachments: [] }); }),
+      workspace.evaluate(() => { void sendMessageToAPI({ content: 'Workspace asks', attachments: [] }); })
+    ]);
+    await a.waitForFunction(() => heldSessionLocks.size || remoteBusySessions.size);
+    await workspace.waitForFunction(() => heldSessionLocks.size || remoteBusySessions.size);
+    const firstWon = await a.evaluate(() => heldSessionLocks.size > 0);
+    const winner = firstWon ? a : workspace;
+    const loser = firstWon ? workspace : a;
+    await winner.waitForFunction(() => window.__calls === 1);
+    assert.equal(await loser.evaluate(() => window.__calls), 0, 'only one actual request');
+    assert.equal(await winner.locator('#switchViewBtn').isDisabled(), true);
+    await loser.evaluate((id) => deleteSession(id), id);
+    assert.equal(await loser.evaluate((id) => Boolean(state.sessions[id]), id), true);
+    await b.locator('#newChatBtn').click();
+    await b.locator('#messageInput').fill('An independent question');
+    await b.locator('#sendBtn').click();
+    await b.waitForFunction(() => window.__calls === 1);
+    await b.evaluate(() => window.__release());
+    await b.waitForFunction(() => !state.generationDone);
+    await winner.evaluate(() => window.__release());
+    await winner.waitForFunction(() => !state.generationDone && !state.isAcquiring);
+    await loser.waitForFunction(() => !remoteBusySessions.has(state.currentSessionId));
+    assert.equal(await winner.locator('#switchViewBtn').isEnabled(), true);
+    await loser.evaluate((id) => deleteSession(id), id);
+    await winner.waitForFunction((id) => !state.sessions[id], id);
+    await winner.evaluate(() => saveToStorage());
+    assert.equal((await readShared(winner))['session:' + id], undefined, 'a stale page never resurrects a deleted conversation');
+  } finally { await context.close(); }
+});
+
+browserTest('mode switching retains the source on save failure and stays disabled while preparing and cleaning up', async () => {
+  const { page, errors } = await openPage();
+  await page.locator('#messageInput').fill('Preserve my draft');
+  await page.evaluate(() => {
+    window.__failLocalSave = true;
+    chrome.runtime.sendMessage = async () => { window.__navigated = true; return { ok: true }; };
+  });
+  await page.locator('#switchViewBtn').click();
+  await page.waitForFunction(() => !viewSwitching && !elements.storageStatus.classList.contains('hidden'));
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Preserve my draft');
+  assert.equal(await page.evaluate(() => Boolean(window.__navigated)), false);
+  await page.evaluate(() => { window.__failLocalSave = false; chrome.runtime.sendMessage = async () => ({ ok: false, error: 'Target could not load' }); });
+  await page.locator('#switchViewBtn').click();
+  await page.waitForFunction(() => !viewSwitching && elements.notifications.textContent.includes('Target could not load'));
+  assert.equal(await page.locator('#messageInput').inputValue(), 'Preserve my draft');
+  await page.evaluate(() => {
+    const build = API_ADAPTERS.chat.buildRequestBody;
+    API_ADAPTERS.chat.buildRequestBody = async (context) => { await new Promise((resolve) => { window.__prepare = resolve; }); return build(context); };
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => state.isPreparing);
+  assert.match(await page.locator('#switchViewBtn').getAttribute('title'), /Preparing/);
+  await page.evaluate(() => window.__prepare());
+  await page.waitForFunction(() => window.__stream);
+  assert.match(await page.locator('#switchViewBtn').getAttribute('title'), /Generating/);
+  await page.evaluate(() => {
+    const set = chrome.storage.local.set;
+    chrome.storage.local.set = async (data) => { await new Promise((resolve) => { window.__save = resolve; }); return set(data); };
+    window.__stream.delta('Keep the partial answer');
+  });
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__save && state.generationDone));
+  assert.equal(await page.locator('#switchViewBtn').isDisabled(), true);
+  await page.evaluate(() => window.__save());
+  await page.waitForFunction(() => !state.generationDone && !state.isAcquiring);
+  assert.equal(await page.locator('#switchViewBtn').isEnabled(), true);
+  assert.match(await page.locator('.message.assistant').textContent(), /partial answer/);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('an unavailable explicit workspace route never creates a replacement conversation', async () => {
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('workspace', fixtureConfig, {
+    currentSessionId: 'kept', sessions: { kept: { title: 'Existing chat', timestamp, messages: [{ id: 'q', role: 'user', content: 'Preserve this conversation', timestamp }] } }
+  }, async (page) => {
+    await page.addInitScript(() => { history.replaceState(null, '', location.pathname + location.search + '#session=missing'); });
+  });
+  assert.equal(await page.evaluate(() => state.currentSessionId), null);
+  assert.deepEqual(await page.evaluate(() => Object.keys(state.sessions)), ['kept']);
+  assert.equal(await page.evaluate(() => Object.keys(window.__storage.local).filter((key) => key.startsWith('session:')).length), 1);
+  await page.locator('.chat-history-content').click();
+  await page.waitForFunction(() => state.currentSessionId === 'kept');
+  assert.match(page.url(), /#session=kept$/);
   assert.deepEqual(errors, []);
   await page.close();
 });

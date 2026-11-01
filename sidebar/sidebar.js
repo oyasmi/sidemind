@@ -5,6 +5,9 @@
 // GLOBAL STATE MANAGEMENT
 // ========================================
 
+const VIEW = new URLSearchParams(location.search).get('view') === 'workspace' ? 'workspace' : 'sidebar';
+document.body.dataset.view = VIEW;
+
 const state = {
   currentSessionId: null,
   sessions: {},
@@ -21,6 +24,8 @@ const state = {
     reasoning_summary: 'off',
     reasoning_context: null,
     theme: 'system',
+    userAvatar: '',
+    assistantAvatar: '',
     systemPrompts: [
       {
         id: 'default',
@@ -38,6 +43,7 @@ const state = {
   streamTicker: null,
   followOutput: false,
   readingResponse: false,
+  isAcquiring: false,
   generationDone: null,
   resolveGeneration: null
 };
@@ -167,9 +173,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('SideMind initializing...');
 
   cacheElements();
+  initializeView();
   await loadFromStorage();
   setupEventListeners();
   initializeUI();
+  await initializeNavigation();
+  await refreshSessionLocks();
   await initializeSelectionImport();
 
   setTimeout(cleanupAttachments, 5000);
@@ -204,9 +213,12 @@ function cacheElements() {
     'modelSearch',
     'modelOptions',
     'modelPickerEmpty',
-    'manageModelsBtn',
+    'roleControl',
+    'roleName',
+    'rolePickerPanel',
     'generationStatus',
     'historySearch',
+    'historySearchContainer',
     'historyUndo',
     'historyUndoText',
     'historyUndoBtn',
@@ -220,7 +232,13 @@ function cacheElements() {
     'attachmentInput',
     'draftAttachments',
     'attachmentStatus',
-    'cancelAttachmentsBtn'
+    'cancelAttachmentsBtn',
+    'workspaceNav', 'workspaceHistory', 'workspaceNewBtn', 'workspaceSettingsBtn', 'workspaceSearchBtn',
+    'toggleNavBtn', 'togglePanelBtn', 'closePanelBtn', 'conversationPanel',
+    'outlineTab', 'attachmentsTab', 'conversationPanelContent', 'workspaceBackdrop',
+    'switchViewBtn', 'switchViewIcon', 'conversationMenu',
+    'renameCurrentBtn', 'exportCurrentBtn', 'deleteCurrentBtn',
+    'draftConflict', 'restoreExternalDraftBtn'
   ].forEach((id) => {
     elements[id] = document.getElementById(id);
   });
@@ -228,6 +246,7 @@ function cacheElements() {
 
 // Setup Event Listeners
 function setupEventListeners() {
+  setupViewListeners();
   elements.modelSelector.addEventListener('click', toggleModelPicker);
   elements.modelSelector.addEventListener('keydown', handleModelTriggerKeydown);
   elements.modelSearch.addEventListener('input', renderModelOptions);
@@ -235,10 +254,14 @@ function setupEventListeners() {
   elements.modelOptions.addEventListener('click', handleModelOptionClick);
   elements.modelOptions.addEventListener('pointermove', handleModelOptionPointerMove);
   elements.modelControl.addEventListener('focusout', handleModelPickerFocusOut);
-  elements.manageModelsBtn.addEventListener('click', manageModels);
   document.addEventListener('pointerdown', handleModelPickerOutsideClick);
-  window.addEventListener('resize', positionModelPicker);
-  elements.systemPromptSelector.addEventListener('change', handleSystemPromptChange);
+  window.addEventListener('resize', positionComposerPickers);
+  new ResizeObserver(positionComposerPickers).observe(elements.composer);
+  elements.systemPromptSelector.addEventListener('click', toggleRolePicker);
+  elements.systemPromptSelector.addEventListener('keydown', handleRoleTriggerKeydown);
+  elements.rolePickerPanel.addEventListener('click', handleRoleOptionClick);
+  elements.rolePickerPanel.addEventListener('keydown', handleRolePickerKeydown);
+  elements.roleControl.addEventListener('focusout', handleRolePickerFocusOut);
   elements.newChatBtn.addEventListener('click', createNewSession);
   elements.sendBtn.addEventListener('click', handleSendOrStop);
   elements.optionsBtn.addEventListener('click', openOptions);
@@ -269,12 +292,12 @@ function setupEventListeners() {
     if (areaName === 'sync' && changes.config) {
       state.config = { ...state.config, ...GenerationSettings.migrate(changes.config.newValue), ...pendingConfigChanges };
       updateModelSelector();
-      refreshMessageAvatars();
       updateSystemPromptSelector();
       updateInputState();
       renderWelcomeMessage();
       applyFontSettings();
       applyTheme();
+      updateMessageAvatars();
     }
     if (areaName === 'local') {
       handleStoredChanges(changes);
@@ -357,9 +380,7 @@ async function loadFromStorage() {
       state.drafts = localResult.drafts;
     }
 
-    if (localResult.currentSessionId) {
-      state.currentSessionId = localResult.currentSessionId;
-    }
+    state.currentSessionId = routedSessionId() || localResult.currentSessionId || null;
 
     rememberSaved(state.sessions, revs, state.drafts, state.currentSessionId);
     storageReady = true;
@@ -368,13 +389,16 @@ async function loadFromStorage() {
       repairedChats = 0;
     }
     if (!state.sessions[state.currentSessionId]) {
-      await createNewSession();
+      if (routedSessionId()) {
+        state.currentSessionId = null;
+        showNotification('This conversation is unavailable. Select a conversation or start a new chat.');
+      } else await createNewSession();
     }
   } catch (error) {
     console.error('Storage load error:', error);
     storageLoadFailed = true;
     showStorageFailure();
-    await createNewSession();
+    if (!routedSessionId()) await createNewSession();
   }
 }
 
@@ -416,9 +440,9 @@ function retryStorageSave() {
 // Merge rules: messages are merged by id, so independent additions from
 // several pages all survive. A message both pages changed differently takes
 // the version of whoever saves last, as does every other chat field. A chat
-// removed by one page is kept if another page changed it meanwhile. Pages also
-// follow each other (`handleStoredChanges`), so such overlaps are rare. Drafts
-// and the selected chat are last writer wins.
+// removed by one page is kept if another page changed it meanwhile. Once a
+// removal lands, stale saves cannot revive it. Pages follow stored messages
+// and drafts, but keep their own navigation and preserve conflicting input.
 let savedSessions = {};
 let savedSessionRefs = {};
 const dirtySessionIds = new Set();
@@ -458,7 +482,7 @@ function withStorageLock(task) {
 function collectChanges(includeSessions) {
   const changes = { sessions: {}, removed: {}, drafts: {} };
   const snapshots = {};
-  const nextDrafts = structuredClone(state.drafts);
+
   if (includeSessions) {
     Object.entries(state.sessions).forEach(([id, session]) => {
       // Only the visible chat can be edited without an explicit mutation
@@ -486,7 +510,10 @@ function collectChanges(includeSessions) {
     if (!sameValue(savedDrafts[id], text)) changes.drafts[id] = structuredClone(text);
   });
   const commit = () => {
-    savedDrafts = nextDrafts;
+    Object.entries(changes.drafts).forEach(([id, draft]) => {
+      if (draft === null) delete savedDrafts[id];
+      else savedDrafts[id] = structuredClone(draft);
+    });
     if (changes.currentSessionId !== undefined) savedCurrentSessionId = changes.currentSessionId;
   };
   const empty =
@@ -538,6 +565,8 @@ function applyChanges(tables, changes) {
   const touched = new Set();
   Object.entries(changes.sessions || {}).forEach(([id, { base, baseRev, mine }]) => {
     const stored = sessions[id];
+    // A stale page or unload stash must never resurrect a deleted conversation.
+    if (!stored && base !== null && base !== undefined) return;
     // The stored chat is still the one this page last saw: nothing to merge.
     // (A changeset without a rev - an older build's - is always merged.)
     const untouched = !stored || (baseRev !== undefined && stored.rev === baseRev);
@@ -685,7 +714,7 @@ function adoptStored(id, entry) {
     renderMessages();
     if (elements.sendBtn) updateInputState();
   }
-  if (elements.chatHistoryDropdown?.open) renderChatHistory();
+  refreshHistory();
   return true;
 }
 
@@ -698,7 +727,7 @@ function settleSaved(changes, snapshots, sessions) {
   let resave = false;
   Object.entries(changes.sessions).forEach(([id, { mine }]) => {
     const entry = sessions[id];
-    if (!entry) return;
+    if (!entry) { followStoredSession(id, undefined); return; }
     const live = state.sessions[id];
     if (sameValue(entry.session, mine) || !live) {
       savedSessions[id] = snapshots[id];
@@ -727,15 +756,31 @@ function followStoredSession(id, entry) {
   const live = state.sessions[id];
   const unsaved = live && JSON.stringify(live) !== savedSessions[id];
   if (!entry) {
-    // Removed elsewhere; a chat this page is looking at or has changed stays.
-    if (live && !unsaved && id !== state.currentSessionId) {
+    if (live) {
+      const current = id === state.currentSessionId;
+      if (current) cancelEditing(false);
       delete state.sessions[id];
+      delete state.drafts[id];
+      delete savedDrafts[id];
+      externalDrafts.delete(id);
       delete savedSessions[id];
       delete savedSessionRefs[id];
       delete savedRevs[id];
       dirtySessionIds.delete(id);
       invalidateSessionSearch(id);
-      if (elements.chatHistoryDropdown?.open) renderChatHistory();
+      if (current) {
+        state.currentSessionId = null;
+        const recent = Object.keys(state.sessions).sort((a, b) => Date.parse(state.sessions[b].timestamp) - Date.parse(state.sessions[a].timestamp))[0];
+        if (recent) activateSession(recent);
+        else {
+          renderMessages();
+          restoreDraft();
+          updateInputState();
+          updateSessionRoute(true);
+        }
+        showNotification('This conversation was deleted in another page.');
+      }
+      refreshHistory();
     }
     return;
   }
@@ -750,11 +795,14 @@ function handleStoredChanges(changes) {
   Object.entries(changes).forEach(([key, change]) => {
     if (key.startsWith(SESSION_PREFIX)) {
       followStoredSession(key.slice(SESSION_PREFIX.length), change.newValue);
+    } else if (key === 'drafts') {
+      followStoredDrafts(change.newValue || {});
     } else if (key.startsWith(PENDING_PREFIX) && change.newValue && !key.startsWith(`${PENDING_PREFIX}${pageId}:`)) {
       fold = true;
     }
   });
   if (fold) queueLocalSave(true, true);
+  refreshSessionLocks();
 }
 
 // With `scanAll` (at load, and when another page left a stash) the whole
@@ -1002,6 +1050,7 @@ function persistDrafts() {
 function restoreDraft() {
   elements.messageInput.value = normalizeDraft(state.drafts[state.currentSessionId]).text;
   renderDraftAttachments();
+  updateDraftConflict();
   autoResizeTextarea();
 }
 
@@ -1064,7 +1113,7 @@ function cancelAttachmentJobs() {
 }
 
 async function receiveAttachments(files, editorId = null) {
-  if (state.isPreparing || !files.length) return;
+  if (state.isPreparing || viewSwitching || navigationRequest || !files.length) return;
   const sessionId = state.currentSessionId;
   const job = { sessionId, editorId, cancelled: false };
   attachmentJobs.add(job);
@@ -1196,6 +1245,7 @@ function renderDraftAttachments() {
     updateInputState();
   });
   elements.attachmentStatus.hidden = ![...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
+  renderConversationPanel();
 }
 
 function renderEditingAttachments() {
@@ -1250,6 +1300,7 @@ async function cleanupAttachments() {
       const refs = AttachmentStore.references(stored);
       AttachmentStore.references(state.sessions, refs);
       AttachmentStore.references(state.drafts, refs);
+      AttachmentStore.references([...externalDrafts.values()], refs);
       await AttachmentStore.collect(refs);
     });
   } catch (error) { console.warn('Attachment cleanup deferred:', error.name); }
@@ -1261,6 +1312,7 @@ let selectionStorageKey = null;
 let selectionImportQueue = Promise.resolve();
 
 async function initializeSelectionImport() {
+  if (VIEW !== 'sidebar') return;
   try {
     const window = await chrome.windows.getCurrent();
     selectionStorageKey = `selection:${window.id}`;
@@ -1271,7 +1323,7 @@ async function initializeSelectionImport() {
 }
 
 function importSelectedText() {
-  selectionImportQueue = selectionImportQueue.then(async () => {
+  selectionImportQueue = selectionImportQueue.then(() => navigator.locks.request(`sidemind-selection:${selectionStorageKey}`, async () => {
     try {
       const result = await chrome.storage.session.get([selectionStorageKey]);
       const selection = result[selectionStorageKey];
@@ -1293,7 +1345,7 @@ function importSelectedText() {
       console.error('Selection import:', error);
       showNotification('Could not import selected text. Try the context menu again.');
     }
-  });
+  }));
   return selectionImportQueue;
 }
 
@@ -1305,10 +1357,10 @@ function importSelectedText() {
 const UNDO_TIMEOUT = 10000;
 let pendingUndo = null;
 
-function offerUndo(text, restore) {
+function offerUndo(text, restore, sessionId = state.currentSessionId) {
   clearUndo();
 
-  pendingUndo = { restore, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
+  pendingUndo = { restore, sessionId, timer: setTimeout(clearUndo, UNDO_TIMEOUT) };
   elements.undoText.textContent = text;
   elements.undoBar.classList.remove('hidden');
   elements.historyUndoText.textContent = text;
@@ -1327,7 +1379,9 @@ async function applyUndo() {
   clearUndo();
   if (!undo) return;
 
-  await undo.restore();
+  await stopStreamingIfActive();
+  await storageWriteQueue;
+  await withSessionLock(undo.sessionId, async () => { await undo.restore(); await saveToStorage(); });
   announce('Undone.');
 }
 
@@ -1365,10 +1419,13 @@ function activateSession(sessionId) {
   renderMessages();
   restoreDraft();
   updateInputState();
+  updateSessionRoute();
+  refreshSessionLocks();
 }
 
 async function createNewSession() {
   closeModelPicker(false);
+  closeRolePicker(false);
   await stopStreamingIfActive();
 
   if (isBlankSession(state.currentSessionId)) {
@@ -1376,6 +1433,7 @@ async function createNewSession() {
     return;
   }
 
+  if (viewSwitching || navigationRequest) return;
   const sessionId = crypto.randomUUID();
   state.sessions[sessionId] = {
     messages: [],
@@ -1390,7 +1448,7 @@ async function createNewSession() {
 }
 
 async function switchSession(sessionId) {
-  if (!state.sessions[sessionId]) return;
+  if (!state.sessions[sessionId] || viewSwitching || navigationRequest) return;
 
   if (sessionId !== state.currentSessionId) {
     await stopStreamingIfActive();
@@ -1402,6 +1460,12 @@ async function switchSession(sessionId) {
 }
 
 async function deleteSession(sessionId) {
+  if (viewSwitching || navigationRequest) return;
+  if (sessionId === state.currentSessionId) await stopStreamingIfActive();
+  return withSessionLock(sessionId, () => deleteUnlockedSession(sessionId));
+}
+
+async function deleteUnlockedSession(sessionId) {
   if (!state.sessions[sessionId]) return;
 
   const wasCurrent = sessionId === state.currentSessionId;
@@ -1435,12 +1499,11 @@ async function deleteSession(sessionId) {
     // Deleting the open chat moved away from it; undoing moves back.
     if (wasCurrent) activateSession(sessionId);
     else saveToStorage(sessionId);
-    if (elements.chatHistoryDropdown.open) renderChatHistory();
-  });
+    refreshHistory();
+  }, sessionId);
 
-  if (elements.chatHistoryDropdown.open) {
-    renderChatHistory();
-  }
+  await saveToStorage();
+  refreshHistory();
 }
 
 // ========================================
@@ -1487,6 +1550,9 @@ function addMessage(role, content, reasoning = null, reasoningCollapsed = false,
 // ========================================
 
 function renderMessages() {
+  document.body.dataset.empty = String(!state.sessions[state.currentSessionId]?.messages.length);
+  renderConversationPanel();
+  refreshHistory();
   Promise.resolve().then(releaseAttachmentPreviews);
   updateSessionTitle();
   // Every caller either replaces the transcript or appends to it; neither is a
@@ -1594,14 +1660,20 @@ function reconcileChildren(container, children) {
 const MESSAGE_ICONS = { user: 'user', assistant: 'robot', system: 'triangle-exclamation' };
 const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
 
-function refreshMessageAvatars() {
-  // Update cached messages in place, including other chats, without re-rendering
-  // the transcript: a config edit must preserve selection, editing and streams.
+function updateMessageAvatar(messageDiv, message) {
+  const { role, modelUsed } = message;
+  const emoji = role === 'user' ? state.config.userAvatar : role === 'assistant'
+    ? normalizeAvatarEmoji(providerForModel(modelUsed)?.avatarEmoji) || state.config.assistantAvatar
+    : '';
+  renderAvatar(messageDiv.querySelector('.message-avatar'), emoji, MESSAGE_ICONS[role] || 'robot');
+  messageDiv.classList.toggle('has-custom-avatar', Boolean(normalizeAvatarEmoji(emoji)));
+}
+
+function updateMessageAvatars() {
+  // Refresh cached nodes in place to preserve selection, editing and streams.
   for (const element of messageElementCache.values()) {
     const message = elementMessages.get(element);
-    if (message?.role === 'assistant') {
-      renderProviderAvatar(element.querySelector('.message-avatar'), providerForModel(message.modelUsed));
-    }
+    if (message) updateMessageAvatar(element, message);
   }
 }
 
@@ -1630,8 +1702,6 @@ function createMessageElement(message) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
-  if (message.role === 'assistant') renderProviderAvatar(avatar, providerForModel(message.modelUsed));
-  else avatar.appendChild(createIcon(MESSAGE_ICONS[message.role] || 'robot'));
 
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
@@ -1642,6 +1712,8 @@ function createMessageElement(message) {
 
   header.appendChild(avatar);
   header.appendChild(senderName);
+  messageDiv.appendChild(header);
+  updateMessageAvatar(messageDiv, message);
 
   // Wrapper
   const wrapper = document.createElement('div');
@@ -1653,7 +1725,7 @@ function createMessageElement(message) {
   const parts = displayParts(message);
 
   // Reasoning section (if exists)
-  if (parts.reasoning.trim()) {
+  if (parts.reasoning.trim() || parts.progress?.length) {
     bubble.appendChild(createReasoningSection(message));
   }
 
@@ -1690,7 +1762,6 @@ function createMessageElement(message) {
 
   wrapper.appendChild(bubble);
   wrapper.appendChild(actions);
-  messageDiv.appendChild(header);
   messageDiv.appendChild(wrapper);
 
   return messageDiv;
@@ -1717,8 +1788,13 @@ function createReasoningSection(message) {
   title.className = 'reasoning-title';
   title.textContent = reasoningTitle(message);
 
+  const preview = document.createElement('span');
+  preview.className = 'progress-preview';
+  preview.textContent = progressPreview(message);
+
   header.appendChild(icon);
   header.appendChild(title);
+  header.appendChild(preview);
   header.addEventListener('click', () => {
     section.classList.toggle('expanded');
     message.reasoningCollapsed = !section.classList.contains('expanded');
@@ -1728,7 +1804,7 @@ function createReasoningSection(message) {
     content.hidden = message.reasoningCollapsed;
     if (!message.reasoningCollapsed) {
       const streaming = isStreamingMessage(message.id);
-      renderMessageMarkdown(content, displayParts(message).reasoning, !streaming);
+      renderReasoningContent(content, message);
       // Opened mid-stream: show where the thinking is now, and follow it
       if (streaming) content.scrollTop = content.scrollHeight;
     }
@@ -1740,13 +1816,119 @@ function createReasoningSection(message) {
   content.id = `reasoning-${message.id}`;
   content.hidden = Boolean(message.reasoningCollapsed);
   if (!message.reasoningCollapsed) {
-    renderMessageMarkdown(content, displayParts(message).reasoning, !isStreamingMessage(message.id));
+    renderReasoningContent(content, message);
   }
 
   section.appendChild(header);
   section.appendChild(content);
 
   return section;
+}
+
+function hasExecutionProgress(parts) {
+  return parts.progress?.some((entry) => entry.type !== 'reasoning');
+}
+
+function toolSummary(item) {
+  const labels = { web_search: 'Search', web_fetch: 'Fetch', bash: 'Run', read: 'Read', write: 'Write', edit: 'Edit', glob: 'Find', grep: 'Search' };
+  const label = Object.hasOwn(labels, item.name) ? labels[item.name] : item.name || 'Tool';
+  try {
+    const args = JSON.parse(item.arguments);
+    const detail = args.query || args.url || args.command || args.path || args.pattern;
+    return typeof detail === 'string' ? `${label} · ${detail.replace(/\s+/g, ' ').trim()}` : label;
+  } catch {
+    return label;
+  }
+}
+
+function toolState(item, message) {
+  if (['completed', 'failed', 'incomplete'].includes(item.status)) return item.status;
+  return isStreamingMessage(message.id) || (!message.outcome && remoteBusySessions.has(state.currentSessionId))
+    ? 'in_progress' : 'incomplete';
+}
+
+function progressPreview(message) {
+  const parts = displayParts(message);
+  if (!hasExecutionProgress(parts)) return '';
+  const entry = parts.progress.at(-1);
+  return (entry.type === 'tool' ? toolSummary(entry.item) : entry.text).replace(/\s+/g, ' ').trim();
+}
+
+function renderReasoningContent(container, message) {
+  const parts = displayParts(message);
+  const timeline = hasExecutionProgress(parts);
+  container.classList.toggle('progress-timeline', Boolean(timeline));
+  if (!timeline) {
+    renderMessageMarkdown(container, parts.reasoning, !isStreamingMessage(message.id));
+    return;
+  }
+
+  // Reuse entries by protocol id: new events and terminal snapshots must not
+  // close a tool's details, move focus, or reset a result's scroll position.
+  const existing = new Map(Array.from(container.children, (node) => [node.dataset.progressKey, node]));
+  const nodes = parts.progress.map((entry) => {
+    const tool = entry.type === 'tool';
+    let node = existing.get(entry.key);
+    if (!node || node.dataset.progressType !== entry.type) {
+      node = document.createElement(tool ? 'details' : 'div');
+      node.className = `progress-entry progress-${entry.type}`;
+      node.dataset.progressKey = entry.key;
+      node.dataset.progressType = entry.type;
+      const heading = tool ? document.createElement('summary') : node;
+      const marker = document.createElement('span');
+      marker.className = 'progress-marker';
+      marker.textContent = tool ? '↗' : entry.type === 'reasoning' ? '✦' : '·';
+      marker.setAttribute('aria-hidden', 'true');
+      heading.appendChild(marker);
+      if (tool) {
+        const label = document.createElement('span');
+        label.className = 'progress-tool-label';
+        const status = document.createElement('span');
+        status.className = 'progress-tool-status';
+        heading.append(label, status);
+        node.appendChild(heading);
+        for (const [field, title] of [['arguments', 'Arguments'], ['output', 'Result'], ['error', 'Error']]) {
+          const block = document.createElement('div');
+          block.className = `progress-tool-${field}`;
+          const caption = document.createElement('div');
+          caption.className = 'progress-tool-caption';
+          caption.textContent = title;
+          block.append(caption, document.createElement('pre'));
+          node.appendChild(block);
+        }
+      } else {
+        const text = document.createElement('div');
+        text.className = 'progress-text';
+        node.appendChild(text);
+      }
+    }
+    if (tool) {
+      const item = entry.item;
+      const status = toolState(item, message);
+      node.dataset.status = status;
+      const label = node.querySelector('.progress-tool-label');
+      label.textContent = toolSummary(item);
+      label.title = label.textContent;
+      node.querySelector('.progress-tool-status').textContent = { in_progress: 'Running', completed: 'Done', failed: 'Failed', incomplete: 'Interrupted' }[status];
+      let args = item.arguments || '{}';
+      try { args = JSON.stringify(JSON.parse(args), null, 2); } catch { /* Show malformed arguments verbatim. */ }
+      const failure = item.pipiclaw_failure || item.error?.content || item.error?.message || (item.error ? JSON.stringify(item.error) : '');
+      for (const [field, value] of [['arguments', args], ['output', item.output], ['error', failure]]) {
+        const block = node.querySelector(`.progress-tool-${field}`);
+        block.hidden = value == null || value === '';
+        const text = value == null ? '' : String(value);
+        const pre = block.querySelector('pre');
+        if (pre.textContent !== text) pre.textContent = text;
+      }
+    } else {
+      node.dataset.level = entry.level || '';
+      renderMessageMarkdown(node.querySelector('.progress-text'), entry.text,
+        entry.status === 'completed' || !isStreamingMessage(message.id));
+    }
+    return node;
+  });
+  renderedMarkdown.delete(container);
+  reconcileChildren(container, nodes);
 }
 
 function announce(text) {
@@ -1769,8 +1951,8 @@ function isStreamingMessage(messageId) {
 
 function isAwaitingFirstToken(message) {
   if (!isStreamingMessage(message.id)) return false;
-  const { content, reasoning } = displayParts(message);
-  return !content.trim() && !reasoning.trim();
+  const { content, reasoning, progress } = displayParts(message);
+  return !content.trim() && !reasoning.trim() && !progress?.length;
 }
 
 // Some models stream their reasoning inline, as <think>…</think> ahead of the
@@ -1778,24 +1960,33 @@ function isAwaitingFirstToken(message) {
 // then this view shows it as reasoning, rather than as an unknown tag that the
 // sanitizer would drop together with all the text inside it.
 function displayParts(message) {
-  const content = message.content || '';
-  const reasoning = message.reasoning || '';
-  if (message.role !== 'assistant' || !isStreamingMessage(message.id)) return { content, reasoning };
-
-  if (message.reasoningFormat === 'structured' || (message.protocol && message.reasoningFormat !== 'think-tags')) return { content, reasoning };
-  const head = content.trimStart();
-  // The opening tag itself can arrive split over several deltas
-  if (head && '<thinking>'.startsWith(head)) return { content: '', reasoning };
-  const open = head.match(/^<think(?:ing)?>/);
-  if (!open) return { content, reasoning };
-
-  const rest = head.slice(open[0].length);
-  const close = rest.match(/<\/think(?:ing)?>/);
-  const thought = (close ? rest.slice(0, close.index) : rest).trim();
-  return {
-    content: close ? rest.slice(close.index + close[0].length).trimStart() : '',
-    reasoning: [reasoning, thought].filter(Boolean).join('\n\n')
-  };
+  const protocol = message.role === 'assistant' && message.protocol?.apiType === 'responses'
+    ? ResponsesProtocol.view(message) : null;
+  if (protocol && message.reasoningFormat !== 'think-tags') {
+    // Derive from protocol items so previously saved replies gain the same
+    // ordered view without a storage migration or duplicated transcript data.
+    return protocol;
+  }
+  let content = message.content || '';
+  let reasoning = message.reasoning || '';
+  if (message.role === 'assistant' && isStreamingMessage(message.id) && message.reasoningFormat !== 'structured') {
+    const head = content.trimStart();
+    // The opening tag itself can arrive split over several deltas.
+    if (head && '<thinking>'.startsWith(head)) content = '';
+    const open = head.match(/^<think(?:ing)?>/);
+    if (open) {
+      const rest = head.slice(open[0].length);
+      const close = rest.match(/<\/think(?:ing)?>/);
+      const thought = (close ? rest.slice(0, close.index) : rest).trim();
+      content = close ? rest.slice(close.index + close[0].length).trimStart() : '';
+      reasoning = [reasoning, thought].filter(Boolean).join('\n\n');
+    }
+  }
+  if (!protocol) return { content, reasoning };
+  const progress = protocol.progress;
+  const inline = reasoning.startsWith(protocol.reasoning) ? reasoning.slice(protocol.reasoning.length).trim() : reasoning.trim();
+  if (inline) progress.push({ key: 'inline-reasoning', type: 'reasoning', text: inline });
+  return { content, reasoning, progress };
 }
 
 function formatDuration(ms) {
@@ -1805,6 +1996,12 @@ function formatDuration(ms) {
 }
 
 function reasoningTitle(message) {
+  const parts = displayParts(message);
+  if (hasExecutionProgress(parts)) {
+    const count = parts.progress.filter((entry) => entry.type === 'tool').length;
+    const elapsed = isStreamingMessage(message.id) && message.startedAt ? Date.now() - message.startedAt : message.durationMs;
+    return ['Progress', count ? `${count} tool${count === 1 ? '' : 's'}` : '', elapsed != null ? formatDuration(elapsed) : ''].filter(Boolean).join(' · ');
+  }
   if (message.thinkingMs != null) {
     return `Reasoning · ${formatDuration(message.thinkingMs)}`;
   }
@@ -1819,8 +2016,8 @@ function reasoningTitle(message) {
 // Reasoning is considered finished the moment the first visible token lands
 function markStreamProgress(message) {
   if (!message.startedAt || message.thinkingMs != null) return;
-  const { content, reasoning } = displayParts(message);
-  if (!content || !reasoning) return;
+  const parts = displayParts(message);
+  if (!parts.content || (!parts.reasoning && !parts.progress?.length)) return;
 
   message.thinkingMs = Date.now() - message.startedAt;
 
@@ -1980,7 +2177,7 @@ function createMessageActions(message) {
     editBtn.className = 'edit-btn';
     editBtn.setAttribute('aria-label', 'Edit message');
     editBtn.setAttribute('title', 'Edit message');
-    editBtn.disabled = historyIsServerManaged();
+    editBtn.disabled = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
     if (editBtn.disabled) editBtn.title = 'History is managed by the server. Start a new chat instead.';
     editBtn.replaceChildren(createIcon('pen'));
     editBtn.addEventListener('click', () => startEditing(message));
@@ -1992,7 +2189,7 @@ function createMessageActions(message) {
   regenBtn.className = 'regenerate-btn';
   regenBtn.setAttribute('aria-label', message.role === 'system' ? 'Retry' : 'Regenerate response');
   regenBtn.setAttribute('title', message.role === 'system' ? 'Retry' : 'Regenerate response');
-  regenBtn.disabled = historyIsServerManaged();
+  regenBtn.disabled = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
   if (regenBtn.disabled) regenBtn.title = 'History is managed by the server. Start a new chat instead.';
   regenBtn.replaceChildren(createIcon('redo'));
   regenBtn.addEventListener('click', () => regenerateMessage(message, regenBtn));
@@ -2039,7 +2236,7 @@ function applyMessageStats(element, message) {
 }
 
 function copyMessage(message, button) {
-  return copyText(message.content, button, 'Copy message');
+  return copyText(displayParts(message).content, button, 'Copy message');
 }
 
 // ----------------------------------------
@@ -2050,12 +2247,15 @@ function copyMessage(message, button) {
 // bar as regenerating.
 let editingMessageId = null;
 
-function startEditing(message) {
+async function startEditing(message) {
   if (historyIsServerManaged()) {
     showNotification('History is managed by the server. Start a new chat to use different messages.');
     return;
   }
-  if (state.isStreaming || editingMessageId) return;
+  if (viewSwitching || navigationRequest || state.isAcquiring || state.generationDone || state.isStreaming || editingMessageId) return;
+  const sessionId = state.currentSessionId;
+  if (!(await withSessionLock(sessionId, () => true))) return;
+  if (sessionId !== state.currentSessionId || !state.sessions[sessionId]?.messages.includes(message)) return;
 
   const element = messageElementCache.get(message.id);
   const bubble = element?.querySelector('.message-bubble');
@@ -2166,7 +2366,7 @@ async function submitEdit(message, rawText) {
     showNotification('History is managed by the server. Start a new chat to use different messages.');
     return;
   }
-  if (state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
+  if (viewSwitching || navigationRequest || state.generationDone || state.isStreaming || [...attachmentJobs].some((job) => job.editorId === message.id)) return;
   const text = rawText.trim();
   const attachments = structuredClone(editingMessageId === message.id ? editingAttachments : message.attachments || []);
   const session = state.sessions[state.currentSessionId];
@@ -2525,6 +2725,9 @@ async function grantAccessAndRetry(message, element) {
 }
 
 function responseCompletionNotice(message) {
+  if (message.role === 'assistant' && message.startedAt && !message.outcome && !isStreamingMessage(message.id)) {
+    return remoteBusySessions.has(state.currentSessionId) ? 'Generating in another page…' : 'Generation interrupted · saved partial response. You can retry.';
+  }
   if (message.serverConversationUnconfirmed) return 'Server turn unconfirmed. Check it on the server and start a new chat before sending again.';
   if (message.stopped) return 'Generation stopped · partial response';
   if (message.incompleteReason === 'max_output_tokens') {
@@ -2533,8 +2736,11 @@ function responseCompletionNotice(message) {
   if (message.incompleteReason === 'content_filter') return 'The provider filtered this response · it may be incomplete.';
   if (message.incompleteReason) return 'The provider returned an incomplete response. You can retry.';
   if (message.unsupportedOutput?.length) return `The provider returned unsupported output: ${message.unsupportedOutput.join(', ')}. Tool execution is not supported.`;
-  if (message.outcome === 'completed' && !message.content?.trim()) return message.reasoning?.trim()
-    ? 'The provider returned reasoning but no answer text.' : 'The provider returned no displayable text.';
+  const parts = displayParts(message);
+  if (message.outcome === 'completed' && !parts.content.trim()) {
+    if (hasExecutionProgress(parts)) return 'The provider returned execution progress but no answer text.';
+    return parts.reasoning.trim() ? 'The provider returned reasoning but no answer text.' : 'The provider returned no displayable text.';
+  }
   if (message.completionUnconfirmed) return 'Completion not confirmed by the provider · this response may be incomplete.';
   return '';
 }
@@ -2570,7 +2776,7 @@ function updateMessageDisplay(messageId) {
   const bubble = messageElement.querySelector('.message-bubble');
   let reasoningSection = messageElement.querySelector('.reasoning-section');
 
-  if (parts.reasoning.trim()) {
+  if (parts.reasoning.trim() || parts.progress?.length) {
     if (!reasoningSection) {
       reasoningSection = createReasoningSection(message);
       bubble.insertBefore(reasoningSection, bubble.firstChild);
@@ -2581,12 +2787,14 @@ function updateMessageDisplay(messageId) {
         // unless the reader scrolled up inside it.
         const pinned =
           reasoningContent.scrollHeight - reasoningContent.scrollTop - reasoningContent.clientHeight < 24;
-        renderMessageMarkdown(reasoningContent, parts.reasoning, !streaming);
+        renderReasoningContent(reasoningContent, message);
         if (streaming && pinned) reasoningContent.scrollTop = reasoningContent.scrollHeight;
       }
 
       const title = reasoningSection.querySelector('.reasoning-title');
       if (title) title.textContent = reasoningTitle(message);
+      const preview = reasoningSection.querySelector('.progress-preview');
+      if (preview) preview.textContent = progressPreview(message);
     }
 
     reasoningSection.classList.toggle('expanded', !message.reasoningCollapsed);
@@ -2742,24 +2950,25 @@ function autoResizeTextarea() {
     textarea.style.height = 'auto';
     const newHeight = Math.min(
       Math.max(textarea.scrollHeight + 2, 62),
-      Math.min(240, window.innerHeight * 0.3)
+      VIEW === 'workspace' ? window.innerHeight * 0.3 : Math.min(240, window.innerHeight * 0.3)
     );
     textarea.style.height = newHeight + 'px';
   });
 }
 
-function updateInputState() {
+function updateInputState(preserveStatus = false) {
+  updateViewSwitchState();
   const provider = getCurrentProvider();
   const hasConfig = Boolean(getReadyProvider());
   const hasMessage = elements.messageInput.value.trim().length > 0 || normalizeDraft(state.drafts[state.currentSessionId]).attachments.length > 0;
   const hasJobs = [...attachmentJobs].some((job) => job.sessionId === state.currentSessionId);
-  const conversationNotice = serverConversationNotice();
-  const canSend = hasConfig && hasMessage && !state.isStreaming && !hasJobs && !attachmentSaveFailed && !conversationNotice;
+  const conversationNotice = remoteBusySessions.has(state.currentSessionId) ? REMOTE_BUSY_NOTICE : serverConversationNotice();
+  const canSend = hasConfig && hasMessage && !state.isStreaming && !state.generationDone && !state.isAcquiring && !viewSwitching && !hasJobs && !attachmentSaveFailed && !conversationNotice;
   if (elements.attachBtn) elements.attachBtn.disabled = state.isPreparing;
   elements.draftAttachments?.querySelectorAll('button').forEach((button) => { button.disabled = state.isPreparing; });
   // Disabling a focused textarea blurs it. Lock the captured draft without
   // removing keyboard focus while attachments and the request are prepared.
-  elements.messageInput.readOnly = state.isPreparing;
+  elements.messageInput.readOnly = state.isPreparing || viewSwitching || navigationRequest;
   const editor = messageElementCache.get(editingMessageId)?.querySelector('.message-editor');
   if (editor) {
     editor.querySelector('.message-edit-input').readOnly = state.isPreparing;
@@ -2779,13 +2988,16 @@ function updateInputState() {
     elements.sendBtn.title = conversationNotice || 'Send message';
   }
   elements.modelSelector.disabled = state.isStreaming;
-  if (state.isStreaming) closeModelPicker(false);
+  if (state.isStreaming) {
+    closeModelPicker(false);
+    closeRolePicker(false);
+  }
   elements.systemPromptSelector.disabled = state.isStreaming;
-  const managed = historyIsServerManaged();
+  const managed = historyIsServerManaged() || remoteBusySessions.has(state.currentSessionId);
   if (managed !== historyControlsManaged) {
     elements.messagesList.querySelectorAll('.edit-btn, .regenerate-btn').forEach((button) => {
       button.disabled = managed;
-      button.title = managed ? 'History is managed by the server. Start a new chat instead.' : button.getAttribute('aria-label');
+      button.title = managed ? (remoteBusySessions.has(state.currentSessionId) ? REMOTE_BUSY_NOTICE : 'History is managed by the server. Start a new chat instead.') : button.getAttribute('aria-label');
     });
     historyControlsManaged = managed;
   }
@@ -2794,6 +3006,7 @@ function updateInputState() {
     : hasConfig
       ? 'Ask a question…'
       : 'Connect a provider and choose a model…';
+  if (preserveStatus) return;
   clearTimeout(generationStatusTimer);
   elements.generationStatus.dataset.state = state.isStreaming ? 'active' : hasConfig ? 'idle' : 'setup';
   elements.generationStatus.textContent = state.isStreaming
@@ -2827,12 +3040,11 @@ function updateModelSelector() {
   const hasModels = state.config.providers.some((item) => item.models.length);
   renderProviderAvatar(elements.modelAvatar, provider);
   elements.modelName.textContent = modelName || 'Choose a model';
-  elements.modelProvider.textContent = providerName
-    ? `${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`
-    : hasModels ? 'Select a model to start chatting' : 'Connect a provider in Settings';
-  elements.modelSelector.title = modelName ? `${modelName} · ${providerName}` : 'Choose a model';
+  elements.modelProvider.textContent = providerName || (hasModels ? 'Select a service' : 'Connect a service in Settings');
+  elements.modelSelector.title = modelName
+    ? `${modelName} · ${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}` : 'Choose a model and service';
   if (!elements.modelPickerPanel.hidden) {
-    positionModelPicker();
+    positionComposerPickers();
     renderModelOptions();
   }
 }
@@ -2844,11 +3056,12 @@ function toggleModelPicker() {
 
 function openModelPicker() {
   if (state.isStreaming) return;
+  closeRolePicker(false);
   elements.modelSearch.value = '';
   elements.modelPickerPanel.hidden = false;
   elements.modelSelector.setAttribute('aria-expanded', 'true');
   elements.modelSearch.setAttribute('aria-expanded', 'true');
-  positionModelPicker();
+  positionComposerPickers();
   renderModelOptions();
   elements.modelSearch.focus({ preventScroll: true });
 }
@@ -2862,10 +3075,11 @@ function closeModelPicker(restoreFocus = false) {
   if (restoreFocus) elements.modelSelector.focus({ preventScroll: true });
 }
 
-function positionModelPicker() {
-  if (elements.modelPickerPanel.hidden) return;
-  const available = innerHeight - elements.modelSelector.getBoundingClientRect().bottom - 20;
-  elements.modelPickerPanel.style.maxHeight = `${Math.max(0, Math.min(420, available))}px`;
+function positionComposerPickers() {
+  const available = elements.composer.getBoundingClientRect().top - 20;
+  [elements.modelPickerPanel, elements.rolePickerPanel].forEach((panel) => {
+    if (!panel.hidden) panel.style.maxHeight = `${Math.max(0, Math.min(420, available))}px`;
+  });
 }
 
 function renderModelOptions() {
@@ -2892,21 +3106,16 @@ function renderModelOptions() {
       const option = document.createElement('button');
       option.type = 'button';
       option.className = 'model-option';
+      option.title = model.name;
       option.id = `model-option-${providerIndex}-${modelIndex}`;
       option.dataset.modelKey = key;
       option.tabIndex = -1;
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', String(selected));
-      const text = document.createElement('span');
-      text.className = 'model-option-text';
       const name = document.createElement('span');
       name.className = 'model-option-name';
       name.textContent = model.name;
-      const id = document.createElement('span');
-      id.className = 'model-option-id';
-      id.textContent = model.id;
-      text.append(name, id);
-      option.appendChild(text);
+      option.appendChild(name);
       if (selected) option.appendChild(createIcon('check'));
       group.appendChild(option);
       options.push(option);
@@ -2970,31 +3179,102 @@ function handleModelOptionPointerMove(event) {
 
 function handleModelPickerOutsideClick(event) {
   if (!elements.modelControl.contains(event.target)) closeModelPicker(false);
+  if (!elements.roleControl.contains(event.target)) closeRolePicker(false);
 }
 
 function handleModelPickerFocusOut(event) {
   if (!elements.modelControl.contains(event.relatedTarget)) closeModelPicker(false);
 }
 
-function manageModels() {
-  closeModelPicker(true);
-  openOptions();
+function updateSystemPromptSelector() {
+  const focusedId = elements.rolePickerPanel.contains(document.activeElement)
+    ? document.activeElement.dataset.promptId : null;
+  const selected = state.config.systemPrompts.find((prompt) => prompt.id === state.config.selectedSystemPrompt);
+  elements.roleName.textContent = selected?.name || 'Default';
+  elements.systemPromptSelector.title = `Role: ${elements.roleName.textContent}`;
+  const fragment = document.createDocumentFragment();
+  state.config.systemPrompts.forEach((prompt) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'role-option';
+    option.dataset.promptId = prompt.id;
+    option.tabIndex = -1;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(prompt.id === state.config.selectedSystemPrompt));
+    const name = document.createElement('span');
+    name.textContent = prompt.name;
+    option.appendChild(name);
+    if (prompt.id === state.config.selectedSystemPrompt) option.appendChild(createIcon('check'));
+    fragment.appendChild(option);
+  });
+  elements.rolePickerPanel.replaceChildren(fragment);
+  if (focusedId !== null) {
+    const options = Array.from(elements.rolePickerPanel.children);
+    (options.find((option) => option.dataset.promptId === focusedId) || options[0])?.focus({ preventScroll: true });
+  }
 }
 
-function updateSystemPromptSelector() {
-  elements.systemPromptSelector.innerHTML = '';
+// ===== Role picker =====
+function toggleRolePicker() {
+  if (elements.rolePickerPanel.hidden) openRolePicker();
+  else closeRolePicker(true);
+}
 
-  state.config.systemPrompts.forEach((prompt) => {
-    const option = document.createElement('option');
-    option.value = prompt.id;
-    option.textContent = prompt.name;
+function openRolePicker(last = false) {
+  if (state.isStreaming) return;
+  closeModelPicker(false);
+  elements.rolePickerPanel.hidden = false;
+  elements.systemPromptSelector.setAttribute('aria-expanded', 'true');
+  positionComposerPickers();
+  const options = Array.from(elements.rolePickerPanel.children);
+  const selected = options.find((option) => option.getAttribute('aria-selected') === 'true');
+  (selected || (last ? options.at(-1) : options[0]))?.focus({ preventScroll: true });
+  elements.rolePickerPanel.querySelector(':focus')?.scrollIntoView({ block: 'nearest' });
+}
 
-    if (state.config.selectedSystemPrompt === prompt.id) {
-      option.selected = true;
-    }
+function closeRolePicker(restoreFocus = false) {
+  if (!elements.rolePickerPanel || elements.rolePickerPanel.hidden) return;
+  elements.rolePickerPanel.hidden = true;
+  elements.systemPromptSelector.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) elements.systemPromptSelector.focus({ preventScroll: true });
+}
 
-    elements.systemPromptSelector.appendChild(option);
-  });
+function handleRoleTriggerKeydown(event) {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    openRolePicker(event.key === 'ArrowUp');
+  }
+}
+
+function handleRolePickerKeydown(event) {
+  if (event.isComposing) return;
+  const options = Array.from(elements.rolePickerPanel.children);
+  const index = options.indexOf(document.activeElement);
+  let next;
+  if (event.key === 'ArrowDown') next = Math.min(options.length - 1, index + 1);
+  else if (event.key === 'ArrowUp') next = Math.max(0, index - 1);
+  else if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = options.length - 1;
+  else if (event.key === 'Tab') {
+    // Options use programmatic focus; resume the toolbar's normal tab order.
+    event.preventDefault();
+    closeRolePicker(false);
+    (event.shiftKey ? elements.systemPromptSelector : elements.sendBtn.disabled ? elements.messageInput : elements.sendBtn).focus();
+    return;
+  }
+  if (next !== undefined) {
+    event.preventDefault();
+    options[next]?.focus();
+  }
+}
+
+function handleRoleOptionClick(event) {
+  const option = event.target.closest('[data-prompt-id]');
+  if (option) handleSystemPromptChange(option.dataset.promptId);
+}
+
+function handleRolePickerFocusOut(event) {
+  if (!elements.roleControl.contains(event.relatedTarget)) closeRolePicker(false);
 }
 
 // ========================================
@@ -3016,9 +3296,12 @@ function handleModelChange(selectedValue) {
   closeModelPicker(true);
 }
 
-function handleSystemPromptChange(event) {
-  state.config.selectedSystemPrompt = event.target.value;
+function handleSystemPromptChange(promptId) {
+  if (state.isStreaming || !state.config.systemPrompts.some((prompt) => prompt.id === promptId)) return;
+  state.config.selectedSystemPrompt = promptId;
   saveConfigSoon({ selectedSystemPrompt: state.config.selectedSystemPrompt });
+  closeRolePicker(true);
+  updateSystemPromptSelector();
 }
 
 function handleInputChange() {
@@ -3048,6 +3331,11 @@ function handleGlobalKeydown(event) {
     closeModelPicker(true);
     return;
   }
+  if (event.key === 'Escape' && !event.shiftKey && !elements.rolePickerPanel.hidden) {
+    event.preventDefault();
+    closeRolePicker(true);
+    return;
+  }
   const shortcut = event.ctrlKey || event.metaKey;
   if (shortcut && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'o') {
     event.preventDefault();
@@ -3057,10 +3345,13 @@ function handleGlobalKeydown(event) {
   if (event.shiftKey && !shortcut && !event.altKey && event.key === 'Escape') {
     event.preventDefault();
     closeModelPicker(false);
+    closeRolePicker(false);
     elements.messageInput.focus();
     return;
   }
   if (event.key !== 'Escape') return;
+  if (closeWorkspaceDrawer()) { event.preventDefault(); return; }
+  if (elements.conversationMenu.open) { elements.conversationMenu.open = false; event.preventDefault(); return; }
 
   if (elements.chatHistoryDropdown.open) return;
   if (editingMessageId && !state.isPreparing) {
@@ -3087,6 +3378,13 @@ function handleScroll() {
 }
 
 async function handleSendMessage() {
+  if (viewSwitching || navigationRequest || state.isAcquiring) return;
+  if (!state.currentSessionId) {
+    const text = elements.messageInput.value;
+    await createNewSession();
+    elements.messageInput.value = text;
+    saveDraftSoon();
+  }
   const content = elements.messageInput.value.trim();
   const attachments = normalizeDraft(state.drafts[state.currentSessionId]).attachments;
   if ((!content && !attachments.length) || state.isStreaming || state.generationDone || elements.sendBtn.disabled) return;
@@ -3100,6 +3398,7 @@ async function handleStopGeneration() {
   state.abortController.abort();
   elements.sendBtn.disabled = true;
   elements.generationStatus.textContent = 'Stopping…';
+  updateViewSwitchState();
   if (done) await done;
 }
 
@@ -3117,7 +3416,9 @@ function openOptions() {
 }
 
 function openChatHistory() {
+  if (VIEW === 'workspace') { setNavigationOpen(true); setWorkspaceSearchOpen(true); return; }
   closeModelPicker(false);
+  closeRolePicker(false);
   clearTimeout(historySearchTimer);
   elements.historySearch.value = '';
   historyVisibleCount = HISTORY_PAGE_SIZE;
@@ -3127,6 +3428,10 @@ function openChatHistory() {
 }
 
 function closeChatHistory() {
+  if (VIEW === 'workspace') {
+    if (window.innerWidth < 900) setNavigationOpen(false);
+    return;
+  }
   clearTimeout(historySearchTimer);
   historyRenderVersion += 1;
   elements.chatHistoryList.setAttribute('aria-busy', 'false');
@@ -3277,7 +3582,17 @@ async function renderChatHistory() {
     meta.className = 'chat-history-meta';
     const when = group === 'Today' ? formatTime(session.timestamp) : date.toLocaleDateString();
     meta.textContent = `${when} · ${describeModel(session.modelUsed).join(' / ') || 'No model'}`;
+    if (draftHasContent(state.drafts[sessionId])) {
+      const draft = document.createElement('span'); draft.className = 'history-draft'; draft.textContent = 'Draft'; meta.appendChild(draft);
+    }
     content.append(title, meta);
+    if (query) {
+      const text = session.messages.map((message) => message.content || (message.attachments || []).map((ref) => ref.name).join(' ')).join(' ').replace(/\s+/g, ' ');
+      const start = Math.max(0, text.toLocaleLowerCase().indexOf(query) - 35);
+      const snippet = document.createElement('div'); snippet.className = 'history-snippet';
+      snippet.textContent = `${start ? '…' : ''}${text.slice(start, start + 110)}`;
+      content.appendChild(snippet);
+    }
     content.addEventListener('click', () => switchSession(sessionId));
     const actions = document.createElement('div');
     actions.className = 'history-actions';
@@ -3294,6 +3609,26 @@ async function renderChatHistory() {
       button.addEventListener('click', handler);
       actions.appendChild(button);
     });
+    if (VIEW === 'workspace') {
+      const menu = document.createElement('details'); menu.className = 'conversation-menu';
+      const trigger = document.createElement('summary'); trigger.className = 'icon-btn'; trigger.setAttribute('aria-label', `Actions for ${session.title}`); trigger.appendChild(createIcon('more'));
+      const items = document.createElement('div'); items.className = 'conversation-menu-items';
+      while (actions.firstChild) {
+        const button = actions.firstChild;
+        button.appendChild(document.createTextNode(button.getAttribute('aria-label')));
+        button.className = '';
+        button.addEventListener('click', () => { menu.open = false; });
+        items.appendChild(button);
+      }
+      menu.append(trigger, items); actions.appendChild(menu);
+      menu.addEventListener('toggle', () => {
+        if (!menu.open) return;
+        elements.chatHistoryList.querySelectorAll('details[open]').forEach((other) => { if (other !== menu) other.open = false; });
+        const rect = trigger.getBoundingClientRect();
+        menu.style.setProperty('--menu-top', `${Math.min(rect.bottom, window.innerHeight - 135)}px`);
+        menu.style.setProperty('--menu-left', `${Math.max(8, rect.right - 170)}px`);
+      });
+    }
     item.append(content, actions);
     fragment.appendChild(item);
   });
@@ -3317,6 +3652,7 @@ async function loadMoreChatHistory() {
 }
 
 function renameSession(sessionId, item) {
+  if (viewSwitching || remoteBusySessions.has(sessionId)) { showNotification(REMOTE_BUSY_NOTICE); return; }
   const session = state.sessions[sessionId];
   const input = document.createElement('input');
   input.className = 'history-rename-input';
@@ -3338,14 +3674,17 @@ function renameSession(sessionId, item) {
   });
   input.addEventListener(
     'blur',
-    () => {
+    async () => {
       if (!cancelled && input.value.trim()) {
-        session.title = input.value.trim();
-        updateSessionTitle();
-        saveToStorage(sessionId);
+        await withSessionLock(sessionId, async () => {
+          if (!state.sessions[sessionId]) return;
+          state.sessions[sessionId].title = input.value.trim();
+          updateSessionTitle();
+          await saveToStorage(sessionId);
+        });
       }
       renderChatHistory();
-      elements.historySearch.focus();
+      (elements.historySearchContainer.hidden ? elements.workspaceSearchBtn : elements.historySearch).focus();
     },
     { once: true }
   );
@@ -3360,8 +3699,13 @@ function sessionMarkdown(session) {
   session.messages.forEach((message) => {
     const model = describeModel(message.modelUsed).join(' / ') || message.modelUsed || '';
     parts.push(`## ${MESSAGE_LABELS[message.role] || message.role}${model ? ` · ${model}` : ''}`, message.timestamp || '');
-    if (message.reasoning?.trim()) parts.push('### Reasoning / summary', message.reasoning);
-    if (message.content) parts.push(message.content);
+    const view = displayParts(message);
+    if (hasExecutionProgress(view)) {
+      parts.push('### Execution progress');
+      view.progress.forEach((entry) => parts.push(entry.type === 'tool'
+        ? `- ${toolSummary(entry.item)} (${toolState(entry.item, message)})` : entry.text));
+    } else if (view.reasoning.trim()) parts.push('### Reasoning / summary', view.reasoning);
+    if (view.content) parts.push(view.content);
     (message.attachments || []).forEach((ref) => parts.push(`Attachment: ${ref.name} · ${ref.mime} · ${ref.size} bytes (download the original in SideMind)`));
     const notice = message.error || responseCompletionNotice(message);
     if (notice) parts.push(`Status: ${notice}`);
@@ -3410,35 +3754,39 @@ function serverConversationNotice(provider = getCurrentProvider(), session = sta
 // Hold a separate lock through the whole turn. The storage lock still only
 // covers read/merge/write, so saving drafts in other chats stays responsive.
 async function sendMessageToAPI(draft = null, revision = null) {
-  if (!historyIsServerManaged()) return sendPreparedMessage(draft, revision);
-  if (state.isStreaming || state.generationDone) return;
+  if (state.isStreaming || state.generationDone || state.isAcquiring || viewSwitching) return;
   const sessionId = state.currentSessionId;
   const provider = structuredClone(getCurrentProvider());
   const modelKey = state.config.selectedModel;
+  const before = JSON.stringify(state.sessions[sessionId]);
+  state.isAcquiring = true;
+  updateInputState();
   try {
-    if (typeof navigator === 'undefined' || !navigator.locks) {
-      throw new Error('Server conversations require browser Web Locks support. Update Chrome and try again.');
-    }
-    await navigator.locks.request(`sidemind-server-conversation:${sessionId}`, { ifAvailable: true }, async (lock) => {
-      if (!lock) throw new Error('This server conversation is busy in another sidebar. Wait for it to finish.');
+    await withSessionLock(sessionId, async () => {
       if (!(await queueLocalSave(true, true))) throw new Error('Could not save this conversation. Your draft is kept. Retry saving first.');
-      if (sessionId !== state.currentSessionId) return;
+      if (sessionId !== state.currentSessionId || !state.sessions[sessionId]) return;
       const stored = await chrome.storage.local.get([SESSION_PREFIX + sessionId]);
       if (sessionId !== state.currentSessionId) return;
       if (modelKey !== state.config.selectedModel || !sameValue(provider, getCurrentProvider())) {
         showNotification('The provider or model changed while preparing. Your draft is kept; send again with your chosen configuration.');
-        updateInputState();
         return;
       }
       const entry = stored[SESSION_PREFIX + sessionId];
-      if (entry) adoptStored(sessionId, entry);
-      const notice = serverConversationNotice();
-      if (notice) { showNotification(notice); updateInputState(); return; }
+      if (!entry) { followStoredSession(sessionId, undefined); return; }
+      if (revision && !sameValue(JSON.parse(before), entry.session)) {
+        showNotification('This conversation changed in another page. Review it and try again.');
+        return;
+      }
+      if (!revision) adoptStored(sessionId, entry);
+      state.isAcquiring = false;
       await sendPreparedMessage(draft, revision);
     });
   } catch (error) {
-    console.error('Preparing server conversation:', error.name);
+    console.error('Preparing conversation:', error.name);
     showNotification(error.message);
+  } finally {
+    state.isAcquiring = false;
+    updateInputState(true);
   }
 }
 
@@ -3513,11 +3861,13 @@ async function sendPreparedMessage(draft = null, revision = null) {
   } finally {
     try {
       state.isPreparing = false;
-      cleanupStreaming(assistantMessage?.id, preparationError);
+      await cleanupStreaming(assistantMessage?.id, preparationError);
+      await storageWriteQueue;
     } finally {
       state.resolveGeneration?.();
       state.resolveGeneration = null;
       state.generationDone = null;
+      updateViewSwitchState();
     }
   }
 }
@@ -4216,7 +4566,7 @@ async function makeApiRequest(provider, endpoint, body, signal) {
   }
 }
 
-function cleanupStreaming(messageId, preparationError = null) {
+async function cleanupStreaming(messageId, preparationError = null) {
   const wasAborted = state.abortController?.signal.aborted;
   const session = state.sessions[state.currentSessionId];
   const message = session?.messages.find((item) => item.id === messageId);
@@ -4232,7 +4582,8 @@ function cleanupStreaming(messageId, preparationError = null) {
     message.outcome = message.error ? 'failed' : wasAborted ? 'stopped' : message.outcome || (message.incompleteReason ? 'incomplete' : message.completionUnconfirmed ? 'unconfirmed' : 'completed');
   }
   if (wasAborted && message) {
-    const hasContent = message.content?.trim() || message.reasoning?.trim();
+    const parts = displayParts(message);
+    const hasContent = parts.content.trim() || parts.reasoning.trim() || parts.progress?.length;
 
     if (hasContent) {
       message.timestamp = new Date().toISOString();
@@ -4249,7 +4600,7 @@ function cleanupStreaming(messageId, preparationError = null) {
   state.abortController = null;
 
   if (!message && preparationError) {
-    saveToStorage();
+    await saveToStorage();
     updateInputState();
     elements.generationStatus.textContent = preparationError.name === 'AbortError'
       ? 'Preparation cancelled · draft kept' : 'Message could not be prepared · draft kept';
@@ -4266,7 +4617,7 @@ function cleanupStreaming(messageId, preparationError = null) {
         : responseCompletionNotice(message || {}) || 'Response complete.'
   );
 
-  saveToStorage();
+  const saving = saveToStorage();
   // Repaint once more now that the message counts as finished: final markdown
   // goes into the cache, code blocks get their copy buttons, the reasoning
   // header settles on its final duration.
@@ -4290,6 +4641,7 @@ function cleanupStreaming(messageId, preparationError = null) {
       elements.generationStatus.dataset.state = 'idle';
     }, 3000);
   }
+  await saving;
 }
 
 function finalizeTiming(messageId) {
@@ -4299,7 +4651,8 @@ function finalizeTiming(messageId) {
   message.durationMs = Date.now() - message.startedAt;
 
   // A reply that was nothing but reasoning still deserves a duration
-  if (message.thinkingMs == null && message.reasoning?.trim()) {
+  const parts = displayParts(message);
+  if (message.thinkingMs == null && (parts.reasoning.trim() || parts.progress?.length)) {
     message.thinkingMs = message.durationMs;
     if (!message.reasoningTouched && !state.userScrolledUp && !state.readingResponse) {
       message.reasoningCollapsed = true;
@@ -4425,3 +4778,521 @@ function showError(message) {
 }
 
 console.log('SideMind loaded');
+
+// ========================================
+// DUAL VIEW NAVIGATION AND CONVERSATION PROJECTIONS
+// ========================================
+let navigationOpen = true;
+let panelOpen = false;
+let panelTab = 'outline';
+let viewSwitching = false;
+let currentWindowId = null;
+let navigationPort = null;
+let navigationRequest = false;
+let routeQueue = Promise.resolve();
+let shellPreference = {};
+const externalDrafts = new Map();
+const remoteBusySessions = new Set();
+const heldSessionLocks = new Set();
+const REMOTE_BUSY_NOTICE = 'This conversation is generating in another page. Please wait.';
+const generationChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('sidemind-generation') : null;
+let locksRefreshVersion = 0;
+
+function routedSessionId() {
+  return new URLSearchParams(location.hash.slice(1)).get('session');
+}
+
+function updateSessionRoute(replace = false) {
+  if (VIEW !== 'workspace' || routedSessionId() === state.currentSessionId) return;
+  const url = new URL(location.href);
+  url.hash = state.currentSessionId ? `session=${encodeURIComponent(state.currentSessionId)}` : '';
+  history[replace ? 'replaceState' : 'pushState'](null, '', url);
+}
+
+function initializeView() {
+  if (VIEW !== 'workspace') return;
+  try { shellPreference = JSON.parse(localStorage.getItem('sidemind-workspace-layout') || '{}'); } catch {}
+  navigationOpen = window.innerWidth >= 900 && shellPreference.navigation !== false;
+  panelOpen = shellPreference.panel === true;
+  panelTab = shellPreference.tab === 'attachments' ? 'attachments' : 'outline';
+  if (window.innerWidth < 900 && panelOpen) navigationOpen = false;
+  document.querySelectorAll('.workspace-only').forEach((node) => { node.hidden = false; });
+  // Move the existing history nodes: both views keep the same search, renderer,
+  // rename and undo behavior, with a single set of element references.
+  elements.workspaceHistory.appendChild(elements.chatHistoryDropdown.firstElementChild);
+  elements.historySearchContainer.hidden = true;
+  elements.switchViewIcon.setAttribute('href', '../assets/icons.svg#panel-right');
+  elements.switchViewBtn.setAttribute('aria-label', 'Back to sidebar');
+  renderWorkspaceLayout();
+}
+
+function setupViewListeners() {
+  elements.switchViewBtn.addEventListener('click', switchView);
+  elements.workspaceNewBtn.addEventListener('click', createNewSession);
+  elements.workspaceSettingsBtn.addEventListener('click', openOptions);
+  elements.workspaceSearchBtn.addEventListener('click', toggleWorkspaceSearch);
+  elements.historySearch.addEventListener('keydown', handleWorkspaceSearchKeydown);
+  elements.toggleNavBtn.addEventListener('click', toggleNavigation);
+  elements.togglePanelBtn.addEventListener('click', () => setPanelOpen(!panelOpen));
+  elements.closePanelBtn.addEventListener('click', () => setPanelOpen(false));
+  elements.outlineTab.addEventListener('click', () => selectPanelTab('outline'));
+  elements.attachmentsTab.addEventListener('click', () => selectPanelTab('attachments'));
+  [elements.outlineTab, elements.attachmentsTab].forEach((tab) => tab.addEventListener('keydown', handlePanelTabKeydown));
+  elements.workspaceBackdrop.addEventListener('click', closeWorkspaceDrawer);
+  elements.restoreExternalDraftBtn.addEventListener('click', restoreExternalDraft);
+  elements.renameCurrentBtn.addEventListener('click', renameCurrentSession);
+  elements.exportCurrentBtn.addEventListener('click', () => { elements.conversationMenu.open = false; exportSession(state.currentSessionId); });
+  elements.deleteCurrentBtn.addEventListener('click', () => { elements.conversationMenu.open = false; deleteSession(state.currentSessionId); });
+  window.addEventListener('resize', handleWorkspaceResize);
+  window.addEventListener('hashchange', handleSessionRoute);
+  window.addEventListener('popstate', handleSessionRoute);
+  window.addEventListener('focus', refreshSessionLocks);
+  document.addEventListener('keydown', trapWorkspaceDrawerFocus);
+  document.addEventListener('click', closeConversationMenus);
+  generationChannel?.addEventListener('message', async (event) => {
+    await refreshSessionLocks();
+    const id = event.data?.sessionId;
+    if (id && !remoteBusySessions.has(id) && !heldSessionLocks.has(id)) {
+      const stored = await chrome.storage.local.get([SESSION_PREFIX + id]);
+      followStoredSession(id, stored[SESSION_PREFIX + id]);
+    }
+  });
+}
+
+function refreshHistory() {
+  if (VIEW === 'workspace' || elements.chatHistoryDropdown?.open) renderChatHistory();
+}
+
+function persistWorkspaceLayout() {
+  try { localStorage.setItem('sidemind-workspace-layout', JSON.stringify(shellPreference)); } catch {}
+}
+
+function toggleNavigation() { setNavigationOpen(!navigationOpen); }
+
+function toggleWorkspaceSearch() {
+  setWorkspaceSearchOpen(elements.historySearchContainer.hidden);
+}
+
+function setWorkspaceSearchOpen(open) {
+  elements.historySearchContainer.hidden = !open;
+  elements.workspaceSearchBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    elements.historySearch.focus();
+  } else {
+    clearTimeout(historySearchTimer);
+    elements.historySearch.value = '';
+    historyVisibleCount = HISTORY_PAGE_SIZE;
+    renderChatHistory();
+    elements.workspaceSearchBtn.focus({ preventScroll: true });
+  }
+}
+
+function handleWorkspaceSearchKeydown(event) {
+  if (VIEW !== 'workspace' || event.key !== 'Escape' || isCompositionKey(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setWorkspaceSearchOpen(false);
+}
+
+function setNavigationOpen(open) {
+  navigationOpen = open;
+  shellPreference.navigation = open;
+  if (open && window.innerWidth < 900) panelOpen = false;
+  persistWorkspaceLayout();
+  renderWorkspaceLayout();
+  if (open && window.innerWidth < 900) elements.workspaceNewBtn.focus();
+  else if (!open) elements.toggleNavBtn.focus({ preventScroll: true });
+}
+
+function setPanelOpen(open) {
+  panelOpen = open;
+  shellPreference.panel = open;
+  if (open && window.innerWidth < 900) navigationOpen = false;
+  persistWorkspaceLayout();
+  renderWorkspaceLayout();
+  if (open) elements[panelTab === 'outline' ? 'outlineTab' : 'attachmentsTab'].focus({ preventScroll: true });
+  else elements.togglePanelBtn.focus({ preventScroll: true });
+}
+
+function handleWorkspaceResize() {
+  if (window.innerWidth < 900 && panelOpen) navigationOpen = false;
+  renderWorkspaceLayout();
+}
+
+function renderWorkspaceLayout() {
+  if (VIEW !== 'workspace') return;
+  document.body.dataset.nav = String(navigationOpen);
+  document.body.dataset.panel = String(panelOpen);
+  elements.workspaceNav.hidden = !navigationOpen;
+  elements.conversationPanel.hidden = !panelOpen;
+  elements.toggleNavBtn.setAttribute('aria-expanded', String(navigationOpen));
+  elements.togglePanelBtn.setAttribute('aria-expanded', String(panelOpen));
+  const drawer = activeWorkspaceDrawer();
+  elements.workspaceBackdrop.hidden = !drawer;
+  document.querySelector('.app-container').inert = Boolean(drawer);
+  elements.workspaceNav.inert = Boolean(drawer && drawer !== elements.workspaceNav);
+  elements.conversationPanel.inert = Boolean(drawer && drawer !== elements.conversationPanel);
+  renderConversationPanel();
+  autoResizeTextarea();
+}
+
+function activeWorkspaceDrawer() {
+  if (VIEW !== 'workspace') return null;
+  if (panelOpen && window.innerWidth < 1280) return elements.conversationPanel;
+  if (navigationOpen && window.innerWidth < 900) return elements.workspaceNav;
+  return null;
+}
+
+function closeWorkspaceDrawer() {
+  const drawer = activeWorkspaceDrawer();
+  if (!drawer) return false;
+  if (drawer === elements.workspaceNav) setNavigationOpen(false);
+  else setPanelOpen(false);
+  return true;
+}
+
+function trapWorkspaceDrawerFocus(event) {
+  const drawer = activeWorkspaceDrawer();
+  if (!drawer || event.key !== 'Tab' || isCompositionKey(event) || document.querySelector('dialog[open]')) return;
+  const focusable = [...drawer.querySelectorAll('button, input, summary, [tabindex="0"]')].filter((node) => !node.disabled && node.getClientRects().length && !node.closest('[hidden]'));
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && (document.activeElement === first || !drawer.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && (document.activeElement === last || !drawer.contains(document.activeElement))) { event.preventDefault(); first?.focus(); }
+}
+
+function closeConversationMenus(event) {
+  document.querySelectorAll('.conversation-menu[open]').forEach((menu) => {
+    if (!menu.contains(event.target)) menu.open = false;
+  });
+}
+
+async function renameCurrentSession() {
+  elements.conversationMenu.open = false;
+  setNavigationOpen(true);
+  elements.historySearch.value = '';
+  await renderChatHistory();
+  const item = elements.chatHistoryList.querySelector('.chat-history-item.active');
+  if (item) renameSession(state.currentSessionId, item);
+}
+
+function selectPanelTab(tab) {
+  panelTab = tab;
+  shellPreference.tab = tab;
+  setPanelOpen(true);
+}
+
+function handlePanelTabKeydown(event) {
+  if (isCompositionKey(event) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  selectPanelTab(event.key === 'Home' ? 'outline' : event.key === 'End' ? 'attachments' : panelTab === 'outline' ? 'attachments' : 'outline');
+}
+
+function locateMessage(messageId) {
+  closeWorkspaceDrawer();
+  const node = messageElementCache.get(messageId);
+  if (!node) return;
+  state.userScrolledUp = true;
+  state.followOutput = false;
+  node.scrollIntoView({ block: 'start' });
+  node.tabIndex = -1;
+  node.focus({ preventScroll: true });
+  node.classList.add('located');
+  setTimeout(() => node.classList.remove('located'), 1400);
+  updateScrollButton();
+}
+
+function renderConversationPanel() {
+  if (VIEW !== 'workspace' || !panelOpen || !elements.conversationPanelContent) return;
+  const attachments = panelTab === 'attachments';
+  elements.outlineTab.setAttribute('aria-selected', String(!attachments));
+  elements.attachmentsTab.setAttribute('aria-selected', String(attachments));
+  elements.outlineTab.tabIndex = attachments ? -1 : 0;
+  elements.attachmentsTab.tabIndex = attachments ? 0 : -1;
+  const container = elements.conversationPanelContent;
+  container.setAttribute('aria-labelledby', attachments ? 'attachmentsTab' : 'outlineTab');
+  const messages = state.sessions[state.currentSessionId]?.messages || [];
+  const signature = JSON.stringify([state.currentSessionId, panelTab, messages.filter((message) => message.role === 'user').map((message) => [message.id, message.content, message.attachments]), normalizeDraft(state.drafts[state.currentSessionId]).attachments]);
+  if (container.projectionSignature === signature) return;
+  container.projectionSignature = signature;
+  container.replaceChildren();
+  if (!attachments) {
+    const list = document.createElement('ol'); list.className = 'outline-list';
+    messages.filter((message) => message.role === 'user').forEach((message) => {
+      const title = (message.content || '').split('\n').map((line) => line.trim()).find(Boolean) || (message.attachments || []).map((ref) => ref.name).join(', ') || 'Attachment';
+      const item = document.createElement('li');
+      const link = document.createElement('button'); link.type = 'button'; link.className = 'outline-link'; link.title = title; link.textContent = Array.from(title).slice(0, 100).join('');
+      link.addEventListener('click', () => locateMessage(message.id)); item.appendChild(link); list.appendChild(item);
+    });
+    if (list.childElementCount) container.appendChild(list);
+    else { const empty = document.createElement('p'); empty.textContent = 'Your questions will appear here. Select one to return to that turn.'; container.appendChild(empty); }
+  } else {
+    const refs = new Map();
+    const add = (ref, id) => {
+      if (!refs.has(ref.id)) refs.set(ref.id, { ref, origins: new Set() });
+      refs.get(ref.id).origins.add(id);
+    };
+    messages.forEach((message) => (message.attachments || []).forEach((ref) => add(ref, message.id)));
+    normalizeDraft(state.drafts[state.currentSessionId]).attachments.forEach((ref) => add(ref, null));
+    const list = document.createElement('div'); list.className = 'attachment-list';
+    renderAttachmentList(list, [...refs.values()].map((entry) => entry.ref));
+    [...refs.values()].forEach(({ ref, origins }, index) => {
+      const sources = document.createElement('div'); sources.className = 'attachment-origin';
+      const type = document.createElement('span'); type.textContent = ref.mime || ref.kind; sources.appendChild(type);
+      origins.forEach((id) => {
+        const link = document.createElement('button'); link.className = 'undo-btn'; link.type = 'button'; link.textContent = id ? 'Go to message' : 'Current draft';
+        link.addEventListener('click', () => { if (id) locateMessage(id); else { closeWorkspaceDrawer(); elements.messageInput.focus(); } });
+        sources.appendChild(link);
+      });
+      list.children[index].appendChild(sources);
+    });
+    if (refs.size) container.appendChild(list);
+    else { const empty = document.createElement('p'); empty.textContent = 'Files from this conversation and your current draft will appear here.'; container.appendChild(empty); }
+  }
+  queueMicrotask(releaseAttachmentPreviews);
+}
+
+// Only drafts without pending local edits can be replaced by an external save.
+function followStoredDrafts(drafts) {
+  for (const id of new Set([...Object.keys(savedDrafts), ...Object.keys(drafts)])) {
+    const next = drafts[id];
+    if (sameValue(next, savedDrafts[id])) continue;
+    const mine = state.drafts[id];
+    if (sameValue(mine, next) || (!viewSwitching && sameValue(mine, savedDrafts[id]))) {
+      if (next === undefined) delete state.drafts[id];
+      else state.drafts[id] = structuredClone(next);
+      if (id === state.currentSessionId && !sameValue(mine, next)) { restoreDraft(); updateInputState(); }
+    } else {
+      externalDrafts.set(id, structuredClone(next ?? null));
+      protectExternalDraft(id);
+    }
+    if (next === undefined) delete savedDrafts[id];
+    else savedDrafts[id] = structuredClone(next);
+  }
+  updateDraftConflict();
+  refreshHistory();
+  renderConversationPanel();
+}
+
+function protectExternalDraft(id) {
+  const refs = [...AttachmentStore.references(externalDrafts.get(id))].map((refId) => ({ id: refId }));
+  if (refs.length) withStorageLock(() => AttachmentStore.pin(`${pageId}:draft:${id}`, refs)).catch((error) => console.warn('Draft attachment protection:', error.name));
+}
+
+function updateDraftConflict() {
+  elements.draftConflict?.classList.toggle('hidden', !externalDrafts.has(state.currentSessionId));
+}
+
+async function restoreExternalDraft() {
+  const id = state.currentSessionId;
+  if (!externalDrafts.has(id) || state.isPreparing || viewSwitching) return;
+  const draft = externalDrafts.get(id);
+  // Keep the displaced local draft available, making recovery reversible.
+  externalDrafts.set(id, structuredClone(state.drafts[id] ?? null));
+  protectExternalDraft(id);
+  if (draft === null) delete state.drafts[id];
+  else state.drafts[id] = structuredClone(draft);
+  restoreDraft();
+  await persistDrafts();
+  updateInputState();
+  elements.messageInput.focus();
+}
+
+function sessionLockName(id) { return `sidemind-server-conversation:${id}`; }
+
+async function withSessionLock(id, task) {
+  if (!id || !navigator.locks) { showNotification('Conversation protection requires Web Locks. Reload in a supported Chrome version.'); return false; }
+  let acquired = false;
+  try {
+    return await navigator.locks.request(sessionLockName(id), { ifAvailable: true }, async (lock) => {
+      if (!lock) { showNotification(REMOTE_BUSY_NOTICE); await refreshSessionLocks(); return false; }
+      acquired = true;
+      heldSessionLocks.add(id);
+      generationChannel?.postMessage({ sessionId: id });
+      return (await task()) ?? true;
+    });
+  } catch (error) {
+    console.error('Conversation operation:', error.name);
+    showNotification(error.message || 'Could not update the conversation. Please try again.');
+    return false;
+  } finally {
+    if (acquired) {
+      heldSessionLocks.delete(id);
+      generationChannel?.postMessage({ sessionId: id });
+      await refreshSessionLocks();
+    }
+  }
+}
+
+async function refreshSessionLocks() {
+  if (!navigator.locks?.query || !storageReady) return;
+  const version = ++locksRefreshVersion;
+  const snapshot = await navigator.locks.query();
+  if (version !== locksRefreshVersion) return;
+  const previous = [...remoteBusySessions].sort().join();
+  remoteBusySessions.clear();
+  Object.keys(state.sessions).forEach((id) => {
+    if (!heldSessionLocks.has(id) && snapshot.held.some((lock) => lock.name === sessionLockName(id))) remoteBusySessions.add(id);
+  });
+  if (previous !== [...remoteBusySessions].sort().join()) {
+    historyControlsManaged = null;
+    elements.messagesList.querySelectorAll('.message').forEach((node) => { const message = elementMessages.get(node); if (message) updateResponseStatus(node, message); });
+    updateInputState();
+  }
+}
+
+function viewSwitchReason(requireSession = true) {
+  if (storageLoadFailed || !storageReady) return 'Reload to restore conversations before switching views.';
+  if (viewSwitching || navigationRequest) return 'Opening the other view…';
+  if ([...attachmentJobs].some((job) => job.sessionId === state.currentSessionId)) return 'Wait for attachments to finish preparing.';
+  if (state.isAcquiring || state.isPreparing) return 'Preparing the request. Stop it before switching views.';
+  if (state.isStreaming) return state.abortController?.signal.aborted ? 'Stopping and saving the response…' : 'Generating a response. Stop it before switching views.';
+  if (state.generationDone) return 'Finishing and saving the response…';
+  if (editingMessageId) return 'Send or cancel the message edit before switching views.';
+  if (requireSession && !state.currentSessionId) return 'Select a conversation or start a new chat first.';
+  return '';
+}
+
+function updateViewSwitchState() {
+  if (!elements.switchViewBtn) return;
+  const reason = viewSwitchReason();
+  elements.switchViewBtn.disabled = Boolean(reason);
+  elements.switchViewBtn.title = reason || (VIEW === 'workspace' ? 'Back to sidebar' : 'Open full page');
+  elements.switchViewBtn.setAttribute('aria-description', elements.switchViewBtn.title);
+}
+
+function captureReadingAnchor() {
+  const list = elements.messagesList;
+  if (list.scrollHeight - list.clientHeight - list.scrollTop < 50) return { latest: true };
+  const top = list.getBoundingClientRect().top;
+  const nodes = [...list.querySelectorAll('.message')];
+  const node = nodes.find((message) => message.getBoundingClientRect().bottom > top);
+  if (!node) return { latest: true };
+  const rect = node.getBoundingClientRect();
+  return { messageId: node.dataset.messageId, offset: (top - rect.top) / Math.max(1, rect.height) };
+}
+
+async function restoreReadingAnchor(anchor) {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  if (!anchor || anchor.latest) { scrollToBottom(true); return; }
+  const node = messageElementCache.get(anchor.messageId);
+  if (!node) return;
+  const list = elements.messagesList;
+  const rect = node.getBoundingClientRect();
+  list.scrollTop += rect.top - list.getBoundingClientRect().top + rect.height * Math.max(-1, Math.min(1, Number(anchor.offset) || 0));
+  state.userScrolledUp = true;
+  state.followOutput = false;
+  updateScrollButton();
+}
+
+function adoptNavigationDraft(id, next) {
+  const mine = state.drafts[id];
+  if (!sameValue(mine, next) && (!sameValue(mine, savedDrafts[id]) || externalDrafts.has(id))) {
+    externalDrafts.set(id, structuredClone(mine ?? null));
+    protectExternalDraft(id);
+  }
+  if (next === undefined) { delete state.drafts[id]; delete savedDrafts[id]; }
+  else { state.drafts[id] = structuredClone(next); savedDrafts[id] = structuredClone(next); }
+  if (id === state.currentSessionId) restoreDraft();
+}
+
+function sendNavigationMessage(message) {
+  return chrome.runtime.sendMessage({ ...message, namespace: 'sidemind-navigation' });
+}
+
+async function initializeNavigation() {
+  try {
+    currentWindowId = (await chrome.windows.getCurrent()).id;
+    if (VIEW === 'workspace') { updateSessionRoute(true); refreshHistory(); }
+    if (!chrome.runtime.connect) { updateViewSwitchState(); return; }
+    connectNavigation();
+  } catch (error) { console.error('Navigation initialization:', error); }
+  updateViewSwitchState();
+}
+
+function connectNavigation() {
+  navigationPort = chrome.runtime.connect({ name: 'sidemind-page' });
+  navigationPort.postMessage({ type: 'ready', view: VIEW, windowId: currentWindowId });
+  navigationPort.onMessage.addListener(async (message) => {
+    if (message.type !== 'navigate') return;
+    let error;
+    if (viewSwitchReason(false)) error = viewSwitchReason(false);
+    else {
+      navigationRequest = true;
+      updateInputState();
+      try {
+        const incoming = await chrome.storage.local.get(['drafts']);
+        adoptNavigationDraft(message.sessionId, incoming.drafts?.[message.sessionId]);
+        if (!(await saveToStorage())) throw new Error('Could not save the conversation currently open in the target page.');
+        const stored = await chrome.storage.local.get([SESSION_PREFIX + message.sessionId, 'drafts']);
+        const entry = stored[SESSION_PREFIX + message.sessionId];
+        if (!entry) throw new Error('The requested conversation is unavailable.');
+        adoptStored(message.sessionId, entry);
+        followStoredDrafts(stored.drafts || {});
+        activateSession(message.sessionId);
+        await restoreReadingAnchor(message.anchor);
+      } catch (failure) { error = failure.message; }
+      finally { navigationRequest = false; updateInputState(); }
+    }
+    navigationPort?.postMessage({ type: 'navigated', requestId: message.requestId, error });
+  });
+  navigationPort.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    navigationPort = null;
+    setTimeout(() => { try { connectNavigation(); } catch {} }, 500);
+  });
+}
+
+async function switchView() {
+  if (viewSwitchReason()) return;
+  // Chrome requires open() to run in the original click, before any awaits.
+  let opening;
+  try {
+    if (VIEW === 'workspace') opening = chrome.sidePanel.open({ windowId: currentWindowId });
+  } catch (error) { showNotification(error.message); return; }
+  // Attach a rejection handler immediately while the independent save runs.
+  const opened = opening ? opening.then(() => null, (error) => error) : Promise.resolve(null);
+  const sessionId = state.currentSessionId;
+  const anchor = captureReadingAnchor();
+  saveDraftSoon();
+  clearTimeout(draftTimeout);
+  viewSwitching = true;
+  updateInputState();
+  const app = document.querySelector('.app-container');
+  app.inert = true;
+  elements.workspaceNav.inert = true;
+  elements.conversationPanel.inert = true;
+  elements.messageInput.readOnly = true;
+  try {
+    if (!(await saveToStorage()) || !(await storageWriteQueue)) return;
+    if (!state.sessions[sessionId]) throw new Error('This conversation was deleted before it could be opened.');
+    const openError = await opened;
+    if (openError) throw openError;
+    const result = await sendNavigationMessage({ type: 'switch', view: VIEW === 'sidebar' ? 'workspace' : 'sidebar', windowId: currentWindowId, sessionId, anchor });
+    if (!result?.ok) throw new Error(result?.error || 'The other view could not be opened. Your conversation is still available here.');
+    if (VIEW === 'sidebar' && result.closed === false) showNotification('Opened in full page. You can close this sidebar when ready.');
+  } catch (error) {
+    console.error('Switching SideMind view:', error);
+    showNotification(error.message || 'Could not open the other view. Please try again.');
+  } finally {
+    viewSwitching = false;
+    app.inert = false;
+    elements.workspaceNav.inert = false;
+    elements.conversationPanel.inert = false;
+    renderWorkspaceLayout();
+    updateInputState();
+  }
+}
+
+function handleSessionRoute() {
+  if (VIEW !== 'workspace') return;
+  const id = routedSessionId();
+  routeQueue = routeQueue.then(async () => {
+    if (id === state.currentSessionId) return;
+    if (viewSwitchReason() && (state.isAcquiring || state.generationDone || viewSwitching)) { updateSessionRoute(true); return; }
+    if (!id || !state.sessions[id]) {
+      showNotification('This conversation is unavailable.'); updateSessionRoute(true); return;
+    }
+    await switchSession(id);
+  }).catch((error) => console.error('Conversation route:', error));
+}
