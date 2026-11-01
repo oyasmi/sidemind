@@ -787,16 +787,26 @@ browserTest('provider emoji avatars preview, validate, persist, export, import a
   const { page, errors } = await openPage('options');
   await page.getByRole('button', { name: 'Edit Test provider' }).click();
   assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '');
-  assert.equal(await page.locator('#providerAvatarPreview use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), false);
+  assert.equal(await page.locator('#providerAvatarChoices [aria-pressed="true"]').count(), 0);
   await page.getByRole('button', { name: 'Use 🧠 avatar', exact: true }).click();
-  assert.equal(await page.locator('#providerAvatarPreview').textContent(), '🧠');
+  assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '🧠');
+  assert.equal(await page.getByRole('button', { name: 'Use 🧠 avatar', exact: true }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), false);
+  await page.getByRole('button', { name: 'Use a custom emoji', exact: true }).click();
+  assert.equal(await page.locator('#providerAvatarEmoji').evaluate((input) => input === document.activeElement), true);
+  assert.equal(await page.locator('#providerAvatarChoices').isVisible(), false);
   await page.locator('#providerAvatarEmoji').fill('🧠🚀');
   assert.equal(await page.locator('#providerAvatarEmoji').evaluate((input) => input.checkValidity()), false);
+  await page.getByRole('button', { name: 'Choose a preset avatar', exact: true }).click();
   await page.locator('#providerSaveBtn').click();
   assert.equal(await page.locator('#providerModal').evaluate((dialog) => dialog.open), true);
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), true);
   assert.equal(await page.evaluate(() => config.providers[0].avatarEmoji), undefined);
   await page.locator('#providerAvatarEmoji').fill(' 👩🏽‍💻 ');
-  assert.equal(await page.locator('#providerAvatarPreview').textContent(), '👩🏽‍💻');
+  await page.getByRole('button', { name: 'Choose a preset avatar', exact: true }).click();
+  assert.equal(await page.locator('#providerAvatarCustom').textContent(), '👩🏽‍💻');
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), false);
   if (process.env.UI_SCREENSHOTS)
     await page.locator('#providerModal .modal-panel').screenshot({ path: `${process.env.UI_SCREENSHOTS}/provider-avatar.png` });
   await page.locator('#providerSaveBtn').click();
@@ -808,6 +818,7 @@ browserTest('provider emoji avatars preview, validate, persist, export, import a
   await page.reload();
   await page.getByRole('button', { name: 'Edit Test provider' }).click();
   assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '👩🏽‍💻');
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), true);
   await page.locator('#providerCancelBtn').click();
   await openSettingsSection(page, 'data');
   const download = page.waitForEvent('download');
@@ -823,9 +834,10 @@ browserTest('provider emoji avatars preview, validate, persist, export, import a
   assert.equal(await page.evaluate(() => config.providers[0].avatarEmoji), '👩🏽‍💻');
   await openSettingsSection(page, 'providers');
   await page.getByRole('button', { name: 'Edit Test provider' }).click();
-  await page.getByRole('button', { name: 'Use default', exact: true }).click();
+  await page.getByRole('button', { name: 'Clear avatar', exact: true }).click();
   assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '');
-  assert.equal(await page.locator('#providerAvatarPreview use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.equal(await page.locator('#providerAvatarEmoji').isVisible(), false);
+  assert.equal(await page.locator('#providerAvatarChoices [aria-pressed="true"]').count(), 0);
   await page.locator('#providerApiKey').fill('fixture-key');
   await page.locator('#providerSaveBtn').click();
   await page.waitForFunction(() => !document.querySelector('#providerModal').open);
@@ -890,7 +902,7 @@ browserTest('provider avatars follow each historical reply and update in place w
 });
 
 for (const view of ['sidebar', 'workspace']) {
-  browserTest(`${view} provider avatars override global avatars and follow config across chats`, async () => {
+  browserTest(`${view} provider avatars ignore legacy global avatars and follow config across chats`, async () => {
     const settings = structuredClone(fixtureConfig);
     settings.providers[0].avatarEmoji = '🧠';
     settings.userAvatar = '🧑‍💻';
@@ -904,25 +916,25 @@ for (const view of ['sidebar', 'workspace']) {
     const { page, errors } = await openPage(view, settings, {
       currentSessionId: 'first', sessions: { first: conversation('first'), second: conversation('second') }
     });
-    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🧠', '🦊']);
-    assert.equal(await page.locator('.message.user .message-avatar').textContent(), '🧑‍💻');
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🧠', '']);
+    assert.equal(await page.locator('.message.user .message-header').isVisible(), false);
     await page.evaluate(async () => {
       await switchSession('second');
       window.__cachedAvatar = messageElementCache.get('second-a');
       const latest = structuredClone(state.config);
-      latest.providers[0].avatarEmoji = '';
-      latest.assistantAvatar = '🚀';
-      latest.userAvatar = '🐱';
+      latest.providers[0].avatarEmoji = '🚀';
       await chrome.storage.sync.set({ config: latest });
     });
-    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '🚀']);
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '']);
     assert.equal(await page.evaluate(() => window.__cachedAvatar.querySelector('.message-avatar').textContent), '🚀');
     assert.equal(await page.evaluate(() => window.__cachedAvatar === document.querySelector('[data-message-id="second-a"]')), true);
     await page.evaluate(() => switchSession('first'));
-    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '🚀']);
-    assert.equal(await page.locator('.message.user .message-avatar').textContent(), '🐱');
+    assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🚀', '']);
+    assert.equal(await page.locator('.message.user .message-header').isVisible(), false);
     await page.evaluate(async () => {
-      await chrome.storage.sync.set({ config: { ...state.config, assistantAvatar: '', userAvatar: '' } });
+      const latest = structuredClone(state.config);
+      latest.providers[0].avatarEmoji = '';
+      await chrome.storage.sync.set({ config: latest });
     });
     assert.equal(await page.locator('.message.assistant .message-avatar use').count(), 2);
     assert.equal(await page.locator('.message.user .message-header').isVisible(), false);
@@ -1239,20 +1251,22 @@ browserTest(
         const timestamp = new Date().toISOString();
         state.sessions[state.currentSessionId].messages.push(
           { id: 'avatar-user', role: 'user', content: 'Hello', timestamp },
-          { id: 'avatar-assistant', role: 'assistant', content: 'Hi', timestamp }
+          { id: 'avatar-assistant', role: 'assistant', content: 'Hi', timestamp, modelUsed: state.config.selectedModel }
         );
         renderMessages();
       });
       await setTheme(settings, 'dark');
       await settings.locator('#fontSizeSelector').selectOption('16px');
-      await settings.locator('#userAvatarInput').fill('🧑‍💻');
-      await settings.locator('#assistantAvatarInput').fill('🦊');
+      await settings.evaluate(async () => {
+        const latest = structuredClone(config);
+        latest.providers[0].avatarEmoji = '🚀';
+        await chrome.storage.sync.set({ config: latest });
+      });
       await chat.waitForFunction(
         () =>
           document.documentElement.classList.contains('dark-theme') &&
           getComputedStyle(document.querySelector('#messageInput')).fontSize === '16px' &&
-          document.querySelector('.message.user .message-avatar').textContent === '🧑‍💻' &&
-          document.querySelector('.message.assistant .message-avatar').textContent === '🦊'
+          document.querySelector('.message.assistant .message-avatar').textContent === '🚀'
       );
       assert.equal(
         await settings.locator('#versionBadge').textContent(),
@@ -1555,60 +1569,24 @@ browserTest('the role picker selects and persists roles with the keyboard and pr
   await page.close();
 });
 
-browserTest('emoji avatars preview, save, validate and restore default icons', async () => {
+browserTest('Appearance keeps theme and typography without global avatar controls', async () => {
   const { page, errors } = await openPage('options');
   await openSettingsSection(page, 'appearance');
-  await page.locator('#userAvatarInput').fill('🧑🏽‍💻');
-  await page.locator('#assistantAvatarInput').fill('🦊');
-  assert.equal(await page.locator('#previewUserAvatar').textContent(), '🧑🏽‍💻');
-  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
-  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '🧑🏽‍💻' && window.__storage.sync.config.assistantAvatar === '🦊');
-  await page.locator('#assistantAvatarInput').fill('🦊🤖');
-  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
-  assert.equal(await page.locator('#assistantAvatarError').isVisible(), true);
-  assert.equal(await page.evaluate(() => config.assistantAvatar), '🦊');
-  assert.equal(await page.locator('#previewAssistantAvatar').textContent(), '🦊');
-  await page.locator('#assistantAvatarInput').fill('<img src=x>');
-  assert.equal(await page.locator('#assistantAvatarInput').getAttribute('aria-invalid'), 'true');
-  assert.equal(await page.evaluate(() => validateConfig({ ...config, assistantAvatar: '<script>' })), false);
-  const saved = await page.evaluate(() => structuredClone(window.__storage.sync.config));
-  const timestamp = new Date().toISOString();
-  const chat = await openPage('sidebar', saved, {
-    currentSessionId: 'avatars',
-    sessions: { avatars: { title: 'Avatars', timestamp, messages: [
-      { id: 'user', role: 'user', content: 'A question', timestamp },
-      { id: 'assistant', role: 'assistant', content: 'An answer', timestamp, modelUsed: saved.selectedModel },
-      { id: 'error', role: 'system', content: 'An error', timestamp }
-    ] } }
-  });
-  assert.equal(await chat.page.locator('.message.user .message-avatar').textContent(), '🧑🏽‍💻');
-  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), true);
-  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🦊');
-  assert.equal(await chat.page.locator('.message.system .message-avatar use').getAttribute('href'), '../assets/icons.svg#triangle-exclamation');
-  await chat.page.evaluate(async () => {
-    window.__originalMessage = document.querySelector('.message.assistant');
-    await chrome.storage.sync.set({ config: { ...state.config, assistantAvatar: '🇨🇳', userAvatar: '' } });
-  });
-  assert.equal(await chat.page.locator('.message.assistant .message-avatar').textContent(), '🇨🇳');
-  assert.equal(await chat.page.locator('.message.user .message-header').isVisible(), false);
-  assert.equal(await chat.page.evaluate(() => window.__originalMessage === document.querySelector('.message.assistant')), true);
+  assert.equal(await page.getByText('Chat avatars', { exact: true }).count(), 0);
+  assert.equal(await page.locator('#appearance input[type="text"]:visible').count(), 0);
+  await page.locator('#fontSizeSelector').selectOption('16px');
+  await page.waitForFunction(() => window.__storage.sync.config.fontSize === '16px');
+  assert.equal(await page.locator('#fontPreview').evaluate((node) => getComputedStyle(node).fontSize), '16px');
   for (const width of [320, 1160]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.locator('#assistantAvatarInput').fill('🦊');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/avatar-settings-${width}.png`, fullPage: true });
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/appearance-${width}.png`, fullPage: true });
   }
   await page.evaluate(() => sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage)));
   await page.reload();
-  await page.locator('#userAvatarInput').waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#userAvatarInput').inputValue(), '🧑🏽‍💻');
-  await page.locator('#userAvatarInput').fill('');
-  await page.locator('#assistantAvatarInput').fill('');
-  await page.waitForFunction(() => window.__storage.sync.config.userAvatar === '' && window.__storage.sync.config.assistantAvatar === '');
-  assert.equal(await page.locator('#previewUserHeader').isVisible(), false);
-  assert.equal(await page.locator('#previewAssistantAvatar use').getAttribute('href'), '../assets/icons.svg#robot');
-  assert.deepEqual(errors.concat(chat.errors), []);
-  await chat.page.close();
+  await page.locator('#fontSizeSelector').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#fontSizeSelector').inputValue(), '16px');
+  assert.deepEqual(errors, []);
   await page.close();
 });
 

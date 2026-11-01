@@ -410,9 +410,6 @@ body {
 .message.user .message-header {
   display: none;
 }
-.message.user.has-custom-avatar .message-header {
-  display: flex;
-}
 .message.user .message-wrapper {
   width: auto;
   max-width: 92%;

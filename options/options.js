@@ -15,9 +15,7 @@ const DEFAULT_CONFIG = {
   systemPrompts: [
     { id: 'default', name: 'Default', content: 'You are a helpful assistant.', isDefault: true }
   ],
-  theme: 'system',
-  userAvatar: '',
-  assistantAvatar: ''
+  theme: 'system'
 };
 let config = structuredClone(DEFAULT_CONFIG);
 let editingProviderId = null;
@@ -76,15 +74,6 @@ function cacheElements() {
     'customFontFamilyInput',
     'themeSelector',
     'fontPreview',
-    'userAvatarInput',
-    'assistantAvatarInput',
-    'userAvatarPreview',
-    'assistantAvatarPreview',
-    'userAvatarError',
-    'assistantAvatarError',
-    'previewUserHeader',
-    'previewUserAvatar',
-    'previewAssistantAvatar',
     'providerModal',
     'promptModal',
     'providerForm',
@@ -93,8 +82,9 @@ function cacheElements() {
     'addModelBtn',
     'providerName',
     'providerAvatarEmoji',
-    'providerAvatarPreview',
     'providerAvatarChoices',
+    'providerAvatarCustom',
+    'providerAvatarClear',
     'providerBaseUrl',
     'providerApiKey',
     'providerApiType',
@@ -145,14 +135,12 @@ function setupEventListeners() {
   elements.fontFamilySelector.addEventListener('change', updateFontFamily);
   elements.customFontFamilyInput.addEventListener('input', updateFontFamily);
   elements.themeSelector.addEventListener('change', updateTheme);
-  elements.userAvatarInput.addEventListener('input', updateAvatarSetting);
-  elements.assistantAvatarInput.addEventListener('input', updateAvatarSetting);
-  elements.userAvatarInput.addEventListener('compositionend', updateAvatarSetting);
-  elements.assistantAvatarInput.addEventListener('compositionend', updateAvatarSetting);
   elements.addModelBtn.addEventListener('click', addModelField);
   elements.providerBaseUrl.addEventListener('input', updateEndpointPreview);
   elements.providerAvatarEmoji.addEventListener('input', updateAvatarPreview);
   elements.providerAvatarChoices.addEventListener('click', handleAvatarChoice);
+  elements.providerAvatarCustom.addEventListener('click', toggleAvatarInput);
+  elements.providerAvatarClear.addEventListener('click', clearProviderAvatar);
   elements.providerApiType.addEventListener('change', updateEndpointPreview);
   elements.checkConnectionBtn.addEventListener('click', checkConnection);
   elements.providerApiKey.addEventListener('input', resetConnectionCheck);
@@ -341,7 +329,6 @@ function handleConfigurationChange(changes, area) {
   pendingParameterChanges.forEach((change) => applyParameterChange(config, change));
   applyTheme();
   updateFontPreview();
-  updateAvatarPreviews();
   const editing = document.activeElement?.matches('input, textarea, select');
   if (!elements.providerModal.open && !elements.promptModal.open && !elements.confirmModal.open) {
     renderProviders();
@@ -654,12 +641,6 @@ function renderParameters() {
   });
   elements.maxTokensError.classList.add('hidden');
   elements.maxCompletionTokensInput.removeAttribute('aria-invalid');
-  ['user', 'assistant'].forEach((role) => {
-    elements[`${role}AvatarInput`].value = normalizeAvatarEmoji(config[`${role}Avatar`]);
-    elements[`${role}AvatarInput`].removeAttribute('aria-invalid');
-    elements[`${role}AvatarError`].hidden = true;
-  });
-  updateAvatarPreviews();
 }
 
 // ===== Dialogs =====
@@ -775,7 +756,7 @@ function openProviderModal(provider = null) {
   elements.providerForm.reset();
   elements.providerName.value = provider?.name || '';
   elements.providerAvatarEmoji.value = normalizeAvatarEmoji(provider?.avatarEmoji);
-  updateAvatarPreview();
+  setAvatarInputMode(Boolean(elements.providerAvatarEmoji.value && !isPresetAvatar(elements.providerAvatarEmoji.value)));
   elements.providerBaseUrl.value = provider?.baseUrl || '';
   elements.providerApiKey.value = provider?.apiKey || '';
   elements.providerApiType.value = provider?.apiType === 'responses' ? 'responses' : 'chat';
@@ -794,11 +775,49 @@ function openProviderModal(provider = null) {
 }
 
 function updateAvatarPreview() {
+  const value = normalizeAvatarEmoji(elements.providerAvatarEmoji.value);
   const valid = validAvatarEmoji(elements.providerAvatarEmoji.value);
   elements.providerAvatarEmoji.setCustomValidity(valid ? '' : 'Enter one emoji, or leave blank to use the default robot.');
   if (valid) elements.providerAvatarEmoji.removeAttribute('aria-invalid');
   else elements.providerAvatarEmoji.setAttribute('aria-invalid', 'true');
-  renderProviderAvatar(elements.providerAvatarPreview, { avatarEmoji: elements.providerAvatarEmoji.value });
+  elements.providerAvatarChoices.querySelectorAll('[data-avatar-emoji]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.avatarEmoji === value));
+  });
+  const customValue = valid && value && !isPresetAvatar(value);
+  const showCustomValue = elements.providerAvatarEmoji.hidden && customValue;
+  elements.providerAvatarCustom.classList.toggle('emoji-avatar', Boolean(showCustomValue));
+  elements.providerAvatarCustom.replaceChildren(showCustomValue
+    ? document.createTextNode(value)
+    : createIcon(elements.providerAvatarEmoji.hidden ? 'pen' : 'list'));
+  elements.providerAvatarCustom.setAttribute('aria-pressed', String(!elements.providerAvatarEmoji.hidden || Boolean(customValue)));
+}
+
+function isPresetAvatar(value) {
+  return Array.from(elements.providerAvatarChoices.querySelectorAll('[data-avatar-emoji]'))
+    .some((button) => button.dataset.avatarEmoji === value);
+}
+
+function setAvatarInputMode(custom) {
+  elements.providerAvatarEmoji.hidden = !custom;
+  elements.providerAvatarChoices.hidden = custom;
+  elements.providerAvatarCustom.setAttribute('aria-expanded', String(custom));
+  elements.providerAvatarCustom.setAttribute('aria-label', custom ? 'Choose a preset avatar' : 'Use a custom emoji');
+  elements.providerAvatarCustom.title = custom ? 'Preset emojis' : 'Custom emoji';
+  updateAvatarPreview();
+}
+
+function toggleAvatarInput() {
+  const custom = elements.providerAvatarEmoji.hidden;
+  setAvatarInputMode(custom);
+  if (custom) {
+    elements.providerAvatarEmoji.focus();
+    elements.providerAvatarEmoji.select();
+  }
+}
+
+function clearProviderAvatar() {
+  elements.providerAvatarEmoji.value = '';
+  setAvatarInputMode(false);
 }
 
 function handleAvatarChoice(event) {
@@ -980,6 +999,7 @@ function toggleApiKey() {
 }
 
 async function saveProvider() {
+  if (!validAvatarEmoji(elements.providerAvatarEmoji.value)) setAvatarInputMode(true);
   if (dialogBusy || !elements.providerForm.checkValidity()) {
     elements.providerForm.reportValidity();
     return;
@@ -1221,29 +1241,6 @@ async function handleDeletePrompt() {
 }
 
 // ===== Parameters and appearance =====
-function updateAvatarSetting(event) {
-  if (event.isComposing) return;
-  const role = event.target === elements.userAvatarInput ? 'user' : 'assistant';
-  const value = event.target.value.trim();
-  const emoji = normalizeAvatarEmoji(value);
-  const valid = !value || Boolean(emoji);
-  event.target.setAttribute('aria-invalid', String(!valid));
-  elements[`${role}AvatarError`].hidden = valid;
-  if (!valid) return;
-  config[`${role}Avatar`] = emoji;
-  updateAvatarPreviews();
-  queueSave(`${role}Avatar`);
-}
-
-function updateAvatarPreviews() {
-  ['user', 'assistant'].forEach((role) => {
-    const fallback = role === 'user' ? 'user' : 'robot';
-    renderAvatar(elements[`${role}AvatarPreview`], config[`${role}Avatar`], fallback);
-    renderAvatar(elements[`preview${role === 'user' ? 'User' : 'Assistant'}Avatar`], config[`${role}Avatar`], fallback);
-  });
-  elements.previewUserHeader.hidden = !normalizeAvatarEmoji(config.userAvatar);
-}
-
 function isTemperatureOmitted() {
   return effectiveGeneration().values.temperature == null;
 }
@@ -1461,8 +1458,6 @@ function validateConfig(value) {
     (!value.theme || ['light', 'dark', 'system'].includes(value.theme)) &&
     (!value.fontSize || ['13px', '14px', '15px', '16px'].includes(value.fontSize)) &&
     (!value.fontFamily || typeof value.fontFamily === 'string') &&
-    ['userAvatar', 'assistantAvatar'].every((key) => value[key] === undefined ||
-      (typeof value[key] === 'string' && (!value[key].trim() || Boolean(normalizeAvatarEmoji(value[key]))))) &&
     (!value.reasoning_effort ||
       GenerationSettings.EFFORTS.includes(value.reasoning_effort)) &&
     (!value.reasoning_summary ||

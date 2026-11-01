@@ -24,8 +24,6 @@ const state = {
     reasoning_summary: 'off',
     reasoning_context: null,
     theme: 'system',
-    userAvatar: '',
-    assistantAvatar: '',
     systemPrompts: [
       {
         id: 'default',
@@ -1662,11 +1660,8 @@ const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
 
 function updateMessageAvatar(messageDiv, message) {
   const { role, modelUsed } = message;
-  const emoji = role === 'user' ? state.config.userAvatar : role === 'assistant'
-    ? normalizeAvatarEmoji(providerForModel(modelUsed)?.avatarEmoji) || state.config.assistantAvatar
-    : '';
+  const emoji = role === 'assistant' ? providerForModel(modelUsed)?.avatarEmoji : '';
   renderAvatar(messageDiv.querySelector('.message-avatar'), emoji, MESSAGE_ICONS[role] || 'robot');
-  messageDiv.classList.toggle('has-custom-avatar', Boolean(normalizeAvatarEmoji(emoji)));
 }
 
 function updateMessageAvatars() {

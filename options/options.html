@@ -182,22 +182,6 @@
                     </div>
                     <p class="parameter-description">Applies to SideMind and these settings.</p>
                   </fieldset>
-                  <div class="parameter-group avatar-settings">
-                    <h3>Chat avatars</h3>
-                    <p id="avatarHint" class="parameter-description">Enter one emoji for each avatar. Leave empty to use the default icon.</p>
-                    <label for="userAvatarInput">Your avatar</label>
-                    <div class="avatar-input-row">
-                      <span id="userAvatarPreview" class="avatar-preview" aria-hidden="true"></span>
-                      <input id="userAvatarInput" type="text" class="text-input" placeholder="For example: 🧑‍💻" autocomplete="off" spellcheck="false" aria-describedby="avatarHint userAvatarError" />
-                    </div>
-                    <p id="userAvatarError" class="field-error" hidden>Enter a single emoji, or clear the field for the default icon.</p>
-                    <label for="assistantAvatarInput">Assistant avatar</label>
-                    <div class="avatar-input-row">
-                      <span id="assistantAvatarPreview" class="avatar-preview" aria-hidden="true"></span>
-                      <input id="assistantAvatarInput" type="text" class="text-input" placeholder="For example: 🤖" autocomplete="off" spellcheck="false" aria-describedby="avatarHint assistantAvatarError" />
-                    </div>
-                    <p id="assistantAvatarError" class="field-error" hidden>Enter a single emoji, or clear the field for the default icon.</p>
-                  </div>
                   <div class="parameter-group">
                     <label for="fontSizeSelector">Conversation size</label>
                     <select id="fontSizeSelector" class="select-input">
@@ -239,10 +223,9 @@
               <div class="appearance-preview" aria-label="Live conversation preview">
                 <p class="preview-label">LIVE PREVIEW</p>
                 <div id="fontPreview" class="font-preview reading-content">
-                  <div id="previewUserHeader" class="preview-avatar-header" hidden><span id="previewUserAvatar" class="avatar-preview" aria-hidden="true"></span><span class="preview-name">You</span></div>
                   <div class="preview-user">Help me make this clearer.</div>
                   <div class="preview-assistant">
-                    <div class="preview-avatar-header"><span id="previewAssistantAvatar" class="avatar-preview" aria-hidden="true"></span><span class="preview-name">SideMind</span></div>
+                    <span class="preview-name">SideMind</span>
                     <p>A little clarity goes a long way.</p>
                     <p>
                       Keep the important details, give each idea room, and make the next step easy
@@ -354,31 +337,42 @@
         </div>
         <div class="modal-body">
           <form id="providerForm">
-            <section class="provider-section" aria-labelledby="connectionHeading">
+            <section class="provider-section" aria-labelledby="serviceHeading">
               <div class="provider-section-heading">
-                <h4 id="connectionHeading">Connection</h4>
-                <p>Your service address, protocol and credentials.</p>
+                <h4 id="serviceHeading">Service details</h4>
+                <p>Choose how this provider appears in your workspace.</p>
               </div>
               <div class="provider-fields">
                 <div class="form-group">
                   <label for="providerName">Provider name</label>
                   <input type="text" id="providerName" placeholder="For example: My AI service" required />
-                  <div class="provider-avatar-field">
-                    <label for="providerAvatarEmoji">Emoji avatar <span class="optional-label">(optional)</span></label>
-                    <div class="provider-avatar-input">
-                      <span id="providerAvatarPreview" class="provider-avatar" aria-hidden="true"></span>
-                      <input type="text" id="providerAvatarEmoji" placeholder="For example: 🧠" autocomplete="off" spellcheck="false" aria-describedby="providerAvatarHelp" />
-                    </div>
+                </div>
+                <div class="form-group">
+                  <label id="providerAvatarLabel" for="providerAvatarEmoji">Emoji avatar <span class="optional-label">(optional)</span></label>
+                  <div class="provider-avatar-picker" role="group" aria-labelledby="providerAvatarLabel">
                     <div id="providerAvatarChoices" class="provider-avatar-choices" role="group" aria-label="Suggested avatars">
-                      <button type="button" class="btn btn-small" data-avatar-emoji="🧠" aria-label="Use 🧠 avatar">🧠</button>
-                      <button type="button" class="btn btn-small" data-avatar-emoji="🚀" aria-label="Use 🚀 avatar">🚀</button>
-                      <button type="button" class="btn btn-small" data-avatar-emoji="🐱" aria-label="Use 🐱 avatar">🐱</button>
-                      <button type="button" class="btn btn-small" data-avatar-emoji="🌟" aria-label="Use 🌟 avatar">🌟</button>
-                      <button type="button" class="btn btn-small" data-avatar-emoji="">Use default</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🧠" aria-label="Use 🧠 avatar" aria-pressed="false">🧠</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🚀" aria-label="Use 🚀 avatar" aria-pressed="false">🚀</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🐱" aria-label="Use 🐱 avatar" aria-pressed="false">🐱</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🌟" aria-label="Use 🌟 avatar" aria-pressed="false">🌟</button>
                     </div>
-                    <small id="providerAvatarHelp" class="parameter-description">Enter or paste one emoji. Leave blank to use the default robot.</small>
+                    <input type="text" id="providerAvatarEmoji" placeholder="Enter one emoji" autocomplete="off" spellcheck="false" aria-labelledby="providerAvatarLabel" hidden />
+                    <button type="button" id="providerAvatarCustom" class="btn btn-small" aria-label="Use a custom emoji" title="Custom emoji" aria-controls="providerAvatarEmoji" aria-expanded="false">
+                      <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#pen"></use></svg>
+                    </button>
+                    <button type="button" id="providerAvatarClear" class="btn btn-small" aria-label="Clear avatar" title="Clear avatar">
+                      <svg class="ui-icon" aria-hidden="true"><use href="../assets/icons.svg#close"></use></svg>
+                    </button>
                   </div>
                 </div>
+              </div>
+            </section>
+            <section class="provider-section" aria-labelledby="connectionHeading">
+              <div class="provider-section-heading">
+                <h4 id="connectionHeading">Connection</h4>
+                <p>Your service protocol, address and API key.</p>
+              </div>
+              <div class="provider-connection-fields">
                 <div class="form-group protocol-group">
                   <label for="providerApiType">API protocol</label>
                   <select id="providerApiType" class="select-input">
@@ -389,10 +383,6 @@
                     <summary>Which protocol should I choose?</summary>
                     <p>Chat Completions works with most compatible services. Choose Responses for a provider that exposes /responses. The request path is added automatically.</p>
                   </details>
-                </div>
-                <div id="providerServerConversationGroup" class="form-group" hidden>
-                  <label class="checkbox-label"><input id="providerServerConversation" type="checkbox" /> Server-side conversation mode</label>
-                  <small class="parameter-description">Send only the current message and attachments. Requires /conversations support. The provider stores context; editing and regenerating history are unavailable. The system prompt is sent with every message.</small>
                 </div>
                 <div class="form-group">
                   <label for="providerBaseUrl">API base URL</label>
@@ -407,8 +397,6 @@
                   <small id="endpointPreview" class="endpoint-preview"></small>
                 </div>
                 <div class="form-group">
-                  <label class="checkbox-label"><input id="providerThinkTags" type="checkbox" /> Interpret inline &lt;think&gt; tags as reasoning</label>
-                  <small class="parameter-description">Enable only for providers that put reasoning inside answer text.</small>
                   <label for="providerApiKey">API key</label>
                   <div class="key-input">
                     <input type="password" id="providerApiKey" autocomplete="off" spellcheck="false" required />
@@ -424,6 +412,26 @@
                   </div>
                   <datalist id="modelSuggestions"></datalist>
                 </div>
+              </div>
+            </section>
+            <section class="provider-section" aria-labelledby="providerBehaviorHeading">
+              <div class="provider-section-heading">
+                <h4 id="providerBehaviorHeading">Conversation behavior</h4>
+                <p>Optional features for services that support them.</p>
+              </div>
+              <div id="providerServerConversationGroup" class="provider-option" hidden>
+                <div>
+                  <label for="providerServerConversation">Server-side conversation mode</label>
+                  <p id="providerServerConversationHelp">Send only the current message and attachments. Requires /conversations support. The provider stores context; editing and regenerating history are unavailable. The system prompt is sent with every message.</p>
+                </div>
+                <input id="providerServerConversation" class="switch-input" type="checkbox" aria-describedby="providerServerConversationHelp" />
+              </div>
+              <div class="provider-option">
+                <div>
+                  <label for="providerThinkTags">Interpret inline &lt;think&gt; tags as reasoning</label>
+                  <p id="providerThinkTagsHelp">Enable only for providers that put reasoning inside answer text.</p>
+                </div>
+                <input id="providerThinkTags" class="switch-input" type="checkbox" aria-describedby="providerThinkTagsHelp" />
               </div>
             </section>
             <section class="provider-section" aria-labelledby="modelsHeading">

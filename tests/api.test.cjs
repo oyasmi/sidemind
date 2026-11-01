@@ -602,7 +602,8 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     openDialog = () => {};
     setDialogBusy = () => {};
     updateEndpointPreview = () => {};
-    updateAvatarPreview = () => {};
+    setAvatarInputMode = () => {};
+    isPresetAvatar = () => false;
     showDialogError = () => {};
     closeProviderModal = () => {};
     globalThis.app = { elements, saveProvider, loadConfig, openProviderModal, getConfig: () => config };
