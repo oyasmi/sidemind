@@ -81,6 +81,9 @@ function cacheElements() {
     'modelsList',
     'addModelBtn',
     'providerName',
+    'providerAvatarEmoji',
+    'providerAvatarPreview',
+    'providerAvatarChoices',
     'providerBaseUrl',
     'providerApiKey',
     'providerApiType',
@@ -133,6 +136,8 @@ function setupEventListeners() {
   elements.themeSelector.addEventListener('change', updateTheme);
   elements.addModelBtn.addEventListener('click', addModelField);
   elements.providerBaseUrl.addEventListener('input', updateEndpointPreview);
+  elements.providerAvatarEmoji.addEventListener('input', updateAvatarPreview);
+  elements.providerAvatarChoices.addEventListener('click', handleAvatarChoice);
   elements.providerApiType.addEventListener('change', updateEndpointPreview);
   elements.checkConnectionBtn.addEventListener('click', checkConnection);
   elements.providerApiKey.addEventListener('input', resetConnectionCheck);
@@ -362,7 +367,10 @@ function createProviderElement(provider) {
   info.className = 'provider-info';
   const name = document.createElement('div');
   name.className = 'provider-name';
-  name.textContent = provider.name;
+  const avatar = document.createElement('span');
+  avatar.className = 'provider-avatar';
+  renderProviderAvatar(avatar, provider);
+  name.append(avatar, document.createTextNode(provider.name));
   const badge = document.createElement('span');
   badge.className = 'provider-api';
   badge.textContent = provider.apiType === 'responses'
@@ -744,6 +752,8 @@ function openProviderModal(provider = null) {
     : 'Connect a provider';
   elements.providerForm.reset();
   elements.providerName.value = provider?.name || '';
+  elements.providerAvatarEmoji.value = normalizeAvatarEmoji(provider?.avatarEmoji);
+  updateAvatarPreview();
   elements.providerBaseUrl.value = provider?.baseUrl || '';
   elements.providerApiKey.value = provider?.apiKey || '';
   elements.providerApiType.value = provider?.apiType === 'responses' ? 'responses' : 'chat';
@@ -759,6 +769,21 @@ function openProviderModal(provider = null) {
   renderModelsList(provider?.models || []);
   updateEndpointPreview();
   openDialog(elements.providerModal);
+}
+
+function updateAvatarPreview() {
+  const valid = validAvatarEmoji(elements.providerAvatarEmoji.value);
+  elements.providerAvatarEmoji.setCustomValidity(valid ? '' : 'Enter one emoji, or leave blank to use the default robot.');
+  if (valid) elements.providerAvatarEmoji.removeAttribute('aria-invalid');
+  else elements.providerAvatarEmoji.setAttribute('aria-invalid', 'true');
+  renderProviderAvatar(elements.providerAvatarPreview, { avatarEmoji: elements.providerAvatarEmoji.value });
+}
+
+function handleAvatarChoice(event) {
+  const button = event.target.closest('button[data-avatar-emoji]');
+  if (!button) return;
+  elements.providerAvatarEmoji.value = button.dataset.avatarEmoji;
+  elements.providerAvatarEmoji.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 function closeProviderModal() {
@@ -940,6 +965,7 @@ async function saveProvider() {
   const data = {
     id: editingProviderId || crypto.randomUUID(),
     name: sanitizeInput(elements.providerName.value),
+    avatarEmoji: normalizeAvatarEmoji(elements.providerAvatarEmoji.value),
     baseUrl: normalizeBaseUrl(elements.providerBaseUrl.value),
     apiKey: elements.providerApiKey.value.trim(),
     apiType: elements.providerApiType.value === 'responses' ? 'responses' : 'chat',
@@ -1356,6 +1382,7 @@ function validateConfig(value) {
     }
     return (
       (!provider.apiType || ['chat', 'responses'].includes(provider.apiType)) &&
+      (provider.avatarEmoji === undefined || validAvatarEmoji(provider.avatarEmoji)) &&
       (provider.serverConversation === undefined || (typeof provider.serverConversation === 'boolean' &&
         (!provider.serverConversation || provider.apiType === 'responses'))) &&
       (!provider.reasoningFormat || ['structured', 'think-tags'].includes(provider.reasoningFormat)) &&

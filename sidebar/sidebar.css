@@ -349,6 +349,7 @@ body {
   color: var(--text-secondary);
 }
 .message-avatar {
+  --avatar-emoji-size: 16px;
   width: 20px;
   height: 20px;
   display: grid;
@@ -357,6 +358,9 @@ body {
   color: var(--accent);
   background: var(--accent-light);
   font-size: 10px;
+}
+.message-avatar.emoji-avatar {
+  font-size: var(--avatar-emoji-size);
 }
 .message-avatar .ui-icon {
   width: 14px;

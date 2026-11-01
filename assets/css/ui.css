@@ -2,6 +2,7 @@
 :root {
   color-scheme: light;
   --font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --emoji-font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
   --font-size: 14px;
   --reading-font-size: 14px;
   --reading-font-family: var(--font-family);
@@ -35,6 +36,30 @@
   --radius-lg: 14px;
   --shadow-sm: 0 2px 8px #292c2908;
   --shadow-lg: 0 16px 48px #18201926;
+}
+
+/* ===== Provider avatars ===== */
+.provider-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-right: 7px;
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--accent-light);
+  vertical-align: middle;
+}
+.provider-avatar .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+.emoji-avatar {
+  font-family: var(--emoji-font-family);
+  font-size: var(--avatar-emoji-size, 18px);
+  font-weight: 400;
+  line-height: 1;
 }
 
 :root.dark-theme {

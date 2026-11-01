@@ -318,6 +318,21 @@
                 <div class="form-group">
                   <label for="providerName">Provider name</label>
                   <input type="text" id="providerName" placeholder="For example: My AI service" required />
+                  <div class="provider-avatar-field">
+                    <label for="providerAvatarEmoji">Emoji avatar <span class="optional-label">(optional)</span></label>
+                    <div class="provider-avatar-input">
+                      <span id="providerAvatarPreview" class="provider-avatar" aria-hidden="true"></span>
+                      <input type="text" id="providerAvatarEmoji" placeholder="For example: 🧠" autocomplete="off" spellcheck="false" aria-describedby="providerAvatarHelp" />
+                    </div>
+                    <div id="providerAvatarChoices" class="provider-avatar-choices" role="group" aria-label="Suggested avatars">
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🧠" aria-label="Use 🧠 avatar">🧠</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🚀" aria-label="Use 🚀 avatar">🚀</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🐱" aria-label="Use 🐱 avatar">🐱</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="🌟" aria-label="Use 🌟 avatar">🌟</button>
+                      <button type="button" class="btn btn-small" data-avatar-emoji="">Use default</button>
+                    </div>
+                    <small id="providerAvatarHelp" class="parameter-description">Enter or paste one emoji. Leave blank to use the default robot.</small>
+                  </div>
                 </div>
                 <div class="form-group protocol-group">
                   <label for="providerApiType">API protocol</label>

@@ -767,6 +767,144 @@ browserTest(
   }
 );
 
+browserTest('provider emoji avatars preview, validate, persist, export, import and reset', async () => {
+  const { page, errors } = await openPage('options');
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '');
+  assert.equal(await page.locator('#providerAvatarPreview use').getAttribute('href'), '../assets/icons.svg#robot');
+  await page.getByRole('button', { name: 'Use 🧠 avatar', exact: true }).click();
+  assert.equal(await page.locator('#providerAvatarPreview').textContent(), '🧠');
+  await page.locator('#providerAvatarEmoji').fill('🧠🚀');
+  assert.equal(await page.locator('#providerAvatarEmoji').evaluate((input) => input.checkValidity()), false);
+  await page.locator('#providerSaveBtn').click();
+  assert.equal(await page.locator('#providerModal').evaluate((dialog) => dialog.open), true);
+  assert.equal(await page.evaluate(() => config.providers[0].avatarEmoji), undefined);
+  await page.locator('#providerAvatarEmoji').fill(' 👩🏽‍💻 ');
+  assert.equal(await page.locator('#providerAvatarPreview').textContent(), '👩🏽‍💻');
+  if (process.env.UI_SCREENSHOTS)
+    await page.locator('#providerModal .modal-panel').screenshot({ path: `${process.env.UI_SCREENSHOTS}/provider-avatar.png` });
+  await page.locator('#providerSaveBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#providerModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.providers[0].avatarEmoji), '👩🏽‍💻');
+  assert.equal(await page.locator('.provider-name .provider-avatar').textContent(), '👩🏽‍💻');
+
+  await page.evaluate(() => sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage)));
+  await page.reload();
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '👩🏽‍💻');
+  await page.locator('#providerCancelBtn').click();
+  await openSettingsSection(page, 'data');
+  const download = page.waitForEvent('download');
+  await page.locator('#exportBtn').click();
+  const exported = JSON.parse(readFileSync(await (await download).path(), 'utf8'));
+  assert.equal(exported.providers[0].avatarEmoji, '👩🏽‍💻');
+  await page.locator('#importFile').setInputFiles({
+    name: 'avatars.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exported))
+  });
+  await page.waitForFunction(() => document.querySelector('#confirmModal').open);
+  await page.locator('#confirmAccept').click();
+  await page.waitForFunction(() => config.providers[0].apiKey === '');
+  assert.equal(await page.evaluate(() => config.providers[0].avatarEmoji), '👩🏽‍💻');
+  await openSettingsSection(page, 'providers');
+  await page.getByRole('button', { name: 'Edit Test provider' }).click();
+  await page.getByRole('button', { name: 'Use default', exact: true }).click();
+  assert.equal(await page.locator('#providerAvatarEmoji').inputValue(), '');
+  assert.equal(await page.locator('#providerAvatarPreview use').getAttribute('href'), '../assets/icons.svg#robot');
+  await page.locator('#providerApiKey').fill('fixture-key');
+  await page.locator('#providerSaveBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#providerModal').open);
+  assert.equal(await page.evaluate(() => window.__storage.sync.config.providers[0].avatarEmoji), '');
+  assert.equal(await page.locator('.provider-name .provider-avatar use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('provider avatars follow each historical reply and update in place while editing', async () => {
+  const settings = structuredClone(fixtureConfig);
+  settings.providers[0].avatarEmoji = '🧠';
+  settings.providers.push({ ...settings.providers[0], id: 'second', name: 'Second provider', avatarEmoji: '🚀' });
+  const timestamp = new Date().toISOString();
+  const { page, errors } = await openPage('sidebar', settings, {
+    currentSessionId: 'avatars', sessions: {
+      avatars: { title: 'Mixed providers', timestamp, messages: [
+        { id: 'u', role: 'user', content: 'Question', timestamp },
+        { id: 'a', role: 'assistant', content: 'First answer', modelUsed: 'model - provider', timestamp },
+        { id: 'b', role: 'assistant', content: 'Second answer', modelUsed: 'model - second', timestamp },
+        { id: 'c', role: 'assistant', content: 'Deleted provider', modelUsed: 'model - deleted', timestamp },
+        { id: 'd', role: 'assistant', content: 'No source', timestamp },
+        { id: 'e', role: 'system', content: 'Error', timestamp }
+      ] }
+    }
+  });
+  assert.equal(await page.locator('#modelAvatar').textContent(), '🧠');
+  assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🧠', '🚀', '', '']);
+  assert.equal(await page.locator('.message.system .message-avatar use').getAttribute('href'), '../assets/icons.svg#triangle-exclamation');
+  await page.locator('#modelSelector').click();
+  assert.deepEqual(await page.locator('.model-option-group-label .provider-avatar').allTextContents(), ['🧠', '🚀']);
+  await page.locator('[role="option"][data-model-key="model - second"]').click();
+  assert.equal(await page.locator('#modelAvatar').textContent(), '🚀');
+  assert.equal(await page.locator('.message.assistant .message-avatar').first().textContent(), '🧠');
+  await page.locator('.edit-btn').click();
+  await page.locator('.message-edit-input').fill('Keep this edit');
+  await page.evaluate(async () => {
+    window.__avatarContent = document.querySelector('.message.assistant .message-content');
+    window.__avatarEditor = document.querySelector('.message-edit-input');
+    const latest = structuredClone(state.config);
+    latest.providers[0].avatarEmoji = '🐱';
+    latest.providers[1].avatarEmoji = '';
+    await chrome.storage.sync.set({ config: latest });
+  });
+  assert.equal(await page.locator('#modelAvatar use').getAttribute('href'), '../assets/icons.svg#robot');
+  assert.deepEqual(await page.locator('.message.assistant .message-avatar').allTextContents(), ['🐱', '', '', '']);
+  assert.deepEqual(await page.evaluate(() => ({
+    contentAttached: window.__avatarContent === document.querySelector('.message.assistant .message-content'),
+    editorAttached: window.__avatarEditor === document.querySelector('.message-edit-input'),
+    editorFocused: document.activeElement === window.__avatarEditor
+  })), { contentAttached: true, editorAttached: true, editorFocused: true });
+  assert.equal(await page.locator('.message-edit-input').inputValue(), 'Keep this edit');
+  await page.evaluate(async () => {
+    const latest = structuredClone(state.config);
+    latest.providers = [];
+    latest.selectedModel = null;
+    await chrome.storage.sync.set({ config: latest });
+  });
+  assert.equal(await page.locator('.message.assistant .message-avatar use').count(), 4);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('changing provider avatars during streaming preserves content, selection and scroll', async () => {
+  const { page, errors } = await openPage();
+  assert.equal(await page.locator('#modelAvatar use').getAttribute('href'), '../assets/icons.svg#robot');
+  await startResponse(page);
+  await delta(page, 'A streamed answer.\n\n' + 'A long paragraph for scrolling.\n\n'.repeat(50));
+  const before = await page.evaluate(() => {
+    window.__avatarContent = document.querySelector('.message.assistant .message-content');
+    const range = document.createRange();
+    range.selectNodeContents(window.__avatarContent.firstChild);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    elements.messagesList.scrollTop = 80;
+    return { selected: getSelection().toString(), scroll: elements.messagesList.scrollTop };
+  });
+  await page.evaluate(async () => {
+    const latest = structuredClone(state.config);
+    latest.providers[0].avatarEmoji = '👩🏽‍💻';
+    await chrome.storage.sync.set({ config: latest });
+  });
+  assert.equal(await page.locator('#modelAvatar').textContent(), '👩🏽‍💻');
+  assert.equal(await page.locator('.message.assistant .message-avatar').textContent(), '👩🏽‍💻');
+  assert.deepEqual(await page.evaluate(() => ({
+    selected: getSelection().toString(), scroll: elements.messagesList.scrollTop
+  })), before);
+  assert.equal(await page.evaluate(() => state.isStreaming && window.__avatarContent === document.querySelector('.message.assistant .message-content')), true);
+  await page.evaluate(() => { getSelection().removeAllRanges(); window.__stream.delta('Still streaming.'); window.__stream.complete(); });
+  await page.waitForFunction(() => !state.isStreaming);
+  await page.waitForFunction(() => document.querySelector('.message.assistant .message-content').textContent.includes('Still streaming.'));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
 browserTest(
   'dirty dialogs confirm discard, trap focus, and return focus to the opener',
   async () => {

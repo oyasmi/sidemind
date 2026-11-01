@@ -69,6 +69,7 @@ SideMind is designed with your privacy as the top priority:
    - Click the SideMind icon in your toolbar
    - Open Options (right-click → Extension Options)
    - Add your AI provider with API key
+   - Optionally choose an **Emoji avatar** to identify the provider in the model picker and its chat replies; leave it blank for the default robot
    - Pick the API type: **Chat Completions** (`/chat/completions`) or **Responses** (`/responses`)
    - Click **Check connection** to verify the URL and key; the provider's model IDs then appear as suggestions
    - Select your preferred model

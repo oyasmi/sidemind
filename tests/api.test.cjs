@@ -276,6 +276,33 @@ test('configuration import accepts legacy providers and validates the server con
   }
 });
 
+test('provider avatars accept one complete emoji and reject text or multiple avatars', () => {
+  const context = loadScript('options/options.js');
+  for (const emoji of ['🧠', '👩‍💻', '👩🏽‍💻', '👨‍👩‍👧‍👦', '🇨🇳', '1️⃣', '#️⃣', '❤️', '🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}']) {
+    assert.equal(context.normalizeAvatarEmoji(` ${emoji} `), emoji);
+    assert.equal(context.validAvatarEmoji(emoji), true);
+  }
+  assert.equal(context.validAvatarEmoji(''), true);
+  assert.equal(context.validAvatarEmoji('  '), true);
+  for (const invalid of ['hello', '<img>', '🧠🚀', '🧠 text', '1', '🇨', '🏽', '\u200D', null, 12, {}, '🧠'.repeat(100)]) {
+    assert.equal(context.validAvatarEmoji(invalid), false, String(invalid));
+    assert.equal(context.normalizeAvatarEmoji(invalid), '');
+  }
+  const candidate = {
+    providers: [{ id: 'p', name: 'Provider', baseUrl: 'https://example.com/v1', apiKey: '', models: [{ id: 'm', name: 'Model' }] }],
+    systemPrompts: []
+  };
+  assert.equal(context.validateConfig(candidate), true);
+  for (const avatarEmoji of ['', '👩🏽‍💻', '🇨🇳']) {
+    candidate.providers[0].avatarEmoji = avatarEmoji;
+    assert.equal(context.validateConfig(candidate), true);
+  }
+  for (const avatarEmoji of [null, {}, 'text', '🧠🚀']) {
+    candidate.providers[0].avatarEmoji = avatarEmoji;
+    assert.equal(context.validateConfig(candidate), false);
+  }
+});
+
 function output(text = '完整回答') {
   return {
     status: 'completed',
@@ -573,6 +600,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     openDialog = () => {};
     setDialogBusy = () => {};
     updateEndpointPreview = () => {};
+    updateAvatarPreview = () => {};
     showDialogError = () => {};
     closeProviderModal = () => {};
     globalThis.app = { elements, saveProvider, loadConfig, openProviderModal, getConfig: () => config };
@@ -583,7 +611,7 @@ test('provider API selection survives save, reload, edit and legacy configuratio
     providerForm: { checkValidity: () => true, reset() {} },
     providerModal: { classList: { add() {}, remove() {} }, querySelector: () => ({ open: false }) },
     providerDeleteBtn: { classList: { toggle() {} }, setAttribute() {} },
-    providerName: value('OpenAI'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
+    providerName: value('OpenAI'), providerAvatarEmoji: value('👩🏽‍💻'), providerBaseUrl: value('https://api.openai.com/v1/responses/'),
     providerApiKey: value('test-key'), providerApiType: value('responses'),
     providerServerConversation: { checked: true }, providerServerConversationGroup: { hidden: false },
     toggleApiKey: { setAttribute() {}, replaceChildren() {} },
@@ -594,10 +622,12 @@ test('provider API selection survives save, reload, edit and legacy configuratio
   assert.equal(saved.config.providers[0].apiType, 'responses');
   assert.equal(saved.config.providers[0].serverConversation, true);
   assert.equal(saved.config.providers[0].baseUrl, 'https://api.openai.com/v1');
+  assert.equal(saved.config.providers[0].avatarEmoji, '👩🏽‍💻');
   await app.loadConfig();
   app.openProviderModal(app.getConfig().providers[0]);
   assert.equal(app.elements.providerApiType.value, 'responses');
   assert.equal(app.elements.providerServerConversation.checked, true);
+  assert.equal(app.elements.providerAvatarEmoji.value, '👩🏽‍💻');
   app.elements.providerApiType.value = 'chat';
   await app.saveProvider();
   assert.equal(saved.config.providers.length, 1);

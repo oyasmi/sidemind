@@ -956,6 +956,39 @@
   min-width: 0;
   margin: 0;
 }
+.provider-avatar-field {
+  margin-top: 16px;
+}
+.optional-label {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.provider-avatar-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#providerAvatarPreview {
+  --avatar-emoji-size: 22px;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+}
+.provider-avatar-input input {
+  min-width: 0;
+}
+.provider-avatar-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.provider-avatar-choices [data-avatar-emoji]:not([data-avatar-emoji='']) {
+  padding: 5px 8px;
+  font-family: var(--emoji-font-family);
+  font-size: 16px;
+  line-height: 1.2;
+}
 .models-heading {
   display: flex;
   align-items: center;

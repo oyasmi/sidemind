@@ -197,6 +197,7 @@ function cacheElements() {
   elements.undoBtn = document.getElementById('undoBtn');
   [
     'modelControl',
+    'modelAvatar',
     'modelName',
     'modelProvider',
     'modelPickerPanel',
@@ -268,6 +269,7 @@ function setupEventListeners() {
     if (areaName === 'sync' && changes.config) {
       state.config = { ...state.config, ...GenerationSettings.migrate(changes.config.newValue), ...pendingConfigChanges };
       updateModelSelector();
+      refreshMessageAvatars();
       updateSystemPromptSelector();
       updateInputState();
       renderWelcomeMessage();
@@ -1592,6 +1594,17 @@ function reconcileChildren(container, children) {
 const MESSAGE_ICONS = { user: 'user', assistant: 'robot', system: 'triangle-exclamation' };
 const MESSAGE_LABELS = { user: 'You', assistant: 'Assistant', system: 'Error' };
 
+function refreshMessageAvatars() {
+  // Update cached messages in place, including other chats, without re-rendering
+  // the transcript: a config edit must preserve selection, editing and streams.
+  for (const element of messageElementCache.values()) {
+    const message = elementMessages.get(element);
+    if (message?.role === 'assistant') {
+      renderProviderAvatar(element.querySelector('.message-avatar'), providerForModel(message.modelUsed));
+    }
+  }
+}
+
 function createModelDivider(modelUsed) {
   const [providerName, modelName] = describeModel(modelUsed);
   if (!modelName) return null;
@@ -1617,7 +1630,8 @@ function createMessageElement(message) {
 
   const avatar = document.createElement('div');
   avatar.className = 'message-avatar';
-  avatar.appendChild(createIcon(MESSAGE_ICONS[message.role] || 'robot'));
+  if (message.role === 'assistant') renderProviderAvatar(avatar, providerForModel(message.modelUsed));
+  else avatar.appendChild(createIcon(MESSAGE_ICONS[message.role] || 'robot'));
 
   const senderName = document.createElement('span');
   senderName.className = 'sender-name';
@@ -2811,6 +2825,7 @@ function updateModelSelector() {
   const [providerName, modelName] = describeModel(state.config.selectedModel);
   const provider = providerForModel(state.config.selectedModel);
   const hasModels = state.config.providers.some((item) => item.models.length);
+  renderProviderAvatar(elements.modelAvatar, provider);
   elements.modelName.textContent = modelName || 'Choose a model';
   elements.modelProvider.textContent = providerName
     ? `${providerName}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`
@@ -2864,7 +2879,10 @@ function renderModelOptions() {
     const label = document.createElement('div');
     label.className = 'model-option-group-label';
     label.id = `model-group-${providerIndex}`;
-    label.textContent = `${provider.name}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`;
+    const avatar = document.createElement('span');
+    avatar.className = 'provider-avatar';
+    renderProviderAvatar(avatar, provider);
+    label.append(avatar, document.createTextNode(`${provider.name}${getApiType(provider) === 'responses' ? ' · Responses' : ''}`));
     group.setAttribute('aria-labelledby', label.id);
     group.appendChild(label);
     provider.models.forEach((model, modelIndex) => {
