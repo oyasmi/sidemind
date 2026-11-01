@@ -1393,7 +1393,16 @@ test('Responses replays structured output within a compatible history segment', 
   assert.equal(input.find(item => item.id === 'msg_1').status, 'completed', 'replayed output messages keep the required id/status wire fields');
   assert.deepEqual(input.find(item => item.type === 'mcp_call'), { type: 'mcp_call', id: 'mcp_1', server_label: 'pipiclaw', name: 'bash', arguments: '{"command":"ls"}', output: 'a.txt', status: 'completed' });
   assert.equal(answer.unsupportedOutput, null);
-  assert.equal(answer.content, 'Checking.\n\nDone.');
+  assert.equal(answer.content, 'Done.');
+  const view = plain(app.displayParts(answer));
+  assert.deepEqual(view.progress.map(entry => entry.type), ['commentary', 'tool']);
+  assert.equal(view.progress[0].text, 'Checking.');
+  assert.equal(view.progress[1].item.arguments, '{"command":"ls"}');
+  // Previously saved replies still contain the old combined text projection.
+  // Reading them must use protocol order without changing the stored record.
+  const saved = { ...plain(answer), role: 'assistant', content: 'Checking.\n\nDone.' };
+  assert.equal(app.displayParts(saved).content, 'Done.');
+  assert.equal(saved.content, 'Checking.\n\nDone.');
   app.state.config.selectedModel = 'other-model - provider';
   assert.equal(JSON.stringify(app.buildResponsesRequestBody()).includes('opaque'), false);
   app.state.config.selectedModel = 'test-model - provider';

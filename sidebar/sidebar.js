@@ -1719,7 +1719,7 @@ function createMessageElement(message) {
   const parts = displayParts(message);
 
   // Reasoning section (if exists)
-  if (parts.reasoning.trim()) {
+  if (parts.reasoning.trim() || parts.progress?.length) {
     bubble.appendChild(createReasoningSection(message));
   }
 
@@ -1782,8 +1782,13 @@ function createReasoningSection(message) {
   title.className = 'reasoning-title';
   title.textContent = reasoningTitle(message);
 
+  const preview = document.createElement('span');
+  preview.className = 'progress-preview';
+  preview.textContent = progressPreview(message);
+
   header.appendChild(icon);
   header.appendChild(title);
+  header.appendChild(preview);
   header.addEventListener('click', () => {
     section.classList.toggle('expanded');
     message.reasoningCollapsed = !section.classList.contains('expanded');
@@ -1793,7 +1798,7 @@ function createReasoningSection(message) {
     content.hidden = message.reasoningCollapsed;
     if (!message.reasoningCollapsed) {
       const streaming = isStreamingMessage(message.id);
-      renderMessageMarkdown(content, displayParts(message).reasoning, !streaming);
+      renderReasoningContent(content, message);
       // Opened mid-stream: show where the thinking is now, and follow it
       if (streaming) content.scrollTop = content.scrollHeight;
     }
@@ -1805,13 +1810,119 @@ function createReasoningSection(message) {
   content.id = `reasoning-${message.id}`;
   content.hidden = Boolean(message.reasoningCollapsed);
   if (!message.reasoningCollapsed) {
-    renderMessageMarkdown(content, displayParts(message).reasoning, !isStreamingMessage(message.id));
+    renderReasoningContent(content, message);
   }
 
   section.appendChild(header);
   section.appendChild(content);
 
   return section;
+}
+
+function hasExecutionProgress(parts) {
+  return parts.progress?.some((entry) => entry.type !== 'reasoning');
+}
+
+function toolSummary(item) {
+  const labels = { web_search: 'Search', web_fetch: 'Fetch', bash: 'Run', read: 'Read', write: 'Write', edit: 'Edit', glob: 'Find', grep: 'Search' };
+  const label = Object.hasOwn(labels, item.name) ? labels[item.name] : item.name || 'Tool';
+  try {
+    const args = JSON.parse(item.arguments);
+    const detail = args.query || args.url || args.command || args.path || args.pattern;
+    return typeof detail === 'string' ? `${label} · ${detail.replace(/\s+/g, ' ').trim()}` : label;
+  } catch {
+    return label;
+  }
+}
+
+function toolState(item, message) {
+  if (['completed', 'failed', 'incomplete'].includes(item.status)) return item.status;
+  return isStreamingMessage(message.id) || (!message.outcome && remoteBusySessions.has(state.currentSessionId))
+    ? 'in_progress' : 'incomplete';
+}
+
+function progressPreview(message) {
+  const parts = displayParts(message);
+  if (!hasExecutionProgress(parts)) return '';
+  const entry = parts.progress.at(-1);
+  return (entry.type === 'tool' ? toolSummary(entry.item) : entry.text).replace(/\s+/g, ' ').trim();
+}
+
+function renderReasoningContent(container, message) {
+  const parts = displayParts(message);
+  const timeline = hasExecutionProgress(parts);
+  container.classList.toggle('progress-timeline', Boolean(timeline));
+  if (!timeline) {
+    renderMessageMarkdown(container, parts.reasoning, !isStreamingMessage(message.id));
+    return;
+  }
+
+  // Reuse entries by protocol id: new events and terminal snapshots must not
+  // close a tool's details, move focus, or reset a result's scroll position.
+  const existing = new Map(Array.from(container.children, (node) => [node.dataset.progressKey, node]));
+  const nodes = parts.progress.map((entry) => {
+    const tool = entry.type === 'tool';
+    let node = existing.get(entry.key);
+    if (!node || node.dataset.progressType !== entry.type) {
+      node = document.createElement(tool ? 'details' : 'div');
+      node.className = `progress-entry progress-${entry.type}`;
+      node.dataset.progressKey = entry.key;
+      node.dataset.progressType = entry.type;
+      const heading = tool ? document.createElement('summary') : node;
+      const marker = document.createElement('span');
+      marker.className = 'progress-marker';
+      marker.textContent = tool ? '↗' : entry.type === 'reasoning' ? '✦' : '·';
+      marker.setAttribute('aria-hidden', 'true');
+      heading.appendChild(marker);
+      if (tool) {
+        const label = document.createElement('span');
+        label.className = 'progress-tool-label';
+        const status = document.createElement('span');
+        status.className = 'progress-tool-status';
+        heading.append(label, status);
+        node.appendChild(heading);
+        for (const [field, title] of [['arguments', 'Arguments'], ['output', 'Result'], ['error', 'Error']]) {
+          const block = document.createElement('div');
+          block.className = `progress-tool-${field}`;
+          const caption = document.createElement('div');
+          caption.className = 'progress-tool-caption';
+          caption.textContent = title;
+          block.append(caption, document.createElement('pre'));
+          node.appendChild(block);
+        }
+      } else {
+        const text = document.createElement('div');
+        text.className = 'progress-text';
+        node.appendChild(text);
+      }
+    }
+    if (tool) {
+      const item = entry.item;
+      const status = toolState(item, message);
+      node.dataset.status = status;
+      const label = node.querySelector('.progress-tool-label');
+      label.textContent = toolSummary(item);
+      label.title = label.textContent;
+      node.querySelector('.progress-tool-status').textContent = { in_progress: 'Running', completed: 'Done', failed: 'Failed', incomplete: 'Interrupted' }[status];
+      let args = item.arguments || '{}';
+      try { args = JSON.stringify(JSON.parse(args), null, 2); } catch { /* Show malformed arguments verbatim. */ }
+      const failure = item.pipiclaw_failure || item.error?.content || item.error?.message || (item.error ? JSON.stringify(item.error) : '');
+      for (const [field, value] of [['arguments', args], ['output', item.output], ['error', failure]]) {
+        const block = node.querySelector(`.progress-tool-${field}`);
+        block.hidden = value == null || value === '';
+        const text = value == null ? '' : String(value);
+        const pre = block.querySelector('pre');
+        if (pre.textContent !== text) pre.textContent = text;
+      }
+    } else {
+      node.dataset.level = entry.level || '';
+      renderMessageMarkdown(node.querySelector('.progress-text'), entry.text,
+        entry.status === 'completed' || !isStreamingMessage(message.id));
+    }
+    return node;
+  });
+  renderedMarkdown.delete(container);
+  reconcileChildren(container, nodes);
 }
 
 function announce(text) {
@@ -1834,8 +1945,8 @@ function isStreamingMessage(messageId) {
 
 function isAwaitingFirstToken(message) {
   if (!isStreamingMessage(message.id)) return false;
-  const { content, reasoning } = displayParts(message);
-  return !content.trim() && !reasoning.trim();
+  const { content, reasoning, progress } = displayParts(message);
+  return !content.trim() && !reasoning.trim() && !progress?.length;
 }
 
 // Some models stream their reasoning inline, as <think>…</think> ahead of the
@@ -1843,24 +1954,33 @@ function isAwaitingFirstToken(message) {
 // then this view shows it as reasoning, rather than as an unknown tag that the
 // sanitizer would drop together with all the text inside it.
 function displayParts(message) {
-  const content = message.content || '';
-  const reasoning = message.reasoning || '';
-  if (message.role !== 'assistant' || !isStreamingMessage(message.id)) return { content, reasoning };
-
-  if (message.reasoningFormat === 'structured' || (message.protocol && message.reasoningFormat !== 'think-tags')) return { content, reasoning };
-  const head = content.trimStart();
-  // The opening tag itself can arrive split over several deltas
-  if (head && '<thinking>'.startsWith(head)) return { content: '', reasoning };
-  const open = head.match(/^<think(?:ing)?>/);
-  if (!open) return { content, reasoning };
-
-  const rest = head.slice(open[0].length);
-  const close = rest.match(/<\/think(?:ing)?>/);
-  const thought = (close ? rest.slice(0, close.index) : rest).trim();
-  return {
-    content: close ? rest.slice(close.index + close[0].length).trimStart() : '',
-    reasoning: [reasoning, thought].filter(Boolean).join('\n\n')
-  };
+  const protocol = message.role === 'assistant' && message.protocol?.apiType === 'responses'
+    ? ResponsesProtocol.view(message) : null;
+  if (protocol && message.reasoningFormat !== 'think-tags') {
+    // Derive from protocol items so previously saved replies gain the same
+    // ordered view without a storage migration or duplicated transcript data.
+    return protocol;
+  }
+  let content = message.content || '';
+  let reasoning = message.reasoning || '';
+  if (message.role === 'assistant' && isStreamingMessage(message.id) && message.reasoningFormat !== 'structured') {
+    const head = content.trimStart();
+    // The opening tag itself can arrive split over several deltas.
+    if (head && '<thinking>'.startsWith(head)) content = '';
+    const open = head.match(/^<think(?:ing)?>/);
+    if (open) {
+      const rest = head.slice(open[0].length);
+      const close = rest.match(/<\/think(?:ing)?>/);
+      const thought = (close ? rest.slice(0, close.index) : rest).trim();
+      content = close ? rest.slice(close.index + close[0].length).trimStart() : '';
+      reasoning = [reasoning, thought].filter(Boolean).join('\n\n');
+    }
+  }
+  if (!protocol) return { content, reasoning };
+  const progress = protocol.progress;
+  const inline = reasoning.startsWith(protocol.reasoning) ? reasoning.slice(protocol.reasoning.length).trim() : reasoning.trim();
+  if (inline) progress.push({ key: 'inline-reasoning', type: 'reasoning', text: inline });
+  return { content, reasoning, progress };
 }
 
 function formatDuration(ms) {
@@ -1870,6 +1990,12 @@ function formatDuration(ms) {
 }
 
 function reasoningTitle(message) {
+  const parts = displayParts(message);
+  if (hasExecutionProgress(parts)) {
+    const count = parts.progress.filter((entry) => entry.type === 'tool').length;
+    const elapsed = isStreamingMessage(message.id) && message.startedAt ? Date.now() - message.startedAt : message.durationMs;
+    return ['Progress', count ? `${count} tool${count === 1 ? '' : 's'}` : '', elapsed != null ? formatDuration(elapsed) : ''].filter(Boolean).join(' · ');
+  }
   if (message.thinkingMs != null) {
     return `Reasoning · ${formatDuration(message.thinkingMs)}`;
   }
@@ -1884,8 +2010,8 @@ function reasoningTitle(message) {
 // Reasoning is considered finished the moment the first visible token lands
 function markStreamProgress(message) {
   if (!message.startedAt || message.thinkingMs != null) return;
-  const { content, reasoning } = displayParts(message);
-  if (!content || !reasoning) return;
+  const parts = displayParts(message);
+  if (!parts.content || (!parts.reasoning && !parts.progress?.length)) return;
 
   message.thinkingMs = Date.now() - message.startedAt;
 
@@ -2104,7 +2230,7 @@ function applyMessageStats(element, message) {
 }
 
 function copyMessage(message, button) {
-  return copyText(message.content, button, 'Copy message');
+  return copyText(displayParts(message).content, button, 'Copy message');
 }
 
 // ----------------------------------------
@@ -2604,8 +2730,11 @@ function responseCompletionNotice(message) {
   if (message.incompleteReason === 'content_filter') return 'The provider filtered this response · it may be incomplete.';
   if (message.incompleteReason) return 'The provider returned an incomplete response. You can retry.';
   if (message.unsupportedOutput?.length) return `The provider returned unsupported output: ${message.unsupportedOutput.join(', ')}. Tool execution is not supported.`;
-  if (message.outcome === 'completed' && !message.content?.trim()) return message.reasoning?.trim()
-    ? 'The provider returned reasoning but no answer text.' : 'The provider returned no displayable text.';
+  const parts = displayParts(message);
+  if (message.outcome === 'completed' && !parts.content.trim()) {
+    if (hasExecutionProgress(parts)) return 'The provider returned execution progress but no answer text.';
+    return parts.reasoning.trim() ? 'The provider returned reasoning but no answer text.' : 'The provider returned no displayable text.';
+  }
   if (message.completionUnconfirmed) return 'Completion not confirmed by the provider · this response may be incomplete.';
   return '';
 }
@@ -2641,7 +2770,7 @@ function updateMessageDisplay(messageId) {
   const bubble = messageElement.querySelector('.message-bubble');
   let reasoningSection = messageElement.querySelector('.reasoning-section');
 
-  if (parts.reasoning.trim()) {
+  if (parts.reasoning.trim() || parts.progress?.length) {
     if (!reasoningSection) {
       reasoningSection = createReasoningSection(message);
       bubble.insertBefore(reasoningSection, bubble.firstChild);
@@ -2652,12 +2781,14 @@ function updateMessageDisplay(messageId) {
         // unless the reader scrolled up inside it.
         const pinned =
           reasoningContent.scrollHeight - reasoningContent.scrollTop - reasoningContent.clientHeight < 24;
-        renderMessageMarkdown(reasoningContent, parts.reasoning, !streaming);
+        renderReasoningContent(reasoningContent, message);
         if (streaming && pinned) reasoningContent.scrollTop = reasoningContent.scrollHeight;
       }
 
       const title = reasoningSection.querySelector('.reasoning-title');
       if (title) title.textContent = reasoningTitle(message);
+      const preview = reasoningSection.querySelector('.progress-preview');
+      if (preview) preview.textContent = progressPreview(message);
     }
 
     reasoningSection.classList.toggle('expanded', !message.reasoningCollapsed);
@@ -3558,8 +3689,13 @@ function sessionMarkdown(session) {
   session.messages.forEach((message) => {
     const model = describeModel(message.modelUsed).join(' / ') || message.modelUsed || '';
     parts.push(`## ${MESSAGE_LABELS[message.role] || message.role}${model ? ` · ${model}` : ''}`, message.timestamp || '');
-    if (message.reasoning?.trim()) parts.push('### Reasoning / summary', message.reasoning);
-    if (message.content) parts.push(message.content);
+    const view = displayParts(message);
+    if (hasExecutionProgress(view)) {
+      parts.push('### Execution progress');
+      view.progress.forEach((entry) => parts.push(entry.type === 'tool'
+        ? `- ${toolSummary(entry.item)} (${toolState(entry.item, message)})` : entry.text));
+    } else if (view.reasoning.trim()) parts.push('### Reasoning / summary', view.reasoning);
+    if (view.content) parts.push(view.content);
     (message.attachments || []).forEach((ref) => parts.push(`Attachment: ${ref.name} · ${ref.mime} · ${ref.size} bytes (download the original in SideMind)`));
     const notice = message.error || responseCompletionNotice(message);
     if (notice) parts.push(`Status: ${notice}`);
@@ -4436,7 +4572,8 @@ async function cleanupStreaming(messageId, preparationError = null) {
     message.outcome = message.error ? 'failed' : wasAborted ? 'stopped' : message.outcome || (message.incompleteReason ? 'incomplete' : message.completionUnconfirmed ? 'unconfirmed' : 'completed');
   }
   if (wasAborted && message) {
-    const hasContent = message.content?.trim() || message.reasoning?.trim();
+    const parts = displayParts(message);
+    const hasContent = parts.content.trim() || parts.reasoning.trim() || parts.progress?.length;
 
     if (hasContent) {
       message.timestamp = new Date().toISOString();
@@ -4504,7 +4641,8 @@ function finalizeTiming(messageId) {
   message.durationMs = Date.now() - message.startedAt;
 
   // A reply that was nothing but reasoning still deserves a duration
-  if (message.thinkingMs == null && message.reasoning?.trim()) {
+  const parts = displayParts(message);
+  if (message.thinkingMs == null && (parts.reasoning.trim() || parts.progress?.length)) {
     message.thinkingMs = message.durationMs;
     if (!message.reasoningTouched && !state.userScrolledUp && !state.readingResponse) {
       message.reasoningCollapsed = true;

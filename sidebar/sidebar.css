@@ -804,6 +804,20 @@ body {
   color: var(--text-secondary);
   background: var(--bg-primary);
   font-size: 12px;
+  min-width: 0;
+}
+.reasoning-title {
+  flex-shrink: 0;
+}
+.progress-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+.reasoning-section.expanded .progress-preview {
+  display: none;
 }
 .reasoning-header:hover {
   background: var(--bg-tertiary);
@@ -815,6 +829,7 @@ body {
   stroke: currentColor;
   stroke-width: 2;
   transition: transform 140ms ease;
+  flex-shrink: 0;
 }
 .reasoning-section.expanded .reasoning-icon {
   transform: rotate(90deg);
@@ -834,6 +849,95 @@ body {
 }
 .reasoning-content p {
   margin: 0 0 10px;
+}
+
+/* ===== Ordered agent progress ===== */
+.progress-timeline {
+  max-height: 340px;
+  padding: 4px 10px 10px;
+}
+.progress-entry {
+  position: relative;
+  min-width: 0;
+  padding: 9px 0;
+}
+.progress-entry + .progress-entry {
+  border-top: 1px solid var(--border-secondary);
+}
+.progress-reasoning,
+.progress-commentary {
+  display: flex;
+  gap: 8px;
+}
+.progress-marker {
+  flex: 0 0 14px;
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.progress-text {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.progress-text > :last-child {
+  margin-bottom: 0;
+}
+.progress-commentary {
+  color: var(--text-primary);
+}
+.progress-entry[data-level='error'],
+.progress-tool[data-status='failed'] > summary {
+  color: var(--danger);
+}
+.progress-tool > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 3px;
+}
+.progress-tool > summary::-webkit-details-marker {
+  display: none;
+}
+.progress-tool > summary::after {
+  content: '›';
+  color: var(--text-tertiary);
+}
+.progress-tool[open] > summary::after {
+  transform: rotate(90deg);
+}
+.progress-tool-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-tool-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.progress-tool[data-status='in_progress'] .progress-tool-status {
+  color: var(--text-primary);
+}
+.progress-tool[data-status='failed'] .progress-tool-status,
+.progress-tool-error {
+  color: var(--danger);
+}
+.progress-tool-caption {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 9px 0 4px;
+}
+.progress-tool pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: 12px;
 }
 .typing-indicator {
   display: flex;

@@ -17,7 +17,7 @@
 - **🔐 Privacy First** - All conversations stored locally, no data collection or tracking
 - **🤖 Multi-Provider Support** - Works with OpenAI, Claude, and any OpenAI-compatible API (Chat Completions or Responses)
 - **⚡ Real-time Streaming** - Watch AI responses appear in real-time with smooth animations
-- **🧠 Thinking Display** - See AI reasoning process in collapsible sections
+- **🧠 Thinking & Progress** - Follow reasoning summaries, commentary and server-run tools in order, with expandable tool arguments, results and status
 - **💬 Smart Chat Management** - Multiple chat sessions with auto-generated titles
 - **🎨 Beautiful Themes** - Light/Dark themes with smooth transitions
 - **⚙️ Flexible Configuration** - Custom system prompts, temperature, and token limits
@@ -276,6 +276,8 @@ response modes, SSE chunk boundaries, cancellation, request and idle timeouts,
 terminal events, output limits, and the selection context menu.
 They also cover structured Responses replay, compatible context boundaries,
 authoritative snapshots, false completion markers and generation-setting migration.
+Responses progress checks cover ordered reasoning, commentary and `mcp_call` items,
+tool details during streaming and reload, and tool-only replies stopped mid-run.
 Server-conversation checks cover creation and persistence, current-turn input,
 attachment-only messages, reloads, interrupted turns, configuration isolation and
 concurrent sidebars.

@@ -202,6 +202,7 @@ async function openPage(kind = 'sidebar', config = fixtureConfig, rawLocal = {},
           { once: true }
         );
         window.__stream = {
+          event: (event) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)),
           delta: (content) =>
             controller.enqueue(
               new TextEncoder().encode(
@@ -1115,7 +1116,7 @@ browserTest(
       await chat.locator('#switchViewBtn').click();
       const workspace = await openingWorkspace;
       workspace.on('pageerror', (error) => errors.push(error.message));
-      await workspace.waitForFunction((sessionId) => state.currentSessionId === sessionId && !navigationRequest, sessionId);
+      await workspace.waitForFunction((sessionId) => typeof state !== 'undefined' && state.currentSessionId === sessionId && !navigationRequest, sessionId);
       await chat.waitForFunction(() => !viewSwitching);
       assert.match(workspace.url(), /view=workspace#session=/);
       assert.equal(await workspace.locator('#messageInput').inputValue(), await chat.locator('#messageInput').inputValue());
@@ -2802,6 +2803,110 @@ browserTest('two sidebars serialize server turns and refresh the saved conversat
   } finally {
     await context.close();
   }
+});
+
+browserTest('Responses progress preserves item order, tool details and commentary across streaming and reload', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  const { page, errors } = await openPage('sidebar', config);
+  await page.locator('#messageInput').fill('Compare Xiaomi models');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__stream));
+  const output = [
+    { id: 'rs_plan', type: 'reasoning', status: 'completed', summary: [{ type: 'summary_text', text: 'Planning **official sources**.' }] },
+    { id: 'mcp_search', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_search', status: 'in_progress', arguments: JSON.stringify({ query: '小米 15 Ultra 与 17 Ultra 参数对比' }), output: null },
+    { id: 'msg_progress', type: 'message', role: 'assistant', phase: 'commentary', status: 'completed', content: [{ type: 'output_text', text: 'Verifying the camera and battery specifications.' }] },
+    { id: 'mcp_fetch', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_fetch', status: 'in_progress', arguments: JSON.stringify({ url: 'https://www.mi.com/prod/xiaomi-17-ultra/specs' }), output: null }
+  ];
+  await page.evaluate((items) => {
+    window.__stream.event({ type: 'response.output_item.done', output_index: 0, item: items[0] });
+    window.__stream.event({ type: 'response.output_item.added', output_index: 1, item: items[1] });
+  }, output);
+  const section = page.locator('.assistant .reasoning-section');
+  await section.locator('.progress-preview').filter({ hasText: '小米' }).waitFor();
+  await section.locator('.reasoning-header').click();
+  const search = section.locator('[data-progress-key="mcp_search"]');
+  await search.locator('summary').filter({ hasText: 'Running' }).waitFor();
+  await search.locator('summary').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await search.getAttribute('open'), '');
+  assert.match(await search.locator('pre').first().textContent(), /小米/);
+  await page.evaluate((items) => {
+    window.__progressToolNode = document.querySelector('[data-progress-key="mcp_search"]');
+    for (const index of [2, 3]) window.__stream.event({ type: 'response.output_item.added', output_index: index, item: items[index] });
+  }, output);
+  await section.locator('[data-progress-key="mcp_fetch"]').waitFor();
+  assert.deepEqual(await section.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.map(item => item.id));
+  assert.equal(await page.locator('.assistant .message-content').textContent(), '');
+  assert.equal(await search.getAttribute('open'), '', 'new progress must not close tool details');
+  assert.equal(await page.evaluate(() => document.activeElement === window.__progressToolNode.querySelector('summary')), true);
+  output[1] = { ...output[1], status: 'completed', output: 'Official search result' };
+  output[3] = { ...output[3], status: 'failed', output: '<img src="https://unsafe.invalid/tool">', pipiclaw_failure: 'The source could not be fetched.' };
+  output.push(
+    { id: 'rs_compare', type: 'reasoning', status: 'completed', summary: [{ type: 'summary_text', text: 'Comparing the confirmed specifications.' }] },
+    { id: 'msg_final', type: 'message', role: 'assistant', phase: 'final_answer', status: 'completed', content: [{ type: 'output_text', text: 'The final comparison.' }] }
+  );
+  await page.evaluate((items) => {
+    window.__stream.event({ type: 'response.output_item.done', output_index: 1, item: items[1] });
+    window.__stream.event({ type: 'response.output_item.done', output_index: 3, item: items[3] });
+    window.__stream.event({ type: 'response.completed', response: { id: 'resp_progress', status: 'completed', output: items } });
+    window.__stream.unconfirmed();
+  }, output);
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.evaluate(() => document.querySelector('[data-progress-key="mcp_search"]') === window.__progressToolNode), true);
+  assert.equal(await search.getAttribute('open'), '');
+  assert.match(await search.locator('summary').textContent(), /Done/);
+  const fetch = section.locator('[data-progress-key="mcp_fetch"]');
+  await fetch.locator('summary').click();
+  assert.match(await fetch.locator('summary').textContent(), /Failed/);
+  assert.match(await fetch.locator('.progress-tool-error').textContent(), /could not be fetched/);
+  assert.match(await fetch.locator('.progress-tool-output').textContent(), /<img/);
+  assert.equal(await section.locator('img').count(), 0, 'tool output is plain text');
+  assert.equal((await page.locator('.assistant .message-content').textContent()).trim(), 'The final comparison.');
+  assert.deepEqual(await section.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.slice(0, -1).map(item => item.id));
+  assert.equal(await section.locator('.reasoning-header').getAttribute('aria-expanded'), 'true', 'manual expansion survives the final answer');
+  await search.locator('summary').click();
+  await fetch.locator('summary').click();
+  await section.locator('.reasoning-content').evaluate(node => { node.scrollTop = 0; });
+  for (const theme of ['light', 'dark']) {
+    await page.setViewportSize({ width: theme === 'light' ? 380 : 320, height: 800 });
+    await page.evaluate((theme) => { state.config.theme = theme; applyTheme(); }, theme);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.UI_SCREENSHOTS) await page.screenshot({ path: `${process.env.UI_SCREENSHOTS}/progress-${theme}.png` });
+  }
+  await page.evaluate(async () => {
+    await saveToStorage();
+    sessionStorage.setItem('sidemind-fixture-reload', JSON.stringify(window.__storage));
+  });
+  await page.reload();
+  await page.waitForFunction(() => storageReady && document.querySelectorAll('.progress-entry').length === 5);
+  assert.equal((await page.locator('.assistant .message-content').textContent()).trim(), 'The final comparison.');
+  assert.deepEqual(await page.locator('.progress-entry').evaluateAll(nodes => nodes.map(node => node.dataset.progressKey)), output.slice(0, -1).map(item => item.id));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+browserTest('a tool-only Responses turn replaces waiting and survives stop with interrupted progress', async () => {
+  const config = structuredClone(fixtureConfig);
+  config.providers[0].apiType = 'responses';
+  const { page, errors } = await openPage('workspace', config);
+  await page.locator('#messageInput').fill('Search official specifications');
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => Boolean(window.__stream));
+  await page.evaluate(() => window.__stream.event({ type: 'response.output_item.added', output_index: 0, item: {
+    id: 'tool_only', type: 'mcp_call', server_label: 'pipiclaw', name: 'web_search', status: 'in_progress', arguments: '{"query":"Xiaomi Ultra"}', output: null
+  } }));
+  const section = page.locator('.assistant .reasoning-section');
+  await section.locator('.reasoning-header').click();
+  await section.locator('.progress-tool-status').filter({ hasText: 'Running' }).waitFor();
+  assert.equal(await page.locator('.assistant .typing-indicator').isVisible(), false);
+  await page.locator('#sendBtn').click();
+  await page.waitForFunction(() => !state.isStreaming);
+  assert.equal(await page.locator('.assistant').count(), 1, 'stopping must retain a reply with only tool progress');
+  assert.equal(await section.locator('.progress-tool-status').textContent(), 'Interrupted');
+  assert.equal(await page.evaluate(() => state.sessions[state.currentSessionId].messages.at(-1).protocol.output[0].status), 'in_progress', 'the view must not rewrite the provider record');
+  assert.deepEqual(errors, []);
+  await page.close();
 });
 
 async function useCompleteFixture(page) {
