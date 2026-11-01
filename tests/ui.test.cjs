@@ -3220,6 +3220,7 @@ browserTest('workspace layout, outline, deduplicated attachments and explicit ro
   }
   await page.locator('#toggleNavBtn').click();
   assert.equal(await page.locator('#workspaceNav').isVisible(), true);
+  await page.locator('#workspaceSearchBtn').click();
   await page.locator('#historySearch').fill('pineapple');
   await page.waitForFunction(() => document.querySelectorAll('.chat-history-item').length === 1);
   assert.match(await page.locator('.history-snippet').textContent(), /pineapple/);

@@ -217,6 +217,7 @@ function cacheElements() {
     'rolePickerPanel',
     'generationStatus',
     'historySearch',
+    'historySearchContainer',
     'historyUndo',
     'historyUndoText',
     'historyUndoBtn',
@@ -231,10 +232,10 @@ function cacheElements() {
     'draftAttachments',
     'attachmentStatus',
     'cancelAttachmentsBtn',
-    'workspaceNav', 'workspaceHistory', 'workspaceNewBtn', 'workspaceSettingsBtn',
-    'toggleNavBtn', 'closeNavBtn', 'togglePanelBtn', 'closePanelBtn', 'conversationPanel',
+    'workspaceNav', 'workspaceHistory', 'workspaceNewBtn', 'workspaceSettingsBtn', 'workspaceSearchBtn',
+    'toggleNavBtn', 'togglePanelBtn', 'closePanelBtn', 'conversationPanel',
     'outlineTab', 'attachmentsTab', 'conversationPanelContent', 'workspaceBackdrop',
-    'switchViewBtn', 'switchViewIcon', 'viewAttachmentsBtn', 'conversationMenu',
+    'switchViewBtn', 'switchViewIcon', 'conversationMenu',
     'renameCurrentBtn', 'exportCurrentBtn', 'deleteCurrentBtn',
     'draftConflict', 'restoreExternalDraftBtn'
   ].forEach((id) => {
@@ -3406,7 +3407,7 @@ function openOptions() {
 }
 
 function openChatHistory() {
-  if (VIEW === 'workspace') { setNavigationOpen(true); elements.historySearch.focus(); return; }
+  if (VIEW === 'workspace') { setNavigationOpen(true); setWorkspaceSearchOpen(true); return; }
   closeModelPicker(false);
   closeRolePicker(false);
   clearTimeout(historySearchTimer);
@@ -3605,7 +3606,7 @@ async function renderChatHistory() {
       const items = document.createElement('div'); items.className = 'conversation-menu-items';
       while (actions.firstChild) {
         const button = actions.firstChild;
-        button.textContent = button.getAttribute('aria-label');
+        button.appendChild(document.createTextNode(button.getAttribute('aria-label')));
         button.className = '';
         button.addEventListener('click', () => { menu.open = false; });
         items.appendChild(button);
@@ -3674,7 +3675,7 @@ function renameSession(sessionId, item) {
         });
       }
       renderChatHistory();
-      elements.historySearch.focus();
+      (elements.historySearchContainer.hidden ? elements.workspaceSearchBtn : elements.historySearch).focus();
     },
     { once: true }
   );
@@ -4810,6 +4811,7 @@ function initializeView() {
   // Move the existing history nodes: both views keep the same search, renderer,
   // rename and undo behavior, with a single set of element references.
   elements.workspaceHistory.appendChild(elements.chatHistoryDropdown.firstElementChild);
+  elements.historySearchContainer.hidden = true;
   elements.switchViewIcon.setAttribute('href', '../assets/icons.svg#panel-right');
   elements.switchViewBtn.setAttribute('aria-label', 'Back to sidebar');
   renderWorkspaceLayout();
@@ -4819,11 +4821,11 @@ function setupViewListeners() {
   elements.switchViewBtn.addEventListener('click', switchView);
   elements.workspaceNewBtn.addEventListener('click', createNewSession);
   elements.workspaceSettingsBtn.addEventListener('click', openOptions);
+  elements.workspaceSearchBtn.addEventListener('click', toggleWorkspaceSearch);
+  elements.historySearch.addEventListener('keydown', handleWorkspaceSearchKeydown);
   elements.toggleNavBtn.addEventListener('click', toggleNavigation);
-  elements.closeNavBtn.addEventListener('click', () => setNavigationOpen(false));
   elements.togglePanelBtn.addEventListener('click', () => setPanelOpen(!panelOpen));
   elements.closePanelBtn.addEventListener('click', () => setPanelOpen(false));
-  elements.viewAttachmentsBtn.addEventListener('click', () => selectPanelTab('attachments'));
   elements.outlineTab.addEventListener('click', () => selectPanelTab('outline'));
   elements.attachmentsTab.addEventListener('click', () => selectPanelTab('attachments'));
   [elements.outlineTab, elements.attachmentsTab].forEach((tab) => tab.addEventListener('keydown', handlePanelTabKeydown));
@@ -4858,13 +4860,38 @@ function persistWorkspaceLayout() {
 
 function toggleNavigation() { setNavigationOpen(!navigationOpen); }
 
+function toggleWorkspaceSearch() {
+  setWorkspaceSearchOpen(elements.historySearchContainer.hidden);
+}
+
+function setWorkspaceSearchOpen(open) {
+  elements.historySearchContainer.hidden = !open;
+  elements.workspaceSearchBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    elements.historySearch.focus();
+  } else {
+    clearTimeout(historySearchTimer);
+    elements.historySearch.value = '';
+    historyVisibleCount = HISTORY_PAGE_SIZE;
+    renderChatHistory();
+    elements.workspaceSearchBtn.focus({ preventScroll: true });
+  }
+}
+
+function handleWorkspaceSearchKeydown(event) {
+  if (VIEW !== 'workspace' || event.key !== 'Escape' || isCompositionKey(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  setWorkspaceSearchOpen(false);
+}
+
 function setNavigationOpen(open) {
   navigationOpen = open;
   shellPreference.navigation = open;
   if (open && window.innerWidth < 900) panelOpen = false;
   persistWorkspaceLayout();
   renderWorkspaceLayout();
-  if (open && window.innerWidth < 900) elements.historySearch.focus();
+  if (open && window.innerWidth < 900) elements.workspaceNewBtn.focus();
   else if (!open) elements.toggleNavBtn.focus({ preventScroll: true });
 }
 
